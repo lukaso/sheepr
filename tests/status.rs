@@ -1302,9 +1302,11 @@ fn the_root_is_reaped_only_through_the_recorder() {
 }
 
 /// #17 (macOS): a root that sheepr kills while it is still suspended (a TERM came before the
-/// resuming CONT) is reaped there and records nothing: `root` stays "not-started" with both
-/// fields null, and the reap after the kill is not run for it (its pid is no longer sheepr's
-/// child; the trace has no `root-after-kill` line).
+/// resuming CONT) is reaped there and records nothing: both fields null, and the reap after the
+/// kill is not run for it (its pid is no longer sheepr's child; the trace has no
+/// `root-after-kill` line). Its `root` value is not pinned here: plan §1 keeps it
+/// "not-started", round 3's N3 (slice 2, with `root_may_run()`) makes it "signaled" once the stop
+/// signals were let through.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_root_killed_while_suspended_records_nothing() {
@@ -1325,7 +1327,6 @@ fn a_root_killed_while_suspended_records_nothing() {
     let t = std::fs::read_to_string(&trace).unwrap_or_default();
     assert_eq!(x.code, None, "sheepr dies of the TERM: {:?}", x.status);
     assert_eq!(field(&x, "trigger").and_then(Json::str), Some("term"));
-    assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{:?}", x.status);
     assert!(both_null(&x), "{:?}", x.status);
     assert!(!t.lines().any(|l| l.starts_with("root-after-kill")), "trace:\n{t}");
     let _ = std::fs::remove_dir_all(&d);
