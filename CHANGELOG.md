@@ -6,6 +6,26 @@ schemas (`"v": 1`, additive changes only) and the `sheepr:` at the start of the 
 each message sheepr itself writes to stderr (for a usage error, that line says what was wrong;
 `sheepr` alone prints the overview and exits 2).
 
+## Unreleased
+
+- `run --status-fd`: two new fields, `root_code` (the command's exit code when it exited) and
+  `root_signal` (the number of the signal that ended it), each null otherwise. Both are null when
+  the command never ran, and when sheepr did not see how it ended. When `trigger` is set (`term`,
+  `timeout`, `cap`), they say how sheepr's kill ended the command (a signal sheepr sent, or an exit
+  while it had time to end), not the command's own result
+  ([#17](https://github.com/lukaso/sheepr/issues/17)).
+- `run --status-fd`: `root` now follows how the command really ended. Values that change:
+  - a command that exits by itself while sheepr ends the job (after a TERM from outside or a
+    limit, during the grace) is `"exited"`, not `"signaled"`;
+  - on Linux, a command that cannot be run (not found, not executable) is `"not-started"` also
+    when a TERM reaches sheepr at the same moment, or when it fails while the job is being ended;
+    before, that was `"signaled"`;
+  - with `--mode root-disclaim` (macOS, not a stable flag), a job ended by a TERM from outside
+    is `"signaled"` with both new fields null, not `"not-started"`;
+  - on macOS, when sheepr's wait for the command fails, `root` is `"signaled"` with both new
+    fields null, `trigger` null, and `error` says the exit status was lost; before, `root` was
+    `"exited"`, as if the command had exited 125. The exit code stays 125.
+
 ## 0.1.3 (2026-10-10)
 
 - `sweep` and the auto-sweep before each `run` (macOS): they remove the registration folders

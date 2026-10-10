@@ -199,6 +199,12 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   a newline: sheepr's notice starts a new line when that pipe takes it). Leave sheepr about 31 s
   after the kill deadline before you send it KILL (about 42 s at worst, and only while its stderr
   is read).
+- In the `--status-fd` line, `root` says how the command ended: `exited`, `signaled`, or
+  `not-started` when it never ran. `root_code` is its exit code when it exited and
+  `root_signal` the number of the signal that ended it; the other one is null. Both are null
+  when the command never ran, and when sheepr did not see how it ended (then `root` is
+  `signaled`). When `trigger` is set, they say how sheepr's kill ended the command (a signal
+  sheepr sent, or an exit while it had time to end), not the command's own result.
 - `sweep` exits 0 when it is done, also when there is nothing to sweep; 1 when it refuses and
   signals nothing (the state directory or its journal folder is not safe, cannot be reached or
   cannot be listed; sheepr cannot follow its own chain of parent processes; on Linux, no /proc of

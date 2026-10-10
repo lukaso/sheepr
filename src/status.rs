@@ -1,10 +1,24 @@
 //! `--status-fd N` (PLAN.md §3.1; PHASE2.md §1 decision 8): one JSON line, written once at the
 //! end, by the supervisor only (a relay drops the fd), within IDLE and CAP (issue #14). Fields: `v`, `job`, `root` (`exited`,
-//! `signaled`, `not-started`), `code`, `trigger` (null, `term`; P3 adds `timeout` and `cap`),
-//! `trigger_at` (ms since start), `deadline_missed`, `killed` (`[{pid, cmd, escaped}]`, escaped:
-//! null | `setsid` | `reparented`), `survivors`, `tracking`, `degraded`, `error`, `notes`. The fd
-//! is set CLOEXEC once the supervisor runs (after the macOS SETEXEC), so the job never holds it.
-//! The same record feeds the kill report on stderr (PLAN.md §10.4).
+//! `signaled`, `not-started`), `root_code`, `root_signal`, `code`, `trigger` (null, `term`,
+//! `timeout`, `cap`), `trigger_at` (ms since start), `deadline_missed`, `killed`
+//! (`[{pid, cmd, escaped}]`, escaped: null | `setsid` | `reparented`), `survivors`, `tracking`,
+//! `degraded`, `error`, `notes`. The fd is set CLOEXEC once the supervisor runs (after the macOS
+//! SETEXEC), so the job never holds it. The same record feeds the kill report on stderr
+//! (PLAN.md §10.4).
+//!
+//! The root's own end (issue #17): one recorder per OS takes the wait status of every reap of
+//! the root (Linux `wait_any`, the one `waitpid(-1, ...)`; macOS `reap_root`, the one wait on
+//! the root), and the record keeps the first one for the root's pid. `root_code` is its exit code
+//! when it exited, `root_signal` the number of the signal that ended it; `root` follows them
+//! ("exited" exactly with `root_code`, "signaled" exactly with `root_signal`). Both are null when
+//! the command never ran (`root` "not-started": an exec that failed clears and blocks them) and
+//! when its end was not observed (`root` "signaled"): a macOS wait on the root that failed (a lost
+//! wait: exit 125, `error` names it, nothing made up), a root still alive after the kill (the
+//! macOS reap after the kill never waits on a root whose identity still reads, as a setuid root
+//! the scan cannot see), and `--mode root-disclaim`'s TERM path, which does not reap the root.
+//! Under a trigger they say how sheepr's kill ended the root (a signal it sent, or an exit
+//! during the grace), not the command's own verdict.
 
 use std::io::Write;
 use std::sync::Mutex;
