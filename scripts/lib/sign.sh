@@ -19,11 +19,13 @@
 # Then: (notarizing) the notary keychain, $HOME/$SR_NOTARY_KEYCHAIN, must exist; the bundle with
 # the release ID, built only under /private/tmp and deleted on any failure; codesign with the
 # hardened runtime; the signed requirement must equal the release requirement (csreq's canonical
-# form); verify; the runtime flag. Notarizing: announce the password prompt; lock the notary
-# keychain, then `security unlock-keychain` asks for its password in the terminal (a failure stops
-# before any notarytool call); the profile check; submit (the profile in the notary keychain only;
-# on a rejection, unlock again, then the log fetch); lock it again at once, before anything of the
-# new build runs (a failed lock is loud and fails the build; any exit in that span locks it too);
+# form); verify; the runtime flag. Notarizing: a notification (lib/notify.sh password; in dry mode
+# the record `notify password`), then announce the password prompt; lock the notary keychain, then
+# `security unlock-keychain` asks for its password in the terminal (a failure stops before any
+# notarytool call); the profile check; submit (the profile in the notary keychain only; on a
+# rejection that names its submission: a notification (password-again), unlock again, then the log
+# fetch); lock it again at once, before anything of the new build runs (a failed lock is loud and
+# fails the build; any exit in that span locks it too);
 # staple; spctl and stapler validate. Then --version through the exec door names the commit; the
 # archive. The control mode (--no-notarize) signs and checks only: no keychain, no profile check,
 # no submission, no staple.
@@ -105,6 +107,12 @@ relock() {
 trap 'rc=$?; relock; rm -rf "$tmp"; exit $rc' EXIT
 trap 'exit 1' HUP INT TERM
 mkdir -m 700 "$tmp" || die "cannot make $tmp"
+# the operator's attention before each password prompt (they may have left the desk): the tag tree's
+# notify.sh (a notification and the terminal bell; it always exits 0), through the named environment,
+# so no SR_NOTIFY_OSASCRIPT of the caller's reaches it; in dry mode only its record
+notify() { # key
+  if [ $real = yes ]; then tool sh "$lib/notify.sh" "$1" "$tag"; else echo "notify $1" >> "${SR_ASK_RECORD:-/dev/null}"; fi
+}
 # `security unlock-keychain` with no -p asks for the password in the terminal (never read here)
 unlock() { # what-was-sent
   tool security unlock-keychain "$kc" || die "the notary keychain was not unlocked (a wrong password, or the prompt cancelled): $1"; }
@@ -128,6 +136,7 @@ if [ $notarize = yes ]; then
   tool ditto -c -k --keepParent "$app" "$tmp/submit.zip" || die "ditto"
   # the notary keychain is open only from here to the lock after the last notarytool call: nothing
   # of the new build runs in that span
+  notify password
   echo "sign: security will now ask for the password of the sheepr-notary keychain (its own password, not your login password), in this terminal. Type it only here. It is locked again right after the submission."
   [ $real = no ] && echo "announce" >> "${SR_ASK_RECORD:-/dev/null}"
   kc=$k
@@ -142,8 +151,9 @@ if [ $notarize = yes ]; then
   case $res in
     *'"status":"Accepted"'*|*'"status": "Accepted"'*) ;;
     *) id=$(printf '%s' "$res" | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p')
-       # the keychain may have locked itself during --wait (5 minutes idle)
-       [ -n "$id" ] && unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc" \
+       # the keychain may have locked itself during --wait (5 minutes idle), and the operator may
+       # have left: a second notification, then the second unlock
+       [ -n "$id" ] && { notify password-again; unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc"; } \
          && tool xcrun notarytool log "$id" --keychain-profile sheepr-notary --keychain "$kc" > "$dest/notary-log.json" 2>&1
        die "Apple did not accept it; see $dest/notary-log.json" ;;
   esac

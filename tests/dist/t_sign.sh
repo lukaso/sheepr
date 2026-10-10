@@ -18,11 +18,20 @@
 #   - the control mode (--no-notarize) makes no notarytool call and no keychain lock or unlock;
 #   - the guard: a direct call with a `security` that reports an identity, or with a forged
 #     --real nonce, is refused (3) and no signing tool runs;
-#   - the release-ID bundle lives only under /private/tmp/sr-sign.* and is gone afterwards.
+#   - the release-ID bundle lives only under /private/tmp/sr-sign.* and is gone afterwards;
+#   - the notifications (scripts/lib/notify.sh, recorded as `notify KEY` in dry mode): `password`
+#     once, right before the announce; after a rejection, `password-again` right before the second
+#     unlock (none when the rejection names no submission id); none in the control mode; the real
+#     mode's call pinned by text (the tag tree's notify.sh, through the named environment).
+# Every dry sign.sh run here (the ones that reach a notification point) is inside lib.sh's
+# no-osascript wall, so no row can show a real notification. The real-mode rows (the guard's parent
+# checks, section 4) run outside it: inside the sandbox `ps` cannot read the parent's arguments
+# (measured: an empty answer), and each of them stops at the guard, before any notification point.
 set -u
 . "$(dirname "$0")/lib.sh"
 [ "$(uname -s)" = Darwin ] || { echo "SKIP (macOS only)"; exit 0; }
 fx_dir
+wall_ok && pass "the wall: a path naming osascript cannot run here, another can" || { fail "the no-osascript wall does not hold: nothing else runs"; finish; }
 SIGN="$SR_ROOT/scripts/lib/sign.sh"
 DECOY=decoy-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
 printf 'int main(){return 0;}\n' > "$FX/m.c"; cc -arch arm64 -arch x86_64 -o "$FX/bin" "$FX/m.c" || exit 3
@@ -49,7 +58,7 @@ shim codesign 'case "$*" in
 esac; exit 0'
 shim xcrun 'case "$*" in
   *"notarytool history"*) echo "Successfully received submission history." ;;
-  *"notarytool submit"*) if [ -e "'"$FX"'/reject" ]; then echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
+  *"notarytool submit"*) if [ -e "'"$FX"'/reject" ]; then [ -e "'"$FX"'/noid" ] && { echo "{\"status\":\"Invalid\"}"; exit 1; }; echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
     echo "{\"id\":\"00000000-0000-0000-0000-000000000000\",\"status\":\"Accepted\"}" ;;
 esac; exit 0'
 shim spctl 'exit 0'
@@ -65,7 +74,7 @@ run() { # name args... -> rc; output in $FX/out.<name>
   nm=$1; shift
   rm -f "$S/calls" "$S"/env.*
   mkdir -p "$FX/dest.$nm"
-  env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+  no_osascript env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
     SR_ASK_RECORD="$S/calls" \
     sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.$nm" "$@" \
     > "$FX/out.$nm" 2>&1
@@ -82,6 +91,9 @@ seq=$(grep -n -e 'notarytool history' -e '--force' -e 'notarytool submit' -e 'st
 kcl() { grep -n -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' -e 'notarytool' "$S/calls" | cut -d: -f2- | sed -e 's/^security \([a-z-]*\) .*/\1/' -e 's/^xcrun notarytool \([a-z]*\) .*/\1/' | tr '\n' '|'; }
 seq=$(kcl)
 [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] && pass "the order: announce, lock, unlock, profile check, submit, lock at the end" || fail "the keychain order: $seq"
+nkl() { grep -e '^notify ' -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' -e 'notarytool' "$S/calls" | sed -e 's/^security \([a-z-]*\) .*/\1/' -e 's/^xcrun notarytool \([a-z]*\) .*/\1/' | tr '\n' '|'; }
+seq=$(nkl)
+[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] && pass "notify password: once, right before the announce" || fail "the notifications: $seq"
 ln=$(grep -n notarytool "$S/calls" | tail -1 | cut -d: -f1)
 [ "$(sed -n "$((ln + 1))p" "$S/calls")" = "security lock-keychain $KC" ] && pass "the notary keychain is locked right after the last notarytool call" || fail "after the last notarytool call: $(sed -n "$((ln + 1))p" "$S/calls")"
 lk=$(grep -n '^security lock-keychain' "$S/calls" | tail -1 | cut -d: -f1); st=$(grep -n 'stapler staple' "$S/calls" | head -1 | cut -d: -f1)
@@ -118,6 +130,7 @@ run c --no-notarize; rc=$?
 [ $rc = 5 ] && pass "control run ends at the door's refusal (5)" || fail "control run: rc=$rc $(tail -2 "$FX/out.c" | tr '\n' ' ')"
 grep -q notarytool "$S/calls" && fail "the control mode called notarytool" || pass "the control mode calls no notarytool"
 ! grep -q -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' "$S/calls" && pass "the control mode announces nothing and touches no keychain" || fail "the control mode announced or touched a keychain: $(grep -e announce -e keychain "$S/calls" | tr '\n' ';')"
+grep -q '^notify ' "$S/calls" && fail "the control mode notified: $(grep '^notify ' "$S/calls" | tr '\n' ';')" || pass "the control mode notifies nothing (it asks for no password)"
 
 # 2b. a failed unlock (a wrong password): stops before any notarytool call; the keychain is locked
 : > "$FX/unlock.fail"; run u; rc=$?; rm -f "$FX/unlock.fail"
@@ -144,6 +157,14 @@ mv "$KC" "$KC.away"; run m; rc=$?; mv "$KC.away" "$KC"
 seq=$(kcl)
 [ $rc = 1 ] && [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|unlock-keychain|log|lock-keychain|" ] && ! grep -q stapler "$S/calls" \
   && pass "a rejection: unlocked again before the log fetch, locked at the end" || fail "rejection: rc=$rc $seq"
+seq=$(nkl)
+[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|notify password-again|unlock-keychain|log|lock-keychain|" ] \
+  && pass "a rejection: notify password-again, right before the second unlock" || fail "rejection, the notifications: $seq"
+# 2h. Apple rejects it with no submission id: no second unlock, so no second notification
+: > "$FX/reject"; : > "$FX/noid"; run jn; rc=$?; rm -f "$FX/reject" "$FX/noid"
+seq=$(nkl)
+[ $rc = 1 ] && [ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] \
+  && pass "a rejection without an id: no second unlock, no password-again" || fail "rejection without an id: rc=$rc $seq"
 
 # 3. the requirement comparison refuses a changed marker (a copy of sign.sh's library dir with a
 #    release.conf whose requirement lacks one Developer ID marker)
@@ -158,7 +179,7 @@ SIGN=$SIGN_SAVE
 # 4. the guard. (a) A real HOME (the key and the real login keychain in reach), everything else
 # the same: refused (3) before any signing tool, whatever the security shim says.
 rm -f "$S/calls" "$S"/env.*
-env PATH="$S:$PATH" SR_ASK_RECORD="$S/calls" \
+no_osascript env PATH="$S:$PATH" SR_ASK_RECORD="$S/calls" \
   sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.g1" > "$FX/out.g1" 2>&1; rc=$?
 [ $rc = 3 ] && ! grep -q -e '^codesign' -e '^xcrun' "$S/calls" 2>/dev/null && pass "a real HOME: refused (3), no signing tool ran" || fail "real HOME: rc=$rc calls=$(cat "$S/calls" 2>/dev/null | tr '\n' ';')"
 # (b) the real mode's parent: sign.sh must be a direct child of `release.sh build --sign`, in any of
@@ -192,4 +213,13 @@ env HOME="$FX/home" PATH="$S:$PATH" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 -
 rm -f "$S/calls"
 (cd "$FX/fake" && env HOME="$FX/home" PATH="$S:$PATH" SR_PPID=1 scripts/release.sh build --sign v0.1.0-rc.1) > "$FX/out.g3" 2>&1; rc=$?
 [ $rc = 3 ] && grep -q "parent's pid" "$FX/out.g3" && [ ! -e "$S/calls" ] && pass "the right parent with another pid given: refused by the pid check (3)" || fail "wrong pid: rc=$rc $(tail -1 "$FX/out.g3")"
+
+# 5. the real mode's notification, by text (never run here): one notify(), whose real branch runs the
+#    tag tree's notify.sh (sign.sh's own lib dir) through the named environment, with the key and the
+#    tag; its dry branch records; the two calls, each once
+code=$(grep -v '^ *#' "$SIGN")
+printf '%s\n' "$code" | grep -qxF '  if [ $real = yes ]; then tool sh "$lib/notify.sh" "$1" "$tag"; else echo "notify $1" >> "${SR_ASK_RECORD:-/dev/null}"; fi' \
+  && [ "$(printf '%s\n' "$code" | grep -c 'notify\.sh')" = 1 ] && pass "the real mode runs the tag tree's notify.sh, through tool, with the key and the tag (its one call)" || fail "the real notify call: $(printf '%s\n' "$code" | grep 'notify\.sh' | tr '\n' ';')"
+[ "$(printf '%s\n' "$code" | grep -c '^ *notify password$')" = 1 ] && [ "$(printf '%s\n' "$code" | grep -c '{ notify password-again; unlock ')" = 1 ] \
+  && pass "notify password and notify password-again: one call each" || fail "the notify calls: $(printf '%s\n' "$code" | grep -n 'notify pass' | tr '\n' ';')"
 finish
