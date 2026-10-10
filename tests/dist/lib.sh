@@ -166,3 +166,16 @@ fx_shims() { # dir tool...
     printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\nexit 0\n' "$t" "$d" > "$d/$t"; chmod +x "$d/$t"
   done
 }
+
+# No cell may show a real notification (scripts/lib/notify.sh): a cell that reaches notify.sh or
+# sign.sh runs them through no_osascript, a sandbox in which no path containing "osascript" can be
+# executed (so the stand-ins are named otherwise). wall_ok proves the wall in the cell that uses it:
+# a probe whose path names osascript is denied, the same probe under another name runs.
+NO_OSASCRIPT='(version 1)(allow default)(deny process-exec (regex #"osascript"))'
+no_osascript() { /usr/bin/sandbox-exec -p "$NO_OSASCRIPT" "$@"; }
+wall_ok() {
+  mkdir -p "$FX/wall" && printf '#!/bin/sh\necho "$0" >> "%s/wall/rec"\n' "$FX" > "$FX/wall/probe-osascript" \
+    && cp "$FX/wall/probe-osascript" "$FX/wall/probe-other" && chmod +x "$FX/wall/probe-osascript" "$FX/wall/probe-other" || return 1
+  no_osascript "$FX/wall/probe-osascript" 2>/dev/null; no_osascript "$FX/wall/probe-other" 2>/dev/null
+  [ "$(cat "$FX/wall/rec" 2>/dev/null)" = "$FX/wall/probe-other" ]
+}
