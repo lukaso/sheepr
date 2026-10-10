@@ -180,13 +180,31 @@ npm_pack() { # the four npm tarballs into $dest; sets files_npm
 }
 
 # --- the build (PHASE3.md S2): unsigned, signed, or the signed control ----------------------------
+# The order (one sequence for every mode; PHASE3.md D2 step 3), so the operator types the notary
+# keychain's password a few minutes after the start and can then leave:
+#   1. the preconditions, each a refusal that leaves nothing in $out: the signing identity (signed
+#      and control), the compiler pin, the Linux images;
+#   2. the staging dir, $out/.<the output dir's name>-build.XXXXXX: every later step writes there;
+#   3. the Linux `cargo fetch` (the only networked Linux step);
+#   4. the macOS compile (its own fetch, then offline);
+#   5. the bundle, or signing: sign.sh signs, asks for the password, notarizes, locks the notary
+#      keychain again, staples and checks, all before it returns (the keychain is open only from
+#      its unlock to its relock, before anything below runs);
+#   6. the Linux builds, offline;
+#   7. install.sh, the checksums, the cask, the npm packages, then MANIFEST.json;
+#   8. one rename of the staging dir to the output dir ($out/vTAG, -unsigned or -control).
+# A Linux failure after notarization costs a submission in Apple's history, a rebuild and the
+# password again. A build that stops after step 2 keeps its staging dir (named in the message,
+# never deleted here, never read by a later run); only a finished one has the output dir's name.
 build_release() { # mode: unsigned | signed | control
   mode=$1
-  case $mode in unsigned) dest=$out/$tag-unsigned ;; signed) dest=$out/$tag ;; control) dest=$out/$tag-control ;; esac
+  case $mode in unsigned) final=$out/$tag-unsigned ;; signed) final=$out/$tag ;; control) final=$out/$tag-control ;; esac
   short=$(git -C "$root" rev-parse --short=12 "$commit")
-  [ -e "$dest" ] && die "$dest exists (a release output directory is never reused)"
+  [ -e "$final" ] && die "$final exists (a release output directory is never reused)"
   scratch=$(mktemp -d /private/tmp/sr-release.XXXXXX 2>/dev/null || mktemp -d) || die "no scratch dir"
-  trap 'git -C "$root" worktree remove --force "$scratch/src" >/dev/null 2>&1; rm -rf "$scratch"' EXIT
+  dest=""   # the staging dir, once it is made (empty again after the rename)
+  trap 'git -C "$root" worktree remove --force "$scratch/src" >/dev/null 2>&1; rm -rf "$scratch"
+    [ -z "$dest" ] || echo "release: the build of $tag stopped; what it made is kept in $dest (never used by a later run: look at it, then remove it)" >&2' EXIT
   trap 'exit 1' HUP INT TERM
   src=$scratch/src
   git -C "$root" worktree add -q --detach "$src" "$tag" || die "cannot make a worktree of $tag"
@@ -197,20 +215,18 @@ build_release() { # mode: unsigned | signed | control
   pin=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$src/rust-toolchain.toml")
   [ -n "$pin" ] || die "the tag's rust-toolchain.toml names no channel"
   echo "release: building $tag ($short, $mode) in $src"
+
+  # 1. the preconditions (a failure here leaves nothing in $out)
   if [ "$mode" != unsigned ]; then
     step "the signing identity"
     /usr/bin/security find-identity -v -p codesigning 2>/dev/null | grep -q " $SR_SIGN_IDENTITY " \
       || die "the signing identity $SR_SIGN_IDENTITY is not in the keychain"
   fi
-
-  # macOS compile: a fresh CARGO_HOME, fetched (Cargo checks each crate against Cargo.lock), then
-  # offline; the compiler must be the pinned one
-  step "the macOS compile"
+  # the Mac compiler must be the pinned one (the Linux one is checked in each build below)
+  step "the compiler"
   mkdir -p "$scratch/cargo-mac"
-  (cd "$src" && cargo_env "$scratch/cargo-mac" "$scratch/target-mac" cargo fetch --locked -q) || die "cargo fetch (mac)"
   rustc_mac=$(cd "$src" && cargo_env "$scratch/cargo-mac" "$scratch/target-mac" rustc -V) || die "rustc -V (mac)"
   case $rustc_mac in "rustc $pin "*) ;; *) die "the Mac compiler is '$rustc_mac', not the pinned $pin" ;; esac
-  # the Linux images, checked before anything is made (a failed precondition leaves no $dest)
   step "the Linux images"
   amd64=sr-amd64-base:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
   docker_env image inspect "$amd64" >/dev/null 2>&1 || amd64=sr-amd64-alpine:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
@@ -220,33 +236,29 @@ build_release() { # mode: unsigned | signed | control
     tar -cf "$scratch/empty.tar" -T /dev/null && docker_env import --platform "linux/$i" "$scratch/empty.tar" "sr-scratch:empty-$i" >/dev/null \
       || die "cannot make the empty image sr-scratch:empty-$i"
   done
-  mkdir -p "$dest" || die "cannot make $dest"
+
+  # 2. the staging dir: in $out (so the rename stays on one file system), hidden, never the output dir's name
+  mkdir -p "$out" || die "cannot make $out"
+  dest=$(mktemp -d "$out/.${final##*/}-build.XXXXXX") || { dest=""; die "cannot make a staging dir in $out"; }
+  chmod "$(umask -S)" "$dest" || die "cannot set the mode of $dest"   # the output dir's mode, as a mkdir makes it (mktemp makes 700)
+  echo "release: staging the build in $dest"
+
+  # 3. the Linux fetch: the only networked Linux step, before the Mac work (the builds below are offline)
+  step "the Linux fetch"
+  mkdir -p "$scratch/cargo-linux"
+  docker_env run --rm --pull=never -v "$src":/src:ro -v "$scratch/cargo-linux":/sdhome -e CARGO_HOME=/sdhome -w /src "$SR_IMG_ALPINE" \
+    cargo fetch --locked -q || die "cargo fetch (linux)"
+
+  # 4. the macOS compile: a fresh CARGO_HOME, fetched (Cargo checks each crate against Cargo.lock),
+  # then offline
+  step "the macOS compile"
+  (cd "$src" && cargo_env "$scratch/cargo-mac" "$scratch/target-mac" cargo fetch --locked -q) || die "cargo fetch (mac)"
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
     (cd "$src" && cargo_env "$scratch/cargo-mac" "$scratch/target-mac" cargo build -q --release --locked --offline --bin sheepr --target $t) \
       || die "cargo build $t"
   done
 
-  # Linux, all of it before any signing: a failure here must not cost a notarization
-  step "the Linux builds"
-  mkdir -p "$scratch/cargo-linux"
-  docker_env run --rm --pull=never -v "$src":/src:ro -v "$scratch/cargo-linux":/sdhome -e CARGO_HOME=/sdhome -w /src "$SR_IMG_ALPINE" \
-    cargo fetch --locked -q || die "cargo fetch (linux)"
-  for a in aarch64 x86_64; do
-    case $a in aarch64) img=$SR_IMG_ALPINE pf=linux/arm64 ;; x86_64) img=$amd64 pf=linux/amd64 ;; esac
-    mkdir -p "$scratch/target-$a"
-    docker_env run --rm --pull=never --network none --platform "$pf" -v "$src":/src:ro -v "$scratch/cargo-linux":/sdhome:ro \
-      -v "$scratch/target-$a":/tgt -e CARGO_HOME=/sdhome -e CARGO_TARGET_DIR=/tgt -e SHEEPR_COMMIT_OVERRIDE="$short" -w /src "$img" \
-      sh -c 'cargo build -q --release --locked --offline --bin sheepr && rustc -V > /tgt/rustc && uname -m > /tgt/arch && if readelf -l /tgt/release/sheepr | grep -q INTERP; then echo "a PT_INTERP" >&2; exit 1; fi' \
-      || die "the Linux $a build"
-    [ "$(cat "$scratch/target-$a/arch")" = "$a" ] || die "the $a build ran as $(cat "$scratch/target-$a/arch")"
-    case $(cat "$scratch/target-$a/rustc") in "rustc $pin "*) ;; *) die "the Linux $a compiler is '$(cat "$scratch/target-$a/rustc")', not the pinned $pin" ;; esac
-    cp "$scratch/target-$a/release/sheepr" "$dest/sheepr-linux-$a" || die "copy $a"
-    v=$(docker_env run --rm --pull=never --network none --platform "$pf" -v "$dest/sheepr-linux-$a":/sheepr:ro "sr-scratch:empty-${pf#linux/}" /sheepr --version) \
-      || die "the $a binary does not run in an empty image (not static?)"
-    case $v in *"$short"*) ;; *) die "the $a binary names another commit: $v" ;; esac
-  done
-
-  # macOS: the universal binary, then the bundle (unsigned), or signing (sign.sh)
+  # 5. macOS: the universal binary, then the bundle (unsigned), or signing (sign.sh)
   step "the macOS bundle"
   tool base lipo -create -output "$scratch/sheepr" "$scratch/target-mac/aarch64-apple-darwin/release/sheepr" \
     "$scratch/target-mac/x86_64-apple-darwin/release/sheepr" || die "lipo"
@@ -276,8 +288,25 @@ build_release() { # mode: unsigned | signed | control
       ${DEVELOPER_DIR:+DEVELOPER_DIR="$DEVELOPER_DIR"} "$S/lib/sign.sh" "$@" || die "signing failed"
   fi
 
-  # install.sh (PHASE3.md S3), rendered with this release's version and the door
-  step "install.sh, the checksums, the npm packages"
+  # 6. Linux, offline (the crates were fetched in step 3)
+  step "the Linux builds (offline)"
+  for a in aarch64 x86_64; do
+    case $a in aarch64) img=$SR_IMG_ALPINE pf=linux/arm64 ;; x86_64) img=$amd64 pf=linux/amd64 ;; esac
+    mkdir -p "$scratch/target-$a"
+    docker_env run --rm --pull=never --network none --platform "$pf" -v "$src":/src:ro -v "$scratch/cargo-linux":/sdhome:ro \
+      -v "$scratch/target-$a":/tgt -e CARGO_HOME=/sdhome -e CARGO_TARGET_DIR=/tgt -e SHEEPR_COMMIT_OVERRIDE="$short" -w /src "$img" \
+      sh -c 'cargo build -q --release --locked --offline --bin sheepr && rustc -V > /tgt/rustc && uname -m > /tgt/arch && if readelf -l /tgt/release/sheepr | grep -q INTERP; then echo "a PT_INTERP" >&2; exit 1; fi' \
+      || die "the Linux $a build"
+    [ "$(cat "$scratch/target-$a/arch")" = "$a" ] || die "the $a build ran as $(cat "$scratch/target-$a/arch")"
+    case $(cat "$scratch/target-$a/rustc") in "rustc $pin "*) ;; *) die "the Linux $a compiler is '$(cat "$scratch/target-$a/rustc")', not the pinned $pin" ;; esac
+    cp "$scratch/target-$a/release/sheepr" "$dest/sheepr-linux-$a" || die "copy $a"
+    v=$(docker_env run --rm --pull=never --network none --platform "$pf" -v "$dest/sheepr-linux-$a":/sheepr:ro "sr-scratch:empty-${pf#linux/}" /sheepr --version) \
+      || die "the $a binary does not run in an empty image (not static?)"
+    case $v in *"$short"*) ;; *) die "the $a binary names another commit: $v" ;; esac
+  done
+
+  # 7. install.sh (PHASE3.md S3), rendered with this release's version and the door
+  step "install.sh, the checksums, the cask, the npm packages"
   files="sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh"
   [ -f "$S/install.sh" ] || die "no scripts/install.sh at the tag"
   tool base sh "$S/lib/render-install.sh" "$S/install.sh" "${tag#v}" "$dest/install.sh" || die "render install.sh"
@@ -286,6 +315,7 @@ build_release() { # mode: unsigned | signed | control
   tool base sh "$S/lib/render-cask.sh" "${tag#v}" "$(shasum -a 256 "$dest/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)" "$dest/sheepr.rb" \
     || die "render the cask"
   npm_pack || die "npm packing"
+  step "the manifest, then the rename"
   {
     printf '{\n  "v": 1,\n  "tag": "%s",\n  "commit": "%s",\n  "mode": "%s",\n  "control": %s,\n  "files": [\n' "$tag" "$commit" "$mode" "$( [ "$mode" = control ] && echo true || echo false)"
     sep=""
@@ -301,8 +331,21 @@ build_release() { # mode: unsigned | signed | control
 "
     done
     printf '\n  ]\n}\n'
-  } > "$dest/MANIFEST.json"
-  echo "release: $tag built ($mode) in $dest"
+  } > "$dest/MANIFEST.json" || die "cannot write the manifest"
+
+  # 8. the rename. mv into a directory that exists puts the staging dir inside it and returns 0
+  # (measured), so the output dir must not exist right before, and must be the staging dir (its
+  # inode) right after; a build that went inside another directory is named there
+  [ -e "$final" ] && die "$final appeared during the build; it is not this build (refused: nothing is moved into it)"
+  si=$(ls -di "$dest" | awk '{print $1}'); [ -n "$si" ] || die "cannot read the staging dir's inode"
+  mv "$dest" "$final" || die "cannot rename $dest to $final"
+  if [ "$(ls -di "$final" | awk '{print $1}')" != "$si" ]; then
+    in=$final/${dest##*/}; dest=""
+    [ -e "$in" ] || in="(not found there)"
+    die "$final appeared during the rename: this build went inside it, to $in; $final is not this build"
+  fi
+  dest=""
+  echo "release: $tag built ($mode) in $final"
 }
 
 # --- publish: the thin executor behind the gate (PHASE3.md §1.2) ------------------------------

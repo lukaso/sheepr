@@ -4,7 +4,9 @@
 # build (minos 12.0 on both slices) bundled with the .dev ID and archived (archive.sh check), the
 # two Linux binaries built offline in the pinned image (no PT_INTERP; they run in an empty image),
 # every artifact's --version naming the tag's commit, every recorded rustc the pinned one,
-# SHA256SUMS over the release files, MANIFEST.json. An existing output directory is refused. The
+# SHA256SUMS over the release files, MANIFEST.json. The steps run in the order of PHASE3.md D2 step 3
+# (the Linux fetch before the macOS compile, the Linux builds after the bundle), into a staging dir
+# that is renamed to the output dir: none is left. An existing output directory is refused. The
 # worktree is gone afterwards.
 set -u
 . "$(dirname "$0")/lib.sh"
@@ -31,6 +33,10 @@ grep -q CHECKOUT-HELPER-USED "$FX/log" && fail "a helper ran from the shared che
 g checkout -q -- scripts
 echo "expect commit $short; the build said: $(grep '^release: building' "$FX/log")"
 D=$out/v0.1.0-rc.1-unsigned
+st=$(sed -n 's/^release: step: //p' "$FX/log" | tr '\n' '|')
+[ "$st" = "the compiler|the Linux images|the Linux fetch|the macOS compile|the macOS bundle|the Linux builds (offline)|install.sh, the checksums, the cask, the npm packages|the manifest, then the rename|" ] \
+  && pass "the steps ran in the order of D2 step 3" || fail "the steps: $st"
+[ "$(ls -A "$out" | tr '\n' ' ')" = "v0.1.0-rc.1-unsigned " ] && pass "the staging dir was renamed to the output dir (none left)" || fail "the output root holds: $(ls -A "$out" | tr '\n' ' ')"
 for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 SHA256SUMS MANIFEST.json sheepr.rb; do
   [ -s "$D/$f" ] && pass "$f made" || fail "$f missing"
 done
@@ -98,4 +104,5 @@ lst sheepr-linux-x64 | grep -q '^-rwx.* package/bin/sheepr$' && pass "linux-x64:
 [ "$(g worktree list | grep -c .)" = 1 ] && pass "no worktree left" || fail "a worktree left: $(g worktree list)"
 (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 timeout 60 sh scripts/release.sh build --out "$out" v0.1.0-rc.1) >/dev/null 2>&1 \
   && fail "an existing output directory was reused" || pass "an existing output directory is refused"
+[ "$(ls -A "$out" | tr '\n' ' ')" = "v0.1.0-rc.1-unsigned " ] && pass "the refusal made no staging dir" || fail "after the refusal the output root holds: $(ls -A "$out" | tr '\n' ' ')"
 finish
