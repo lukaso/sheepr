@@ -16,10 +16,21 @@
 #   - a resumed run: a version already on npm with this file's integrity is skipped; with another
 #     file's, refused, with nothing after it published; a view that fails other than with E404,
 #     refused there;
-#   - __publish-npm-dry refuses a stand-in outside /private/tmp/sr-p3-fixtures.*.
+#   - __publish-npm-dry refuses a stand-in outside /private/tmp/sr-p3-fixtures.*;
+#   - the notifier (the ship plan, slice 2): NOTIFY, a stand-in in the dry entry
+#     (SR_PUBLISH_DRY_NOTIFY; unset, or the real notify.sh, refused before any npm call), is called
+#     with SR_NOTIFY_OSASCRIPT set (so no dry run can show a real notification): `npm-approve-again`
+#     right before the main package's upload; the real entry's body pinned;
+#   - npm_part (the batch order under ship; SR_PUBLISH_DRY_NPM_PART in the dry entry, never
+#     inherited): empty is today's order, also with npm_part exported; `platform` uploads the
+#     platform packages back to back (`npm-approve` before the first upload), waits for nothing and
+#     never touches the main package; a refused upload stops it; `main` waits until npm shows each
+#     platform package (never uploading one), then uploads the main one and waits for it.
+# Every dry run here is inside lib.sh's no-osascript wall.
 set -u
 . "$(dirname "$0")/lib.sh"
 fx_dir; fx_repo
+wall_ok && pass "the wall: a path naming osascript cannot run here, another can" || { fail "the no-osascript wall does not hold: nothing else runs"; finish; }
 fx_release 0.1.0 1 v0.1.0
 DECOY=decoy-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
 PK="sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal sheepr"
@@ -67,6 +78,8 @@ case \$1 in
       if [ -f "$FX/pubwrong.\$p" ]; then printf '"sha512-WRONG"\\n'; exit 0; fi
       printf '"%s"\\n' "\$(cat "$FX/pub.\$p")"; exit 0
     fi
+    k=\$(cat "$FX/scan.\$p" 2>/dev/null || echo 0)   # an earlier run's upload, still scanned: "not found" that many times
+    if [ "\$k" -gt 0 ]; then echo \$((k - 1)) > "$FX/scan.\$p"; printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1 ;;
   whoami) [ -f "$FX/onwhoami" ] && sh "$FX/onwhoami"; if [ -f "$FX/whoamifail" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi; cat "$FX/whoami"; exit 0 ;;
@@ -84,17 +97,24 @@ esac
 exit 1
 EOF
 chmod +x "$FX/npm"
+# the notifier's stand-in: "notify KEY TAG" into the calls, and whether SR_NOTIFY_OSASCRIPT was set
+printf '#!/bin/sh\necho "notify $*" >> "%s/calls"\necho "${SR_NOTIFY_OSASCRIPT+set}" >> "%s/notifyenv"\n' "$FX" "$FX" > "$FX/notify"
+chmod +x "$FX/notify"
 mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\n' "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
 echo lukasco > "$FX/whoami"
-pub() { # tag -> rc; output in $FX/o
-  rm -f "$FX/calls" "$FX"/env.npm.* "$FX/pubsha" "$FX"/pub.* "$FX/sleeps"
-  (cd "$REPO" && env HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
+pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the notifier (default the
+       # stand-in; "-": none); PUBX: one more assignment. Set them as plain assignments, clear after
+  rm -f "$FX/calls" "$FX"/env.npm.* "$FX/pubsha" "$FX"/pub.* "$FX/sleeps" "$FX/notifyenv"
+  if [ "${NOTI:-}" = - ]; then nv_=SR_PUBLISH_DRY_NOTHING=; else nv_=SR_PUBLISH_DRY_NOTIFY=${NOTI:-$FX/notify}; fi
+  (cd "$REPO" && no_osascript env HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
     HTTPS_PROXY=http://127.0.0.1:9 NPM_CONFIG_USERCONFIG="$FX/decoy-npmrc" \
-    PATH="$FX/bin:$PATH" SR_PUBLISH_DRY_NPM="$FX/npm" sh scripts/release.sh __publish-npm-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    PATH="$FX/bin:$PATH" SR_PUBLISH_DRY_NPM="$FX/npm" ${PART:+SR_PUBLISH_DRY_NPM_PART="$PART"} ${PUBX:+"$PUBX"} "$nv_" \
+    sh scripts/release.sh __publish-npm-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
 }
 # "view NAME" or "publish NAME" per call (a name's parts start with a letter, a version with a digit)
 order() { sed -En 's/^npm (view|publish) (.* |.*\/)(sheepr(-[a-z][a-z0-9]*)*)[-@][0-9].*$/\1 \3/p' "$FX/calls" 2>/dev/null | tr '\n' ','; }
 D=$FX/out/v0.1.0
+TODAY="view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr,"
 mkout "$D" v0.1.0
 mkout "$FX/out/v0.1.0-unsigned" v0.1.0
 pub v0.1.0; r=$?
@@ -115,6 +135,11 @@ done
 [ "$(sed -n 1,5p "$FX/calls" | tr '\n' ',')" = "npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
   && pass "before any view or upload: npm whoami, then the owners of all four names, the registry pinned" || fail "the first calls: $(sed -n 1,5p "$FX/calls" | tr '\n' ',')"
 grep -q 'unsigned' "$FX/calls" && fail "a call names the -unsigned sibling" || pass "the -unsigned sibling's packages are never named"
+# the notification: npm-approve-again once, right before the main package's upload (after its view)
+nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish .*/sheepr-0.1.0.tgz$' "$FX/calls" | cut -d: -f1)
+[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve-again v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+  && pass "today's order: notify npm-approve-again once, right before the main package's upload" || fail "the notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
+[ "$(sort -u "$FX/notifyenv" 2>/dev/null)" = set ] && pass "the dry notifier runs with SR_NOTIFY_OSASCRIPT set (no dry run can show a real notification)" || fail "the dry notifier's SR_NOTIFY_OSASCRIPT: '$(cat "$FX/notifyenv" 2>/dev/null)'"
 pd=$(awk 'NR == 1 {print $3}' "$FX/pubsha"); pd=${pd%/*}
 case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private copy dir is gone" || fail "$pd is left" ;; *) fail "no private copy dir recorded: '$pd'" ;; esac
 # npm's environment class (npm_env, the real run's too): only the named variables; a proxy reaches
@@ -278,6 +303,65 @@ fx_release 0.1.1 2 v0.1.1-rc.1
 mkout "$FX/out/v0.1.1-rc.1" v0.1.1-rc.1
 pub v0.1.1-rc.1; r=$?
 [ $r = 0 ] && [ "$(grep -c "^npm publish --access public $REG --tag next " "$FX/calls")" = 4 ] && pass "an rc: each publish has --tag next" || fail "rc: rc=$r $(grep '^npm publish' "$FX/calls" | head -1)"
+
+# npm_part is never inherited: an exported npm_part=platform is today's order
+mkout "$D" v0.1.0; PUBX=npm_part=platform; pub v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && [ "$(order)" = "$TODAY" ] && pass "an exported npm_part=platform: today's order, unchanged (0)" || fail "exported npm_part: rc=$r $(order)"
+# the notifier: none, or the real notify.sh (the fixture's), refused before any npm call
+mkout "$D" v0.1.0; NOTI=-; pub v0.1.0; r=$?; NOTI=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'SR_PUBLISH_DRY_NOTIFY is not an executable file' "$FX/o" && pass "no notifier (SR_PUBLISH_DRY_NOTIFY unset): refused by the stand-in check, npm never called" || fail "no notifier: rc=$r $(order) $(tail -1 "$FX/o")"
+mkout "$D" v0.1.0; NOTI=$REPO/scripts/lib/notify.sh; pub v0.1.0; r=$?; NOTI=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'the real notify.sh' "$FX/o" && pass "the real notify.sh as the dry notifier: refused, npm never called" || fail "real notify.sh: rc=$r $(order) $(tail -1 "$FX/o")"
+mkout "$D" v0.1.0; PART=bogus; pub v0.1.0; r=$?; PART=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q "npm_part 'bogus'" "$FX/o" && pass "a part that is not platform, main or empty: refused, npm never called" || fail "bogus part: rc=$r $(order) $(tail -1 "$FX/o")"
+# platform: the three platform packages back to back, each once (asked for, then uploaded), no wait
+# (each would need two more views if waited for), the main package untouched; npm-approve right
+# before the first upload
+for p in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do echo 2 > "$FX/processing.$p"; done
+mkout "$D" v0.1.0; PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX"/processing.*
+[ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal," ] \
+  && pass "platform: the three platform packages back to back, the main one untouched (0)" || fail "platform: rc=$r $(order) $(tail -1 "$FX/o")"
+[ ! -e "$FX/sleeps" ] && pass "platform: no wait (no sleep, no view after an upload)" || fail "platform waited: $(cat "$FX/sleeps" | tr '\n' ' ')"
+nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+  && pass "platform: notify npm-approve once, right before the first upload" || fail "platform's notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
+grep -q 'four npm packages' "$FX/o" && fail "platform says the four packages are on npm" || pass "platform: no 'four packages' line"
+mkout "$D" v0.1.0; : > "$FX/pubfail.sheepr-linux-x64"; PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX/pubfail.sheepr-linux-x64"
+[ $r = 1 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64," ] \
+  && pass "platform: a refused second upload stops it, nothing after it (1)" || fail "platform, refused upload: rc=$r $(order)"
+mkout "$D" v0.1.0; integrity "$D/sheepr-linux-arm64-0.1.0.tgz" > "$FX/view.sheepr-linux-arm64"; PART=platform; pub v0.1.0; r=$?; PART=
+nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+[ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal," ] && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+  && pass "platform, one already on npm (this file): skipped; the notification before the first real upload (0)" || fail "platform, one there: rc=$r $(order) notify at $nl, first publish at $np"
+for p in sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p-0.1.0.tgz" > "$FX/view.$p"; done
+PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX"/view.*
+[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && pass "platform, all three already on npm: no upload, no notification (0)" || fail "platform, all there: rc=$r $(grep -e '^npm publish' -e '^notify' "$FX/calls" | tr '\n' ' ')"
+# main: waits until npm shows each platform package (uploaded earlier; never uploaded here), then
+# uploads the main package, npm-approve-again right before, and waits for it
+mkout "$D" v0.1.0; for p in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p-0.1.0.tgz" > "$FX/view.$p"; done
+PART=main; pub v0.1.0; r=$?; PART=
+nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+[ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
+  && pass "main: the platform packages seen, no upload of one, then the main one uploaded and waited for (0)" || fail "main: rc=$r $(order) $(tail -1 "$FX/o")"
+[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve-again v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+  && pass "main: notify npm-approve-again once, right before the main upload" || fail "main's notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
+echo 2 > "$FX/scan.sheepr-linux-x64"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX/scan.sheepr-linux-x64"
+[ $r = 0 ] && [ "$(grep -c '^npm view .* sheepr-linux-x64@0.1.0 ' "$FX/calls")" = 3 ] && [ "$(grep -c . "$FX/sleeps" 2>/dev/null)" = 2 ] && ! grep -q '^npm publish .*/sheepr-linux' "$FX/calls" \
+  && pass "main: a platform package npm still scans is waited for (three views, two waits), never uploaded (0)" || fail "main, scanning: rc=$r $(order) sleeps=$(cat "$FX/sleeps" 2>/dev/null | tr '\n' ' ')"
+echo 100000 > "$FX/scan.sheepr-darwin-universal"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX/scan.sheepr-darwin-universal"
+[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'held the version for review or blocked it' "$FX/o" \
+  && pass "main: a platform package that never shows: refused naming review and blocking, nothing uploaded (1)" || fail "main, never shows: rc=$r $(order) $(tail -1 "$FX/o")"
+integrity "$D/sheepr-0.1.0.tgz" > "$FX/view.sheepr"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX"/view.*
+[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && grep -q 'already on npm (the same file)' "$FX/o" \
+  && pass "main: the main package already on npm (this file): skipped, no notification (0)" || fail "main, main there: rc=$r $(order)"
+# the real entry, which no dry run reaches: its body exactly, defined once, and its dispatch arm
+want='publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh publish_npm_exec "$out/$tag"; }'
+[ "$(grep -c '^publish_npm() ' "$SR_ROOT/scripts/release.sh")" = 1 ] && grep -qxF "$want" "$SR_ROOT/scripts/release.sh" \
+  && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
+grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass "the dispatch: '  publish-npm) publish_npm ;;'" || fail "the publish-npm dispatch arm"
+nb=$(sed -n '/^notify() {/,/^}/p' "$SR_ROOT/scripts/release.sh")
+printf '%s\n' "$nb" | grep -qF 'then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$1" "$tag"' && printf '%s\n' "$nb" | grep -qF 'else tool base "$NOTIFY" "$1" "$tag"; fi' \
+  && pass "notify(): a dry entry's notifier with SR_NOTIFY_OSASCRIPT set, a real entry's in the base class" || fail "notify()'s body: $(printf '%s' "$nb" | tr '\n' ' ')"
 
 # __publish-npm-dry refuses a stand-in outside the fixtures; the outside one is never called
 OUT=$(mktemp -d /private/tmp/sr-outside.XXXXXX); trap 'rm -rf "$OUT" "$FX"' EXIT

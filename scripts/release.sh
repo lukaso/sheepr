@@ -683,8 +683,23 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
       || die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; nothing was published"
   done
 }
+# notify KEY: the operator's attention, through $NOTIFY with the tag; it never stops the run. A dry
+# entry's notifier always runs with SR_NOTIFY_OSASCRIPT set (empty), so even notify.sh given there
+# by mistake shows nothing real; a real entry's runs in the base class (no SR_NOTIFY_OSASCRIPT)
+notify() {
+  if [ -n "$DRYHOME" ]; then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$1" "$tag"
+  else tool base "$NOTIFY" "$1" "$tag"; fi || echo "release: the notification '$1' failed; the run goes on" >&2
+}
+# publish_npm_exec DIR. npm_part (release.sh's own, never inherited): empty, today's order (each
+# package asked for, uploaded, then waited for until npm shows it; the main one last); platform (the
+# batch under ship): the platform packages not on npm yet, uploaded back to back, nothing waited
+# for, the main one untouched; main: wait until npm shows each platform package (never uploading
+# one: a version npm still scans answers E404), then the main one, uploaded and waited for. In
+# both orders the main package goes up only once npm shows the packages it names.
 publish_npm_exec() { # dir
   d=$1 m=$1/MANIFEST.json nv=${tag#v}
+  [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); nothing was published"
+  case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; nothing was published" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
   trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
   chmod 700 "$pc" || die "cannot make $pc private"
@@ -705,7 +720,10 @@ publish_npm_exec() { # dir
   [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}: run npm login as that user, then publish-npm again; nothing was published"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
+  mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
+  asked=no
   for p in $SR_NPM_PKGS; do
+    [ "$p" = "$mainp" ] && [ "$npm_part" = platform ] && continue
     f=$p-$nv.tgz
     # npm gets a private copy, hashed against the manifest: the bytes checked are the bytes sent
     cp "$d/$f" "$pc/$f" 2>/dev/null || die "no $f in $d; nothing after it is published"
@@ -713,6 +731,11 @@ publish_npm_exec() { # dir
     [ -n "$h" ] && [ "$h" = "$(man_hash "$d" "$f")" ] \
       || die "$f does not match its manifest hash (changed after npm-check?); nothing after it is published"
     want=$(npy integrity "$pc/$f") || die "cannot hash $f"
+    if [ "$p" != "$mainp" ] && [ "$npm_part" = main ]; then
+      npm_visible "$p" "$nv" "$want"
+      echo "release: $p@$nv: npm shows this file"
+      continue
+    fi
     # on npm already? measured (npm 11.6.0): a version there is exit 0 and its integrity (quoted
     # under --json); one that is not, exit 1 with E404; anything else cannot say
     vout=$(tool "$NETC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p@$nv" dist.integrity 2> "$pc/err"); r=$?
@@ -724,22 +747,36 @@ publish_npm_exec() { # dir
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$pc/err" | grep -q 'E404'; }; then
       die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' ')); nothing after it is published"
     fi
+    # the operator may have left during the waits: the main upload (npm may ask again), and the
+    # first upload of the batch
+    if [ "$p" = "$mainp" ]; then notify npm-approve-again
+    elif [ "$npm_part" = platform ] && [ $asked = no ]; then notify npm-approve; asked=yes; fi
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
       || die "npm refused the upload of $f, or its login step failed (above). A browser login or 2FA approval that failed or timed out: run publish-npm again (it skips a version already there with this file). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}, wait, then run publish-npm again. A blocked version needs a new version number. Nothing after it is published"
+    if [ "$npm_part" = platform ]; then
+      echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"
+      continue
+    fi
     npm_visible "$p" "$nv" "$want"
     echo "release: $p@$nv published, and npm shows this file"
   done
-  echo "release: the four npm packages of $tag are on npm. Next: npm logout, and the token check (PHASE3.md §5)"
+  if [ "$npm_part" = platform ]; then echo "release: the platform packages of $tag are uploaded; npm shows each one after its scan"
+  else echo "release: the four npm packages of $tag are on npm. Next: npm logout, and the token check (PHASE3.md §5)"; fi
 }
-publish_npm() { NPM=npm NETC=npm publish_npm_exec "$out/$tag"; }
+publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh publish_npm_exec "$out/$tag"; }
 publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the real one
-  standins SR_PUBLISH_DRY_NPM
+  standins SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_NOTIFY
+  # the tree's own notify.sh is not a stand-in: it is the real notifier
+  cmp -s "$SR_PUBLISH_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_PUBLISH_DRY_NOTIFY is the real notify.sh, not a stand-in"
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
-  echo "release: __publish-npm-dry (a stand-in npm; a temp HOME)"
-  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry publish_npm_exec "$out/$tag"
+  echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME)"
+  # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
+  # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
+  [ -z "${SR_PUBLISH_DRY_NPM_PART+set}" ] || npm_part=$SR_PUBLISH_DRY_NPM_PART
+  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry NOTIFY=$SR_PUBLISH_DRY_NOTIFY publish_npm_exec "$out/$tag"
   rm -rf "$DRYHOME"
 }
 
