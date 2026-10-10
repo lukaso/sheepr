@@ -34,6 +34,13 @@ set -u
 # "SHA256SUMS" after "install.sh"; measured)
 LC_ALL=C; export LC_ALL
 DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, __publish-npm-dry); never inherited (their EXIT traps remove it)
+# release.sh's own, never inherited and never exported (unset first: a value from the environment
+# would stay exported): shipping (yes only under ship: publish_exec asks no second confirmation and
+# publish_check requires verify's binding); npm_part (publish_npm_exec's sub-mode: platform, main,
+# or empty for today's order); NOTIFY (the notifier publish_npm_exec calls: the real notify.sh only
+# in a real entry, a stand-in in a dry one; empty refuses)
+unset shipping npm_part NOTIFY
+shipping=no npm_part="" NOTIFY=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; exit 1; }
@@ -393,13 +400,19 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
     [ -f "$1/$f" ] && [ "$(shasum -a 256 "$1/$f" | cut -d' ' -f1)" = "$(man_hash "$1" "$f")" ] || { echo "release: $f is missing or not its manifest hash" >&2; return 1; }
   done
 }
-publish_exec() { # dir
+# publish_check: every check publish makes before a write, except the remote tag's (that is the
+# planner's, in publish_exec): the private manifest, npm-check's stamp, the files, verify's binding,
+# SHA256SUMS, npm's list and owners, the Homebrew cask's checks. It reads no remote and writes
+# nothing; ship runs it before its push (the ship plan, C3). It makes this run's private temp dir
+# ($pt, removed at exit) and sets what publish_exec goes on with (MAN, sums_h, cask, cask_put, ...).
+publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
   trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
   private_manifest "$d" "$pt"
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest; run release.sh npm-check $tag first"
   files_ok "$d" || die "a file npm-check checked has changed since (above); run release.sh npm-check $tag again"
+  [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; nothing is published"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
     || die "the archive verify judged is not the stamped manifest's (it changed since); nothing is published"
   # SHA256SUMS is not in the manifest: the build wrote it from those four files, in this order, so
@@ -420,6 +433,9 @@ publish_exec() { # dir
        # a backport (a final tag older than the tap's cask): published, the cask never moved back
        [ "$cask_put" = older ] && { cask=no; echo "release: $TAP's cask is $cask_tap, newer than $tag: the Homebrew cask is not touched"; } ;;
   esac
+}
+publish_exec() { # dir
+  publish_check "$1"
   tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote" || die "git ls-remote $UPSTREAM"
   tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases" --paginate --jq '.[].tag_name' > "$pt/releases" || die "gh: cannot list the releases"
   (cd "$root" && sh scripts/release-plan.sh --out "$d" --manifest "$MAN" --tag "$tag" --remote "$pt/remote" --releases "$pt/releases") > "$pt/plan" || die "the planner refused"
@@ -450,7 +466,10 @@ publish_exec() { # dir
   done < "$pt/assets"
   tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote2" || die "git ls-remote $UPSTREAM"
   cmp -s "$pt/remote" "$pt/remote2" || die "the remote tag changed during the upload; the draft $id stays a draft"
-  confirm "release: the draft $id holds the five files, each matching. Type the tag again to make it public$( [ $cask = yes ] && [ "$cask_put" = yes ] && echo " and update $TAP"):" || die "not confirmed; the draft $id stays a draft"
+  # the second confirmation; under ship its one confirmation, at the start, covers this step
+  if [ "$shipping" = no ]; then
+    confirm "release: the draft $id holds the five files, each matching. Type the tag again to make it public$( [ $cask = yes ] && [ "$cask_put" = yes ] && echo " and update $TAP"):" || die "not confirmed; the draft $id stays a draft"
+  fi
   if ! tool "$NETC" "$GH" api -X PATCH "repos/lukaso/sheepr/releases/$id" -F draft=false >/dev/null; then
     # the request failed, but GitHub may have made the release public anyway: read it again
     st=$(tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases/$id" --jq .draft) || st=""

@@ -25,7 +25,12 @@
 #     url (the release's archive) line; after its checks the cask step reads nothing of the out
 #     dir (its cask or its manifest changed at the PATCH never reaches the tap); a backport
 #     publishes with the cask untouched; curl's real class (__curl-env, from real_tools), the real
-#     entries' and real_tools' bodies (each defined once) and their dispatch arms are pinned.
+#     entries' and real_tools' bodies (each defined once) and their dispatch arms are pinned;
+#   - publish_check (the ship plan, slice 2): every check publish makes before a write except the
+#     remote tag's, split out of publish_exec, which calls it first: it reads no remote and writes
+#     nothing; no remote tag, or one at another commit, is still refused before any POST;
+#   - `shipping` is never inherited: an exported shipping=yes neither skips the second
+#     confirmation nor requires verify's binding.
 set -u
 . "$(dirname "$0")/lib.sh"
 fx_dir; fx_repo
@@ -123,7 +128,7 @@ pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 wh
   (cd "$REPO" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     GH_TOKEN="$DECOY" GITHUB_TOKEN="$DECOY" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" NPM_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" \
     SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
 }
 cask() { # tag -> rc: `__publish-cask-dry` (the cask step alone); the tap as it is; output in $FX/o
   rm -rf "$FX/calls" "$FX"/env.*
@@ -168,6 +173,13 @@ pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/moved"
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "the tag moved during the upload: no PATCH (1)" || fail "moved tag: rc=$r"
 pub v0.1.0 no; r=$?
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "a wrong second answer: no PATCH (1)" || fail "wrong answer: rc=$r"
+# the remote tag stays publish_exec's check (publish_check does not read it): none, or one at another
+# commit, is refused before any POST
+cp "$FX/remote" "$FX/remote.good"; : > "$FX/remote"; pub v0.1.0 v0.1.0; r=$?
+[ $r = 1 ] && nopublic && grep -q 'no remote tag v0.1.0' "$FX/o" && pass "no remote tag: refused before any POST (1)" || fail "no remote tag: rc=$r $(seq) $(tail -1 "$FX/o")"
+printf '%s\trefs/tags/v0.1.0\n%s\trefs/tags/v0.1.0^{}\n' "$T" 1111111111111111111111111111111111111111 > "$FX/remote"; pub v0.1.0 v0.1.0; r=$?
+[ $r = 1 ] && nopublic && grep -q 'is on 1111111111111111111111111111111111111111' "$FX/o" && pass "a remote tag at another commit: refused before any POST (1)" || fail "remote tag elsewhere: rc=$r $(seq) $(tail -1 "$FX/o")"
+cp "$FX/remote.good" "$FX/remote"
 
 # a file changed during its own upload (the upload and the local file agree, the manifest does
 # not): the downloads are compared with the manifest, so no PATCH
@@ -463,5 +475,22 @@ pub v0.1.0 v0.1.0; r=$?
 tapset 0.0.9; cask v0.1.0; r=$?
 [ $r = 0 ] && grep -q '^gh api -X PUT' "$FX/calls" && pass "control: publish-cask goes on (0)" || fail "verify binding control (publish-cask): rc=$r $(seq) $(tail -1 "$FX/o")"
 unset SR_PUBLISH_DRY_VERIFIED
+
+# `shipping` is release.sh's own (set to no at its start, never inherited): an exported shipping=yes
+# does not skip the second confirmation (its one ask still recorded), and does not make verify's
+# binding required (no SR_PUBLISH_DRY_VERIFIED: publish goes on, as today)
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"
+SR_PUBLISH_DRY_VERIFIED=$AH; export SR_PUBLISH_DRY_VERIFIED; PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && [ "$(grep -c '^ask ' "$FX/calls")" = 1 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes: the second confirmation is still asked (0)" || fail "exported shipping, the ask: rc=$r asks=$(grep -c '^ask ' "$FX/calls") $(tail -1 "$FX/o")"
+PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes without verify's hash: publish goes on, as today (0)" || fail "exported shipping, verify: rc=$r $(tail -1 "$FX/o")"
+# publish_check: defined once; publish_exec calls it first; it reads no remote and writes nothing
+pc=$(body publish_check); pe=$(body publish_exec)
+n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{(]|\$)|publish_check[[:space:]]*[(][[:space:]]*[)])" "$SR_ROOT/scripts/release.sh")
+[ -n "$pc" ] && [ "$n" = 1 ] && pass "publish_check: defined once" || fail "publish_check is defined $n times"
+[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1"' ] && pass "publish_exec calls publish_check first" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
+[ -z "$pc" ] || printf '%s\n' "$pc" | grep -v '^ *#' | grep -q -e 'ls-remote' -e 'GITCMD' -e '-X POST' -e '-X PATCH' -e '-X PUT' -e 'release-plan' -e 'confirm ' \
+  && fail "publish_check reads the remote, plans, asks or writes: $(printf '%s\n' "$pc" | grep -e ls-remote -e GITCMD -e '-X ' -e release-plan -e 'confirm ' | head -2 | tr '\n' ' ')" \
+  || pass "publish_check reads no remote, runs no planner, asks nothing and writes nothing"
 
 finish
