@@ -1123,6 +1123,7 @@ fn exec_during_the_kill(d: &Path, name: &str, cmd: &str) -> (Option<i32>, Option
     let mut c = Command::new("/bin/sh");
     c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- {cmd} 3>"{}" 2>/dev/null"#, out.display())])
         .env("SD", sheepr())
+        .env("FX", fixture())
         .env("SHEEPR_TEST_HOLD_SHIM", &rel)
         .env("SHEEPR_TEST_READY_FILE", &ready)
         .env("SHEEPR_TEST_SIGNAL_LOG", &log);
@@ -1170,13 +1171,14 @@ fn exec_during_the_kill(d: &Path, name: &str, cmd: &str) -> (Option<i32>, Option
 /// #17 (Linux): a command whose exec fails while the job is being killed (after the event loop
 /// ended on a TERM): the shim's `E` line is read again after the final reap, so the root is
 /// "not-started" with both fields null and `error` naming ENOENT. The control, a command that
-/// runs during the kill and exits 127 by itself, is "exited" with `root_code` 127 and no error.
+/// runs during the kill and exits 127 by itself, is "exited" with `root_code` 127 and no error
+/// (the fixture's `spawnp` of a missing program: no shell, which could unblock the pending TERM).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_command_whose_exec_fails_during_the_kill_is_not_started() {
     let d = scratch("killexec");
     let (c1, missing, w1) = exec_during_the_kill(&d, "missing", "/nonexistent/sr-missing");
-    let (c2, own, w2) = exec_during_the_kill(&d, "own", r#"/bin/sh -c 'exit 127'"#);
+    let (c2, own, w2) = exec_during_the_kill(&d, "own", r#""$FX" spawnp /nonexistent/sr-missing"#);
     let get = |j: &Option<Json>, k: &str| j.as_ref().and_then(|j| j.get(k)).cloned();
     for (n, code, x, w) in [("missing", c1, &missing, w1), ("own", c2, &own, w2)] {
         assert!(w, "{n}: the shim was not held, or the kill's TERM to it was never seen");
