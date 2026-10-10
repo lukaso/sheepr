@@ -151,9 +151,11 @@ struct Info {
 pub fn members(t: &mut crate::Tracker) -> Vec<(pid_t, u64)> {
     let me = unsafe { libc::getpid() };
     let uid = unsafe { libc::getuid() };
+    // debug seam: the root is hidden from the scan, as a root of another user (setuid) is (#17)
+    let hidden = if crate::seam_flag("SHEEPR_TEST_HIDE_ROOT") { crate::status::root_pid() } else { 0 };
     let infos: Vec<Info> = all_pids()
         .into_iter()
-        .filter(|&p| p != me && p > 0)
+        .filter(|&p| p != me && p > 0 && p != hidden)
         // bsd() fails for a zombie or a gone process, so it also filters those
         .filter(|&p| bsd(p).map_or(false, |b| b.pbi_uid == uid))
         .filter_map(|p| {
@@ -779,8 +781,66 @@ fn relay_died() {
     unsafe { libc::raise(libc::SIGTERM) }; // raw signal site: this process (PHASE2.md §0.3)
 }
 
-/// The event loop's wait (PHASE1.md §1): returns the root's wait status, or None if the job
-/// must be ended because of TERM. INT and HUP are forwarded (`Interrupts`), never an end.
+/// The one wait on the root, the macOS recorder (#17): every reap of the root goes through here,
+/// so its end is in the status record (the first status for the root's pid wins there).
+/// `block`: wait until it ends (only once its exit was seen, or `root_ended` says it ended);
+/// else WNOHANG. None: the root still runs (WNOHANG). `Lost`: the wait failed, so the root's
+/// status cannot be known; nothing is recorded and nothing made up. (Stated: an EINTR would read
+/// as lost; sheepr blocks the signals it handles, and the blocking wait runs only once the root
+/// has ended.)
+fn reap_root(pid: pid_t, block: bool) -> Option<crate::Reaped> {
+    let mut st = 0;
+    let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };
+    let mut e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    // debug seam: the wait's result is replaced by a failure (the real wait has run: the root is
+    // reaped and its status is not taken)
+    if r == pid && crate::seam_flag("SHEEPR_TEST_ROOT_WAIT_LOST") {
+        (r, e) = (-1, libc::ECHILD);
+    }
+    match r {
+        0 => None,
+        r if r == pid => {
+            crate::status::record_root_end(pid, st);
+            Some(crate::Reaped::Status(st))
+        }
+        _ => {
+            crate::note(format!("root-wait-lost {e}"));
+            Some(crate::Reaped::Lost(e))
+        }
+    }
+}
+
+/// After the kill, when the event loop did not reap the root (a TERM or a cap ended the job):
+/// take its end without ever waiting on a root that may still run (#17, round 3 N1: one the
+/// scan cannot see, as a setuid root, outlives the kill). A root whose identity still reads is
+/// alive: nothing waits. One that is exiting (the kill confirmed it gone) is polled with
+/// `root_ended` (WNOWAIT) until it can be reaped, 1 s at most, then reaped through `reap_root`.
+/// Not reaped: its end was not observed (root "signaled", both fields null).
+/// The debug trace names the outcome: `root-after-kill reaped|alive|unseen`.
+fn reap_after_kill(root: pid_t) {
+    let start = std::time::Instant::now();
+    let end = start + std::time::Duration::from_secs(1);
+    // debug seam: for this long the root reads as exiting but not yet reapable (the real check
+    // runs; its answer is replaced by "not yet"), as between the kill's last read and the zombie
+    let late = crate::seam_ms("SHEEPR_TEST_ROOT_REAPABLE_AFTER_MS").map(std::time::Duration::from_millis);
+    let how = loop {
+        if crate::root_ended(root) && late.is_none_or(|l| start.elapsed() >= l) {
+            let _ = reap_root(root, true);
+            break "reaped";
+        }
+        if identity(root).is_some() {
+            break "alive";
+        }
+        if std::time::Instant::now() > end {
+            break "unseen";
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    crate::note(format!("root-after-kill {how}"));
+}
+
+/// The event loop's wait (PHASE1.md §1): returns the root's end (a lost wait included), or None
+/// if the job must be ended because of TERM or a cap. INT and HUP are forwarded (`Interrupts`), never an end.
 ///
 /// - kqueue watches the root's exit (EVFILT_PROC NOTE_EXIT) and TERM (EVFILT_SIGNAL). A
 ///   report is only a wake-up; TERM is consumed with `consume` (the SIG_IGN/SIG_DFL toggle),
@@ -801,7 +861,7 @@ fn wait(
     group_is_ours: &mut dyn FnMut(i32) -> bool,
     ints: &mut crate::Interrupts,
     mut reg: Option<(&mut crate::register::Listener, &mut crate::register::Admit)>,
-) -> Option<c_int> {
+) -> Option<crate::Reaped> {
     let mut jobs = crate::JobControl::new(relay);
     let watch_term = sig.watch_term;
     unsafe {
@@ -927,8 +987,7 @@ fn wait(
             libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null());
         };
         crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_REGISTER_MS");
-        let mut st = 0;
-        let mut exited: Option<i32> = None;
+        let mut exited: Option<crate::Reaped> = None;
         // the members of the last scan, for the caps
         let mut live: Vec<(pid_t, u64)> = Vec::new();
         let result = loop {
@@ -951,8 +1010,8 @@ fn wait(
             if sig.watch_cont && crate::consume(libc::SIGCONT) {
                 jobs.continue_relay(); // continued on its own: the relay must not stay stopped
             }
-            if exited.is_none() && libc::waitpid(pid, &mut st, libc::WNOHANG) == pid {
-                exited = Some(st);
+            if exited.is_none() {
+                exited = reap_root(pid, false);
             }
             // the fixed order: TERM, then the root's exit, then the caps (on the last scan's
             // members; a cap that fires ends the job as a TERM would, exit 124), then INT/HUP
@@ -985,7 +1044,7 @@ fn wait(
             ints.tick(group_is_ours);
             if !polling && proc_exiting {
                 // NOTE_EXIT was refused with ESRCH: the root is exiting; reap it, then decide again
-                exited = Some(if libc::waitpid(pid, &mut st, 0) == pid { st } else { crate::exit_status(125) });
+                exited = reap_root(pid, true);
                 continue;
             }
             crate::seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_WAIT_MS");
@@ -1023,7 +1082,7 @@ fn wait(
                 // P3-F1: the root has exited; reap it now (a blocking wait, bounded by its exit).
                 // Only the root's event: the relay's exit is also an EVFILT_PROC event, and a
                 // blocking wait for a root that still runs would hang the loop.
-                exited = Some(if libc::waitpid(pid, &mut st, 0) == pid { st } else { crate::exit_status(125) });
+                exited = reap_root(pid, true);
             } else if r < 0 && err.raw_os_error() != Some(libc::EINTR) {
                 say!("sheepr: kqueue failed ({err}); polling instead");
                 crate::trace("polling".into());
@@ -1273,8 +1332,9 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 crate::signal,
                 initial,
             );
-            if status.is_none() {
-                let _ = unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) };
+            // the root reaped by the early end above (killed while suspended) records nothing
+            if status.is_none() && !ended {
+                reap_after_kill(root);
             }
             journal.into_inner().finish(result.is_ok());
             crate::release_relay(relay, stopped);
@@ -1288,6 +1348,10 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 Ok(r) => r,
                 Err(code) => return code,
             };
+            // the recorder keys on the root's pid (#17); its TERM path does not reap the root
+            // (stated), so its end then stays unobserved: "signaled", both fields null
+            crate::status::set_root_pid(root);
+            crate::status::set_root("signaled");
             let r = uniq(root).map(|u| u.0).unwrap_or(0);
             let mut ints = crate::Interrupts::none();
             let status = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);

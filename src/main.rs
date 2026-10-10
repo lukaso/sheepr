@@ -1363,9 +1363,23 @@ pub fn tick_ms() -> u64 {
     seam_ms("SHEEPR_TEST_TICK_MS").filter(|&ms| ms < 1000).unwrap_or(250)
 }
 
-/// A wait status for a plain exit with `code` (the encoding both OSes use).
+/// A wait status for a plain exit with `code` (the encoding both OSes use). Tests only: sheepr
+/// never makes a wait status up (#17; a lost wait is `Reaped::Lost`).
+#[cfg(test)]
 pub fn exit_status(code: i32) -> c_int {
     (code & 0xff) << 8
+}
+
+/// The root's end as the supervisor's wait for it saw it (#17).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Reaped {
+    /// its wait status (the recorder has it too)
+    Status(c_int),
+    /// it ended, but the wait for it failed with this errno, so its status is not known: nothing
+    /// is recorded and nothing is made up (root "signaled", `root_code` and `root_signal` null,
+    /// exit 125, `error` names it). Only macOS's wait on the root can lose it.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    Lost(i32),
 }
 
 /// INT and HUP while the job runs (PLAN.md §3.1, PHASE1.md §1.3 and S4). They never end the
@@ -1699,8 +1713,8 @@ pub fn pending(sig: c_int) -> bool {
 }
 
 /// Has the root exited (a zombie not yet reaped)? Reads without reaping (WNOWAIT), so the event
-/// loop still reaps it and takes its status.
-fn root_ended(root: i32) -> bool {
+/// loop still reaps it and takes its status (macOS: also the reap after the kill, #17).
+pub fn root_ended(root: i32) -> bool {
     if root <= 1 {
         return false;
     }
@@ -1739,13 +1753,15 @@ pub fn self_stop(sig: c_int) {
 /// How the supervisor ends once the job is over (PHASE1.md §1.3): a TERM means death by TERM;
 /// a kill that did not end clean means 125; a root that died of INT or HUP, when sheepr also
 /// got that signal, means death by that signal (so a shell loop stops on ctrl-C); otherwise the
-/// root's exit code. `status` is the root's wait status, None when TERM ended the job.
-pub fn finish(status: Option<c_int>, result: Result<(), KillError>, ints: &mut Interrupts, sig: &Signals) -> i32 {
+/// root's exit code. `status` is the root's end as the event loop's wait saw it, None when a
+/// TERM or a cap ended the job. A lost wait (`Reaped::Lost`) exits 125 with `error` naming it.
+/// The `root` field, `root_code` and `root_signal` come from the recorder (#17), never from here.
+pub fn finish(status: Option<Reaped>, result: Result<(), KillError>, ints: &mut Interrupts, sig: &Signals) -> i32 {
     ints.drain_pending(sig);
     match status {
-        Some(st) => status::set_root(if libc::WIFSIGNALED(st) { "signaled" } else { "exited" }),
+        Some(Reaped::Lost(e)) => status::set_error(&format!("the command ended, but its exit status was lost (the wait for it failed: {})", std::io::Error::from_raw_os_error(e))),
         None if !caps::triggered() => status::set_trigger("term"), // ended by a TERM from outside
-        None => {}
+        _ => {}
     }
     status::report(status, result.is_ok());
     // a cap or the timeout ended the job: 124 (below 125, above the command's own code)
@@ -1758,7 +1774,8 @@ pub fn finish(status: Option<c_int>, result: Result<(), KillError>, ints: &mut I
     match (status, result) {
         (_, Err(e)) => kill_failed(e),
         (None, Ok(())) => die_by_term(143),
-        (Some(st), Ok(())) => {
+        (Some(Reaped::Lost(_)), Ok(())) => 125,
+        (Some(Reaped::Status(st)), Ok(())) => {
             let same_signal = libc::WIFSIGNALED(st)
                 && ((libc::WTERMSIG(st) == libc::SIGINT && ints.got_int)
                     || (libc::WTERMSIG(st) == libc::SIGHUP && ints.got_hup)

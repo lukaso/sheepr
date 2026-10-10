@@ -844,3 +844,514 @@ fn the_status_fd_is_never_a_standard_stream() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---- #17: the root's own end, `root_code` and `root_signal` ----
+
+/// `root`, `root_code` and `root_signal` of a run, as (str, number, number) with null as None.
+fn root_end(r: &Run) -> (Option<String>, Option<i64>, Option<i64>) {
+    let num = |k: &str| field(r, k).and_then(Json::num).map(|n| n as i64);
+    (field(r, "root").and_then(Json::str).map(String::from), num("root_code"), num("root_signal"))
+}
+
+/// Both fields are in the line, as null (not missing).
+fn both_null(r: &Run) -> bool {
+    field(r, "root_code") == Some(&Json::Null) && field(r, "root_signal") == Some(&Json::Null)
+}
+
+/// Wait (20 s at most) for `p` to exist.
+fn wait_file(p: &Path) -> bool {
+    let end = Instant::now() + Duration::from_secs(20);
+    while !p.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    p.exists()
+}
+
+/// #17: the root's own end is in the line: an exit code in `root_code`, a signal in
+/// `root_signal` (each null when the other applies), and `root` agrees (option A). Also when the
+/// kill misses its deadline after the root exited 3 (exit 125, `root_code` 3). The control, a
+/// root that exits 0, has `root_code` 0, not null.
+#[test]
+fn the_root_s_own_end_is_in_root_code_and_root_signal() {
+    let d = scratch("rootend");
+    let m = marker();
+    let r = d.join("rec");
+    let missed = run(
+        &d,
+        "missed",
+        &format!(r#"--grace 0 -- /bin/sh -c '"$FX" escape {m} "{}"; exit 3'"#, r.display()),
+        &[("SHEEPR_TEST_NOKILL", "1"), ("SHEEPR_TEST_DEADLINE_MS", "500")],
+        |_| {},
+    );
+    for p in records(&r, 1) {
+        common::send(p.0, p.1, libc::SIGKILL);
+    }
+    let zero = run(&d, "zero", r#"-- /bin/sh -c 'exit 0'"#, &[], |_| {});
+    let killed = run(&d, "killed", r#"-- /bin/sh -c 'kill -KILL $$'"#, &[], |_| {});
+    let termed = run(&d, "termed", r#"-- /bin/sh -c 'kill -TERM $$'"#, &[], |_| {});
+    assert_eq!(missed.code, Some(125), "{:?}", missed.status);
+    assert_eq!(field(&missed, "deadline_missed"), Some(&Json::Bool(true)));
+    assert_eq!(root_end(&missed), (Some("exited".into()), Some(3), None), "{:?}", missed.status);
+    assert_eq!(zero.code, Some(0));
+    assert_eq!(root_end(&zero), (Some("exited".into()), Some(0), None), "{:?}", zero.status);
+    assert_eq!(field(&zero, "root_signal"), Some(&Json::Null), "a null field is written as null");
+    assert_eq!(killed.code, Some(128 + libc::SIGKILL));
+    assert_eq!(root_end(&killed), (Some("signaled".into()), None, Some(libc::SIGKILL as i64)), "{:?}", killed.status);
+    assert_eq!(field(&killed, "root_code"), Some(&Json::Null), "a null field is written as null");
+    assert_eq!(termed.code, Some(128 + libc::SIGTERM));
+    assert_eq!(root_end(&termed), (Some("signaled".into()), None, Some(libc::SIGTERM as i64)), "{:?}", termed.status);
+    assert_eq!(field(&termed, "trigger"), Some(&Json::Null), "the root's own TERM is no trigger");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// #17: under a trigger the fields say how sheepr's kill ended the root. A TERM from outside: the
+/// root (a `sleep`) dies of the grace's TERM, `root_signal` 15, `trigger` "term". A timeout with
+/// a root that traps TERM and exits 0 during the grace: `root` "exited", `root_code` 0, exit 124.
+/// On macOS the root is reaped after the kill here (the visible root: the control of the hidden
+/// root's row).
+#[test]
+fn under_a_trigger_the_root_fields_say_how_the_kill_ended_it() {
+    let d = scratch("trigend");
+    let (m1, m2) = (marker(), marker());
+    let (ready, trace) = (d.join("ready"), d.join("trace"));
+    let termed = run(&d, "term", &format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {m1}'"#, ready.display()), &[("SHEEPR_TEST_TRACE", trace.to_str().unwrap())], |c| {
+        wait_file(&ready);
+        common::send_child(c, libc::SIGTERM);
+    });
+    kill_marked(&m1);
+    if cfg!(target_os = "macos") {
+        // the visible root: the reap after the kill took it (the hidden root's control)
+        let t = std::fs::read_to_string(&trace).unwrap_or_default();
+        assert!(t.lines().any(|l| l == "root-after-kill reaped"), "trace:\n{t}");
+    }
+    let timed = run(&d, "timeout", &format!(r#"--timeout 1s -- /bin/sh -c 'trap "exit 0" TERM; /bin/sleep {m2} & wait'"#), &[], |_| {});
+    kill_marked(&m2);
+    assert_eq!(termed.code, None, "sheepr dies of the TERM: {:?}", termed.status);
+    assert_eq!(field(&termed, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(root_end(&termed), (Some("signaled".into()), None, Some(libc::SIGTERM as i64)), "{:?}", termed.status);
+    assert_eq!(timed.code, Some(124), "{:?}", timed.status);
+    assert_eq!(field(&timed, "trigger").and_then(Json::str), Some("timeout"));
+    assert_eq!(root_end(&timed), (Some("exited".into()), Some(0), None), "{:?}", timed.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Every live `/bin/sleep MARKER` of this test, killed (a leak from a failed row).
+fn kill_marked(m: &str) {
+    common::kill_marked(&[m]);
+}
+
+/// #17, round 3 N1 (macOS): after the kill sheepr never waits on a root that may still be alive.
+/// A debug seam hides the root from the scan (as a setuid root is hidden), so the kill cannot
+/// end it: on TERM sheepr still ends within 5 s (far inside README's bound: the kill deadline
+/// plus about 31 s), with `root` "signaled" and both fields null (its end was not observed), and
+/// the root is still alive then (the seam took effect). The control is the visible root of
+/// `under_a_trigger_the_root_fields_say_how_the_kill_ended_it`: `root_signal` 15.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_the_scan_cannot_see_never_holds_sheeprs_end() {
+    let d = scratch("hidden");
+    let m = marker();
+    let (pidf, trace) = (d.join("pid"), d.join("trace"));
+    let took = std::cell::Cell::new(None::<Instant>);
+    let mut root = None;
+    let x = run(
+        &d,
+        "hidden",
+        &format!(r#"--grace 0 -- /bin/sh -c 'echo $$ > "{}.t" && mv "{}.t" "{}"; exec /bin/sleep {m}'"#, pidf.display(), pidf.display(), pidf.display()),
+        &[("SHEEPR_TEST_HIDE_ROOT", "1"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
+        |c| {
+            wait_file(&pidf);
+            root = std::fs::read_to_string(&pidf).ok().and_then(|s| s.trim().parse::<i32>().ok()).and_then(common::found);
+            // the root has exec'd its sleep (its command line names the marker)
+            let end = Instant::now() + Duration::from_secs(10);
+            while common::scan(&m, |w| w.get(1) == Some(&"/bin/sleep")).map_or(true, |v| v.is_empty()) && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            took.set(Some(Instant::now()));
+            common::send_child(c, libc::SIGTERM);
+        },
+    );
+    let elapsed = took.get().map(|t| t.elapsed());
+    let alive = root.is_some_and(common::alive);
+    if let Some(p) = root {
+        common::send(p.0, p.1, libc::SIGKILL);
+    }
+    kill_marked(&m);
+    assert!(root.is_some(), "the root never wrote its pid");
+    assert!(elapsed.is_some_and(|e| e < Duration::from_secs(5)), "sheepr took {elapsed:?} to end after the TERM");
+    assert!(alive, "control: the hidden root was killed, so the seam did not hide it");
+    // it saw the root alive and did not wait for it (never the bounded poll's 1 s)
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(t.lines().any(|l| l == "root-after-kill alive"), "trace:\n{t}");
+    assert_eq!(x.code, None, "sheepr dies of the TERM: {:?}", x.status);
+    assert_eq!(field(&x, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(field(&x, "root").and_then(Json::str), Some("signaled"), "{:?}", x.status);
+    assert!(both_null(&x), "{:?}", x.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// #17, round 3 N2 (macOS `--mode root-disclaim`): the recorder keys on the root's pid there
+/// too: a root that exits 3 is "exited" with `root_code` 3. Its TERM path does not reap the root
+/// (stated), so a TERM from outside reads "signaled" with both fields null and `trigger` "term"
+/// (it read "not-started" before).
+#[cfg(target_os = "macos")]
+#[test]
+fn root_disclaim_records_the_root_s_end() {
+    let d = scratch("rdisclaim");
+    let m = marker();
+    let ready = d.join("ready");
+    let own = run(&d, "own", r#"--mode root-disclaim -- /bin/sh -c 'exit 3'"#, &[], |_| {});
+    let termed = run(&d, "term", &format!(r#"--mode root-disclaim -- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}'"#, ready.display()), &[], |c| {
+        wait_file(&ready);
+        common::send_child(c, libc::SIGTERM);
+    });
+    kill_marked(&m);
+    assert_eq!(own.code, Some(3));
+    assert_eq!(root_end(&own), (Some("exited".into()), Some(3), None), "{:?}", own.status);
+    assert_eq!(termed.code, None, "sheepr dies of the TERM: {:?}", termed.status);
+    assert_eq!(field(&termed, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(field(&termed, "root").and_then(Json::str), Some("signaled"), "{:?}", termed.status);
+    assert!(both_null(&termed), "{:?}", termed.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// #17 (macOS): a wait on the root that fails is a lost end, never a made-up status. A debug seam
+/// replaces the result of the root's reap with a failure (the real wait runs): exit 125 as
+/// before, `root` "signaled" with both fields null, `trigger` null, and `error` names it. The
+/// control, the same root without the seam, exits 3 with `root_code` 3 and no error.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_lost_wait_on_the_root_makes_up_no_status() {
+    let d = scratch("lost");
+    let lost = run(&d, "lost", r#"-- /bin/sh -c 'exit 3'"#, &[("SHEEPR_TEST_ROOT_WAIT_LOST", "1")], |_| {});
+    let ctl = run(&d, "ctl", r#"-- /bin/sh -c 'exit 3'"#, &[], |_| {});
+    assert_eq!(ctl.code, Some(3));
+    assert_eq!(root_end(&ctl), (Some("exited".into()), Some(3), None), "control: {:?}", ctl.status);
+    assert_eq!(field(&ctl, "error"), Some(&Json::Null));
+    assert_eq!(lost.code, Some(125), "{:?}", lost.status);
+    assert_eq!(field(&lost, "root").and_then(Json::str), Some("signaled"), "{:?}", lost.status);
+    assert!(both_null(&lost), "{:?}", lost.status);
+    assert_eq!(field(&lost, "trigger"), Some(&Json::Null));
+    assert!(field(&lost, "error").and_then(Json::str).is_some_and(|e| e.contains("lost")), "{:?}", lost.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The children of `pid` (Linux, from /proc), with their state letter.
+#[cfg(target_os = "linux")]
+fn children_of(pid: i32) -> Vec<(i32, char)> {
+    let mut v = Vec::new();
+    for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(p) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { continue };
+        let Ok(s) = std::fs::read_to_string(format!("/proc/{p}/stat")) else { continue };
+        let Some(rest) = s.rfind(')').and_then(|i| s.get(i + 2..)) else { continue };
+        let mut w = rest.split_whitespace();
+        let (Some(st), Some(pp)) = (w.next().and_then(|x| x.chars().next()), w.next().and_then(|x| x.parse::<i32>().ok())) else { continue };
+        if pp == pid {
+            v.push((p, st));
+        }
+    }
+    v
+}
+
+/// One run of `cmd` in which the root's end and a TERM from outside reach sheepr in ONE wake
+/// (Linux, tests/loop.rs's window): the loop sleeps 4 s before each wait (seam), the shim is held
+/// before its exec (seam) and let go 1 s into the loop's first sleep; once it is a zombie
+/// (exited, not reaped) sheepr gets TERM, so its next pass both reaps it and takes the TERM.
+/// Returns the run, and whether the zombie was seen before the TERM.
+#[cfg(target_os = "linux")]
+fn term_with_the_root_s_end(d: &Path, name: &str, cmd: &str) -> (Run, bool) {
+    let (ready, rel) = (d.join(format!("{name}.ready")), d.join(format!("{name}.release")));
+    let mut zombie = false;
+    let x = run(
+        d,
+        name,
+        &format!("-- {cmd}"),
+        &[("SHEEPR_TEST_SLEEP_BEFORE_WAIT_MS", "4000"), ("SHEEPR_TEST_HOLD_SHIM", rel.to_str().unwrap()), ("SHEEPR_TEST_READY_FILE", ready.to_str().unwrap())],
+        |c| {
+            wait_file(&ready);
+            // both the held shim and the loop's first sleep create the ready file; the loop's first
+            // pass takes milliseconds, so 1 s in, it sleeps (until about 4 s)
+            std::thread::sleep(Duration::from_secs(1));
+            std::fs::write(&rel, b"").unwrap();
+            let sd = c.id() as i32;
+            let end = Instant::now() + Duration::from_secs(2);
+            while !zombie && Instant::now() < end {
+                zombie = children_of(sd).iter().any(|&(_, st)| st == 'Z');
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            common::send_child(c, libc::SIGTERM);
+        },
+    );
+    (x, zombie)
+}
+
+/// #17 (Linux): a command that cannot be run and a TERM from outside in the same wake: the
+/// shim's `E` line is read whenever the shim was reaped, also when the TERM won that pass, so
+/// the root is "not-started" with both fields null and `error` names ENOENT (it read "signaled"
+/// before). The control, a command that runs and exits 127 by itself in the same window, is
+/// "exited" with `root_code` 127 and no error. In both, sheepr dies of the TERM (a run that
+/// exits 127 instead means the window closed before the TERM: the harness, not the product).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_command_and_a_term_in_one_wake_is_not_started() {
+    let d = scratch("missterm");
+    let (missing, z1) = term_with_the_root_s_end(&d, "missing", "/nonexistent/sr-missing");
+    let (own, z2) = term_with_the_root_s_end(&d, "own", r#"/bin/sh -c 'exit 127'"#);
+    for (n, x, z) in [("missing", &missing, z1), ("own", &own, z2)] {
+        assert!(z, "{n}: the shim never became a zombie before the TERM");
+        assert_eq!(x.code, None, "{n}: sheepr must die of the TERM (the window closed?): {:?}", x.status);
+        assert_eq!(field(x, "trigger").and_then(Json::str), Some("term"), "{n}");
+    }
+    assert_eq!(field(&missing, "root").and_then(Json::str), Some("not-started"), "{:?}", missing.status);
+    assert!(both_null(&missing), "{:?}", missing.status);
+    let enoent = std::io::Error::from_raw_os_error(libc::ENOENT).to_string();
+    assert!(field(&missing, "error").and_then(Json::str).is_some_and(|e| e.contains(&enoent)), "{:?}", missing.status);
+    assert_eq!(root_end(&own), (Some("exited".into()), Some(127), None), "control: {:?}", own.status);
+    assert_eq!(field(&own, "error"), Some(&Json::Null), "control");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// One run of `cmd` whose shim reaches its exec only while the job is being killed (Linux): the
+/// caller blocks TERM, so the kill's TERM stays pending in the shim and its exec goes ahead;
+/// sheepr gets a TERM while the shim is held before its exec (seam), and the shim is let go
+/// once the kill's grace has sent it that TERM (the signal log says so). Returns sheepr's exit
+/// code, the status line, and whether the grace's TERM to the shim was seen before the release.
+#[cfg(target_os = "linux")]
+fn exec_during_the_kill(d: &Path, name: &str, cmd: &str) -> (Option<i32>, Option<Json>, bool) {
+    use std::os::unix::process::CommandExt;
+    let (out, ready, rel, log) = (d.join(format!("{name}.status")), d.join(format!("{name}.ready")), d.join(format!("{name}.release")), d.join(format!("{name}.log")));
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- {cmd} 3>"{}" 2>/dev/null"#, out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_HOLD_SHIM", &rel)
+        .env("SHEEPR_TEST_READY_FILE", &ready)
+        .env("SHEEPR_TEST_SIGNAL_LOG", &log);
+    unsafe {
+        c.pre_exec(|| {
+            let mut s: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut s);
+            libc::sigaddset(&mut s, libc::SIGTERM);
+            libc::sigprocmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let mut c = c.spawn().unwrap();
+    let held = wait_file(&ready); // the shim is held before its exec
+    let shim = children_of(c.id() as i32).first().map(|&(p, _)| p);
+    common::send_child(&mut c, libc::SIGTERM);
+    let end = Instant::now() + Duration::from_secs(10);
+    let termed = loop {
+        let l = std::fs::read_to_string(&log).unwrap_or_default();
+        if shim.is_some_and(|p| l.lines().any(|x| x == format!("kill {p} 15") || x == format!("pidfd {p} 15"))) {
+            break true;
+        }
+        if Instant::now() > end {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    std::fs::write(&rel, b"").unwrap();
+    let end = Instant::now() + Duration::from_secs(30);
+    let code = loop {
+        if let Some(s) = c.try_wait().unwrap() {
+            break s.code();
+        }
+        if Instant::now() > end {
+            common::send_child(&mut c, libc::SIGKILL);
+            let _ = c.wait();
+            break Some(-1);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let st = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    (code, st, held && termed)
+}
+
+/// #17 (Linux): a command whose exec fails while the job is being killed (after the event loop
+/// ended on a TERM): the shim's `E` line is read again after the final reap, so the root is
+/// "not-started" with both fields null and `error` naming ENOENT. The control, a command that
+/// runs during the kill and exits 127 by itself, is "exited" with `root_code` 127 and no error.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_whose_exec_fails_during_the_kill_is_not_started() {
+    let d = scratch("killexec");
+    let (c1, missing, w1) = exec_during_the_kill(&d, "missing", "/nonexistent/sr-missing");
+    let (c2, own, w2) = exec_during_the_kill(&d, "own", r#"/bin/sh -c 'exit 127'"#);
+    let get = |j: &Option<Json>, k: &str| j.as_ref().and_then(|j| j.get(k)).cloned();
+    for (n, code, x, w) in [("missing", c1, &missing, w1), ("own", c2, &own, w2)] {
+        assert!(w, "{n}: the shim was not held, or the kill's TERM to it was never seen");
+        assert_eq!(code, None, "{n}: sheepr dies of the TERM: {x:?}");
+        assert_eq!(get(x, "trigger").as_ref().and_then(Json::str), Some("term"), "{n}: {x:?}");
+    }
+    assert_eq!(get(&missing, "root").as_ref().and_then(Json::str), Some("not-started"), "{missing:?}");
+    assert_eq!((get(&missing, "root_code"), get(&missing, "root_signal")), (Some(Json::Null), Some(Json::Null)), "{missing:?}");
+    let enoent = std::io::Error::from_raw_os_error(libc::ENOENT).to_string();
+    assert!(get(&missing, "error").as_ref().and_then(Json::str).is_some_and(|e| e.contains(&enoent)), "{missing:?}");
+    assert_eq!(get(&own, "root").as_ref().and_then(Json::str), Some("exited"), "control: {own:?}");
+    assert_eq!(get(&own, "root_code").as_ref().and_then(Json::num), Some(127.0), "control: {own:?}");
+    assert_eq!(get(&own, "error"), Some(Json::Null), "control: {own:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The forms of a wait that can reap a child (#17's class sweep): `waitpid(`, `wait4(`,
+/// `wait3(`, `libc::wait(`, `.wait()`, `.try_wait()`, `.wait_with_output()`, and `waitid(`
+/// without `WNOWAIT` on its line. A `waitid(` with `WNOWAIT` only looks; it is reported apart.
+#[derive(Debug, PartialEq)]
+enum Wait {
+    Reaps,
+    Looks,
+}
+
+fn wait_form(line: &str) -> Option<Wait> {
+    const REAPS: [&str; 7] = ["waitpid(", "wait4(", "wait3(", "libc::wait(", ".wait()", ".try_wait()", ".wait_with_output()"];
+    if REAPS.iter().any(|f| line.contains(f)) {
+        return Some(Wait::Reaps);
+    }
+    if line.contains("waitid(") {
+        return Some(if line.contains("WNOWAIT") { Wait::Looks } else { Wait::Reaps });
+    }
+    None
+}
+
+/// Every wait in `src` outside its test modules and comments: (enclosing fn, form, line). A test
+/// module is `#[cfg(test)]` then `mod NAME {` up to the next line that is `}` alone (rustfmt's
+/// closing brace of a top-level item); the enclosing fn is the last `fn NAME` line above.
+fn waits_in(src: &str) -> Vec<(String, Wait, String)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let (mut out, mut f, mut i) = (Vec::new(), String::new(), 0);
+    while i < lines.len() {
+        let l = lines[i];
+        if l.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|n| n.starts_with("mod ") && n.trim_end().ends_with('{')) {
+            i += 2;
+            while i < lines.len() && lines[i] != "}" {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        let code = l.split("//").next().unwrap_or("");
+        if let Some(at) = code.find("fn ") {
+            let name: String = code[at + 3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() && (at == 0 || !code.as_bytes()[at - 1].is_ascii_alphanumeric()) {
+                f = name;
+            }
+        }
+        if let Some(w) = wait_form(code) {
+            out.push((f.clone(), w, l.trim().to_string()));
+        }
+        i += 1;
+    }
+    out
+}
+
+/// #17's class sweep: no wait outside the recorder can reap the root. Every wait in the
+/// supervisor's sources (src/*.rs, test modules and comments left out) is counted per file and
+/// enclosing fn, and the counts must equal this allow-list exactly: the recorders (Linux
+/// `wait_any`, the one `waitpid(-1, ...)`; macOS `reap_root`, the one wait on the root) and the
+/// waits that are not the root's end (round 3's list: a probe child, the relay's wait for its
+/// supervisor, the shim that failed its handshake, the shim reaped when a TERM came before its
+/// go byte (its end is "not-started" for certain), the macOS root killed while suspended, which
+/// records nothing). A `waitid` with WNOWAIT only looks; those are allowed by name (main.rs's
+/// `has_children` and `root_ended`). The controls: one planted line of each form is found in its
+/// fn; a commented one and one in a test module are not; a WNOWAIT one is told apart.
+#[test]
+fn the_root_is_reaped_only_through_the_recorder() {
+    let planted = "fn planted() {\n    libc::waitpid(-1, &mut st, 0);\n    libc::wait4(root, &mut st, 0, ru);\n    libc::wait3(&mut st, 0, ru);\n    libc::wait(&mut st);\n    child.wait();\n    child.try_wait();\n    child.wait_with_output();\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED);\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED | libc::WNOWAIT);\n    // libc::waitpid(root, &mut st, 0);\n}\n\n#[cfg(test)]\nmod tests {\n    fn t() { libc::waitpid(-1, &mut st, 0); }\n}\n\nfn after() {\n    libc::waitpid(root, &mut st, 0);\n}\n";
+    let found = waits_in(planted);
+    let forms: Vec<(&str, &Wait)> = found.iter().map(|(f, w, _)| (f.as_str(), w)).collect();
+    let mut want: Vec<(&str, &Wait)> = vec![("planted", &Wait::Reaps); 8];
+    want.push(("planted", &Wait::Looks));
+    want.push(("after", &Wait::Reaps));
+    assert_eq!(forms, want, "the planted controls: {found:#?}");
+    let allowed: &[(&str, &str, usize)] = &[
+        ("linux.rs", "wait_any", 1),
+        ("linux.rs", "doctor_mechanisms", 1),
+        ("linux.rs", "spawn", 1),
+        ("linux.rs", "relay_if_needed", 1),
+        ("linux.rs", "run", 2),
+        ("macos.rs", "reap_root", 1),
+        ("macos.rs", "probe_child", 1),
+        ("macos.rs", "relay_loop", 1),
+        ("macos.rs", "run", 1),
+    ];
+    let looks: &[(&str, &str)] = &[("main.rs", "has_children"), ("main.rs", "root_ended")];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut seen: std::collections::BTreeMap<(String, String), usize> = Default::default();
+    let mut bad = Vec::new();
+    let mut files = 0;
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".rs") {
+            continue;
+        }
+        files += 1;
+        for (f, w, l) in waits_in(&std::fs::read_to_string(e.path()).unwrap()) {
+            match w {
+                Wait::Reaps => *seen.entry((name.clone(), f)).or_default() += 1,
+                Wait::Looks if looks.contains(&(name.as_str(), f.as_str())) => {}
+                Wait::Looks => bad.push(format!("{name}: {f}: {l}")),
+            }
+        }
+    }
+    assert!(files >= 15, "control: the sweep read {files} source files");
+    let want: std::collections::BTreeMap<(String, String), usize> = allowed.iter().map(|&(n, f, c)| ((n.to_string(), f.to_string()), c)).collect();
+    assert!(bad.is_empty(), "a WNOWAIT wait outside main.rs's has_children and root_ended: {bad:#?}");
+    assert_eq!(seen, want, "the waits that can reap a child, per (file, fn), against the allow-list");
+}
+
+/// #17 (macOS): a root that sheepr kills while it is still suspended (a TERM came before the
+/// resuming CONT) is reaped there and records nothing: `root` stays "not-started" with both
+/// fields null, and the reap after the kill is not run for it (its pid is no longer sheepr's
+/// child; the trace has no `root-after-kill` line).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_killed_while_suspended_records_nothing() {
+    let d = scratch("suspkill");
+    let m = marker();
+    let (ready, trace) = (d.join("ready"), d.join("trace"));
+    let x = run(
+        &d,
+        "susp",
+        &format!("-- /bin/sleep {m}"),
+        &[("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS", "1500"), ("SHEEPR_TEST_READY_FILE", ready.to_str().unwrap()), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
+        |c| {
+            wait_file(&ready);
+            common::send_child(c, libc::SIGTERM);
+        },
+    );
+    kill_marked(&m);
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert_eq!(x.code, None, "sheepr dies of the TERM: {:?}", x.status);
+    assert_eq!(field(&x, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{:?}", x.status);
+    assert!(both_null(&x), "{:?}", x.status);
+    assert!(!t.lines().any(|l| l.starts_with("root-after-kill")), "trace:\n{t}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// #17 (macOS): after the kill, a root that is exiting but not yet reapable (the kill saw it gone;
+/// its zombie is not there yet) is waited for, within 1 s: a debug seam makes the root read as
+/// not yet ended for its first 150 ms (the real check still runs). Its signal is recorded
+/// (`root_signal` 15) and the trace says `root-after-kill reaped`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_not_yet_reapable_after_the_kill_is_waited_for() {
+    let d = scratch("notyet");
+    let m = marker();
+    let (ready, trace) = (d.join("ready"), d.join("trace"));
+    let x = run(
+        &d,
+        "late",
+        &format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}'"#, ready.display()),
+        &[("SHEEPR_TEST_ROOT_REAPABLE_AFTER_MS", "150"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
+        |c| {
+            wait_file(&ready);
+            common::send_child(c, libc::SIGTERM);
+        },
+    );
+    kill_marked(&m);
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(t.lines().any(|l| l == "root-after-kill reaped"), "trace:\n{t}");
+    assert_eq!(root_end(&x), (Some("signaled".into()), None, Some(libc::SIGTERM as i64)), "{:?}", x.status);
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -280,10 +280,22 @@ fn descendants(root: i32) -> Vec<(i32, u64)> {
     out.into_iter().filter_map(|p| Some((p, identity(p)?))).collect()
 }
 
+/// The one `waitpid(-1, ...)` of the supervisor, the Linux recorder (#17): every reap of the
+/// tree goes through here (the event loop, the kill's reap and emptiness check, the final reap),
+/// so the root's end is recorded whichever pass reaped it (the first status for the root's pid
+/// wins in the record). Returns waitpid's result; when it is -1, errno is waitpid's.
+fn wait_any(flags: libc::c_int) -> i32 {
+    let mut st = 0;
+    let r = unsafe { libc::waitpid(-1, &mut st, flags) };
+    if r > 0 {
+        crate::status::record_root_end(r, st);
+    }
+    r
+}
+
 /// Reap every adopted orphan that has exited.
 fn reap() {
-    let mut st = 0;
-    while unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) } > 0 {}
+    while wait_any(libc::WNOHANG) > 0 {}
 }
 
 /// The authoritative emptiness check (phase-0 fix review, P1-A): with the subreaper set, every
@@ -291,9 +303,8 @@ fn reap() {
 /// itself. So "no children at all" (waitpid reports ECHILD) means the tree is empty, atomically,
 /// whatever the tree does between two /proc scans.
 fn tree_empty() -> Option<bool> {
-    let mut st = 0;
     loop {
-        match unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) } {
+        match wait_any(libc::WNOHANG) {
             0 => return Some(false),
             r if r > 0 => continue, // reaped one; ask again
             _ => {
@@ -348,6 +359,18 @@ impl Root {
         }
         let text = String::from_utf8_lossy(&buf[1..n as usize]);
         Some(text.trim().parse().unwrap_or(0))
+    }
+}
+
+/// The shim's `E` line (#17), read after the event loop's last pass, also when a TERM won that
+/// pass, and again after the final reap (a shim that ended during the kill): a command that never
+/// ran is "not-started" with `error` naming why, whatever ended the job. The line is written in
+/// one write before the shim exits, so a shim that has been reaped has it complete; a read
+/// before then finds nothing (the pipe is non-blocking) and changes nothing.
+fn exec_failure(shim: &mut Root, cmd: &OsString) {
+    if let Some(e) = shim.exec_failed() {
+        crate::status::set_root_final("not-started"); // the shim could not exec the command
+        crate::status::set_error(&format!("cannot run {}: {}", crate::shown(cmd), std::io::Error::from_raw_os_error(e)));
     }
 }
 
@@ -867,7 +890,6 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
     // poll every 50 ms (a blocked signal stays pending, so nothing is lost).
     let fd = signal_fd(&sig.wait_set());
     crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_REGISTER_MS");
-    let mut exited: Option<libc::c_int> = None;
     // membership while running (PLAN.md §3.2): a member seen on any tick is killed at the end
     // even if it is no longer a descendant by then (sticky, by identity)
     let mut tracker = crate::Tracker::default();
@@ -895,16 +917,9 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 .map(|(_, s)| s)
                 .collect()
         };
-        loop {
-            let mut st = 0;
-            let r = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
-            if r == root && exited.is_none() {
-                exited = Some(st);
-            }
-            if r <= 0 {
-                break;
-            }
-        }
+        // every reap goes through the recorder, and the root's end is what it recorded (#17)
+        while wait_any(libc::WNOHANG) > 0 {}
+        let exited = crate::status::root_end();
         if got.contains(&libc::SIGTERM) {
             crate::status::set_trigger("term"); // the trigger from the moment it is taken
             break None;
@@ -916,7 +931,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                     ints.note(s);
                 }
             }
-            break Some(st);
+            break Some(crate::Reaped::Status(st));
         }
         // the caps, on every tick, after TERM and the root's exit (a cap that fires ends the job
         // as a TERM would, exit 124)
@@ -953,10 +968,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
     if fd >= 0 {
         unsafe { libc::close(fd) };
     }
-    if let Some(e) = status.and_then(|_| shim.exec_failed()) {
-        crate::status::set_root_final("not-started"); // the shim could not exec the command
-        crate::status::set_error(&format!("cannot run {}: {}", crate::shown(&a.cmd[0]), std::io::Error::from_raw_os_error(e)));
-    }
+    exec_failure(&mut shim, &a.cmd[0]);
     if a.leave_strays && status.is_some() {
         let mut j = journal.into_inner();
         let marked = j.mark_leave_strays();
@@ -974,6 +986,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
         kill_tree(&opts, scan, reap, || None, crate::signal, initial)
     };
     reap();
+    exec_failure(&mut shim, &a.cmd[0]); // the shim reaped by the kill or the final reap
     journal.into_inner().finish(result.is_ok());
     crate::release_relay(relay, stopped);
     crate::finish(status, result, &mut ints, sig)

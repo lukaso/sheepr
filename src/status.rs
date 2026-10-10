@@ -134,6 +134,8 @@ pub fn record_root_end(pid: i32, st: libc::c_int) {
     with(|s| s.record_root_end(pid, st));
 }
 /// The root's wait status as the recorder took it (None: not reaped, or the command never ran).
+/// Linux reads it (the event loop, the shim's `E` line); macOS's `reap_root` returns it.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn root_end() -> Option<libc::c_int> {
     with(|s| s.root_end)
 }
@@ -186,10 +188,10 @@ pub fn disable() {
     with(|s| s.fd = None);
 }
 
-/// The kill report (PLAN.md §10.4) for a job whose root ended with `root_status` (None: ended
-/// by a TERM from outside) and whose kill ended `clean` (no deadline, no internal error).
+/// The kill report (PLAN.md §10.4) for a job whose root ended as `root_status` (None: ended
+/// by a TERM from outside or a cap) and whose kill ended `clean` (no deadline, no internal error).
 /// Nothing is printed when nothing was killed. `--quiet` keeps only the degraded line.
-pub fn report(root_status: Option<libc::c_int>, clean: bool) {
+pub fn report(root_status: Option<crate::Reaped>, clean: bool) {
     // debug seam: the phase-1 hint cells count every stderr line, and the report is not theirs
     if crate::seam_flag("SHEEPR_TEST_NO_REPORT") {
         return;
@@ -201,8 +203,9 @@ pub fn report(root_status: Option<libc::c_int>, clean: bool) {
     if !quiet {
         // (the cause, for the trace; the words, for the reader)
         let (cause, why) = match root_status {
-            Some(st) if libc::WIFSIGNALED(st) => ("signaled".to_string(), format!("the command died of signal {}", libc::WTERMSIG(st))),
-            Some(st) => ("exited".to_string(), format!("the command exited {}", libc::WEXITSTATUS(st))),
+            Some(crate::Reaped::Status(st)) if libc::WIFSIGNALED(st) => ("signaled".to_string(), format!("the command died of signal {}", libc::WTERMSIG(st))),
+            Some(crate::Reaped::Status(st)) => ("exited".to_string(), format!("the command exited {}", libc::WEXITSTATUS(st))),
+            Some(crate::Reaped::Lost(_)) => ("lost".to_string(), "the command ended (its exit status was lost)".to_string()),
             None => match crate::caps::by() {
                 Some(flag) => (flag.to_string(), format!("the {flag} limit fired")),
                 None => ("term".to_string(), "TERM from outside".to_string()),
