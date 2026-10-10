@@ -24,6 +24,8 @@ struct Status {
     /// set once the root's end is known for certain (an exec that failed): later guesses keep off
     root_final: bool,
     root_pid: i32,
+    /// the root's wait status, as the recorder took it (#17)
+    root_end: Option<libc::c_int>,
     trigger: Option<(&'static str, u128)>,
     deadline_missed: bool,
     killed: Vec<Killed>,
@@ -35,23 +37,59 @@ struct Status {
     notes: Vec<String>,
 }
 
-static S: Mutex<Status> = Mutex::new(Status {
-    fd: None,
-    start: None,
-    job: None,
-    root: "not-started",
-    root_final: false,
-    root_pid: 0,
-    trigger: None,
-    deadline_missed: false,
-    killed: Vec::new(),
-    survivors: Vec::new(),
-    tracking: "none",
-    degraded: None,
-    error: None,
-    quiet: false,
-    notes: Vec::new(),
-});
+impl Status {
+    const fn new() -> Status {
+        Status {
+            fd: None,
+            start: None,
+            job: None,
+            root: "not-started",
+            root_final: false,
+            root_pid: 0,
+            root_end: None,
+            trigger: None,
+            deadline_missed: false,
+            killed: Vec::new(),
+            survivors: Vec::new(),
+            tracking: "none",
+            degraded: None,
+            error: None,
+            quiet: false,
+            notes: Vec::new(),
+        }
+    }
+
+    /// The recorder's record (#17): the wait status `st` of a reaped `pid`, kept when `pid` is the
+    /// root's and nothing was recorded before (the first wins: a later reap at that pid is a
+    /// reused pid's), and the root's end is not final (an exec that failed). Only an exit or a
+    /// death by signal is an end.
+    fn record_root_end(&mut self, pid: i32, st: libc::c_int) {
+        let end = libc::WIFEXITED(st) || libc::WIFSIGNALED(st);
+        if end && pid > 0 && pid == self.root_pid && !self.root_final && self.root_end.is_none() {
+            self.root_end = Some(st);
+        }
+    }
+
+    /// The root's end, known for certain: it clears what the recorder took and keeps it off.
+    fn set_root_final(&mut self, root: &'static str) {
+        self.root = root;
+        self.root_final = true;
+        self.root_end = None;
+    }
+
+    /// (`root`, `root_code`, `root_signal`): what the recorder took (option A: "exited" exactly
+    /// with a code, "signaled" exactly with a signal); else `root` as set, with both null (never
+    /// ran, or its end was not observed).
+    fn root_fields(&self) -> (&'static str, Option<i32>, Option<i32>) {
+        match self.root_end {
+            Some(st) if libc::WIFSIGNALED(st) => ("signaled", None, Some(libc::WTERMSIG(st))),
+            Some(st) => ("exited", Some(libc::WEXITSTATUS(st)), None),
+            None => (self.root, None, None),
+        }
+    }
+}
+
+static S: Mutex<Status> = Mutex::new(Status::new());
 
 fn with<R>(f: impl FnOnce(&mut Status) -> R) -> R {
     f(&mut S.lock().unwrap_or_else(|e| e.into_inner()))
@@ -84,13 +122,20 @@ pub fn set_root(root: &'static str) {
 /// The root's end, known for certain; no later `set_root` changes it (Linux: an exec that failed).
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn set_root_final(root: &'static str) {
-    with(|s| {
-        s.root = root;
-        s.root_final = true;
-    });
+    with(|s| s.set_root_final(root));
 }
 pub fn set_root_pid(pid: i32) {
     with(|s| s.root_pid = pid);
+}
+/// The recorder (#17): every reap of the root goes through it (Linux: `wait_any`, the one
+/// `waitpid(-1, ...)`; macOS: `reap_root`, the one wait on the root), so the root's end is in the
+/// record whichever pass reaped it. The first status for the root's pid wins.
+pub fn record_root_end(pid: i32, st: libc::c_int) {
+    with(|s| s.record_root_end(pid, st));
+}
+/// The root's wait status as the recorder took it (None: not reaped, or the command never ran).
+pub fn root_end() -> Option<libc::c_int> {
+    with(|s| s.root_end)
 }
 pub fn root_pid() -> i32 {
     with(|s| s.root_pid)
@@ -376,33 +421,41 @@ fn line(code: i32) -> Option<(i32, String)> {
         if let Some(n) = crate::seam_ms("SHEEPR_TEST_STATUS_PAD") {
             s.notes.push("x".repeat(n as usize));
         }
-        let js = crate::journal::json_str;
-        let opt = |v: &Option<String>| v.as_deref().map_or_else(|| "null".to_string(), js);
-        let killed: Vec<String> = s
-            .killed
-            .iter()
-            .map(|k| format!("{{\"pid\":{},\"cmd\":{},\"escaped\":{}}}", k.pid, js(&k.cmd), k.escaped.map_or_else(|| "null".to_string(), js)))
-            .collect();
-        let survivors: Vec<String> = s.survivors.iter().map(|p| p.to_string()).collect();
-        let notes: Vec<String> = s.notes.iter().map(|n| js(n)).collect();
-        let (trigger, at) = match s.trigger {
-            Some((t, at)) => (js(t), at.to_string()),
-            None => ("null".to_string(), "null".to_string()),
-        };
-        let line = format!(
-            "{{\"v\":1,\"job\":{},\"root\":\"{}\",\"code\":{code},\"trigger\":{trigger},\"trigger_at\":{at},\"deadline_missed\":{},\"killed\":[{}],\"survivors\":[{}],\"tracking\":\"{}\",\"degraded\":{},\"error\":{},\"notes\":[{}]}}\n",
-            opt(&s.job),
-            s.root,
-            s.deadline_missed,
-            killed.join(","),
-            survivors.join(","),
-            s.tracking,
-            opt(&s.degraded),
-            opt(&s.error),
-            notes.join(",")
-        );
-        Some((fd, line))
+        Some((fd, render(s, code)))
     })
+}
+
+/// The status line of record `s` for exit code `code`.
+fn render(s: &Status, code: i32) -> String {
+    let js = crate::journal::json_str;
+    let opt = |v: &Option<String>| v.as_deref().map_or_else(|| "null".to_string(), js);
+    let killed: Vec<String> = s
+        .killed
+        .iter()
+        .map(|k| format!("{{\"pid\":{},\"cmd\":{},\"escaped\":{}}}", k.pid, js(&k.cmd), k.escaped.map_or_else(|| "null".to_string(), js)))
+        .collect();
+    let survivors: Vec<String> = s.survivors.iter().map(|p| p.to_string()).collect();
+    let notes: Vec<String> = s.notes.iter().map(|n| js(n)).collect();
+    let (trigger, at) = match s.trigger {
+        Some((t, at)) => (js(t), at.to_string()),
+        None => ("null".to_string(), "null".to_string()),
+    };
+    let (root, root_code, root_signal) = s.root_fields();
+    let num = |v: Option<i32>| v.map_or_else(|| "null".to_string(), |n| n.to_string());
+    format!(
+        "{{\"v\":1,\"job\":{},\"root\":\"{}\",\"root_code\":{},\"root_signal\":{},\"code\":{code},\"trigger\":{trigger},\"trigger_at\":{at},\"deadline_missed\":{},\"killed\":[{}],\"survivors\":[{}],\"tracking\":\"{}\",\"degraded\":{},\"error\":{},\"notes\":[{}]}}\n",
+        opt(&s.job),
+        root,
+        num(root_code),
+        num(root_signal),
+        s.deadline_missed,
+        killed.join(","),
+        survivors.join(","),
+        s.tracking,
+        opt(&s.degraded),
+        opt(&s.error),
+        notes.join(",")
+    )
 }
 
 #[cfg(test)]
@@ -417,5 +470,72 @@ mod tests {
         assert_eq!((IDLE, CAP, NOTICE), (Duration::from_secs(10), Duration::from_secs(30), Duration::from_secs(1)));
         // PLAN.md §3.1: an EINTR in a window's last 10 ms is the tick, not a signal from outside
         assert_eq!(TICK_SLACK, Duration::from_millis(10));
+    }
+
+    /// A wait status for death by signal `sig` (the encoding both OSes use).
+    fn killed_by(sig: i32) -> libc::c_int {
+        sig
+    }
+
+    /// #17: the recorder keeps the FIRST end recorded for the root's pid: a later reap at that
+    /// pid (a reused pid) never overwrites it. It records nothing for another pid, nor before the
+    /// root's pid is set (root-disclaim once set none). `root` follows what it recorded: "exited"
+    /// exactly with `root_code`, "signaled" exactly with `root_signal`.
+    #[test]
+    fn the_recorder_keeps_the_first_end_of_the_root() {
+        let mut s = Status::new();
+        s.record_root_end(42, crate::exit_status(3));
+        assert_eq!(s.root_fields(), ("not-started", None, None), "no root pid set: nothing is recorded");
+        s.root_pid = 42;
+        s.root = "signaled";
+        s.record_root_end(43, killed_by(libc::SIGKILL));
+        assert_eq!(s.root_fields(), ("signaled", None, None), "another pid is not the root");
+        s.record_root_end(42, (libc::SIGSTOP << 8) | 0x7f);
+        assert_eq!(s.root_fields(), ("signaled", None, None), "a stop is not an end");
+        s.record_root_end(42, crate::exit_status(3));
+        assert_eq!(s.root_fields(), ("exited", Some(3), None));
+        s.record_root_end(42, killed_by(libc::SIGKILL));
+        assert_eq!(s.root_fields(), ("exited", Some(3), None), "a second record at the root's pid");
+        let mut k = Status::new();
+        (k.root_pid, k.root) = (7, "signaled");
+        k.record_root_end(7, killed_by(libc::SIGKILL));
+        k.record_root_end(7, crate::exit_status(0));
+        assert_eq!(k.root_fields(), ("signaled", None, Some(libc::SIGKILL)));
+    }
+
+    /// #17: `set_root_final("not-started")` (the command never ran) clears both fields and keeps
+    /// every later record off; the control, the same record without it, shows the code.
+    #[test]
+    fn a_final_not_started_clears_and_blocks_the_root_fields() {
+        let mut s = Status::new();
+        (s.root_pid, s.root) = (42, "signaled");
+        s.record_root_end(42, crate::exit_status(127));
+        assert_eq!(s.root_fields(), ("exited", Some(127), None), "control");
+        s.set_root_final("not-started");
+        assert_eq!(s.root_fields(), ("not-started", None, None), "cleared");
+        let mut b = Status::new();
+        (b.root_pid, b.root) = (42, "signaled");
+        b.set_root_final("not-started");
+        b.record_root_end(42, crate::exit_status(127));
+        assert_eq!(b.root_fields(), ("not-started", None, None), "blocked");
+    }
+
+    /// #17: the line carries `root_code` and `root_signal`, numbers or null, beside `root`.
+    #[test]
+    fn the_line_carries_the_root_s_code_and_signal() {
+        let field = |s: &Status, k: &str| sheepr::json::parse(render(s, 0).trim_end()).expect("the line parses").get(k).cloned();
+        let mut s = Status::new();
+        assert_eq!(field(&s, "root_code"), Some(sheepr::json::Json::Null), "never ran");
+        assert_eq!(field(&s, "root_signal"), Some(sheepr::json::Json::Null), "never ran");
+        (s.root_pid, s.root) = (42, "signaled");
+        s.record_root_end(42, crate::exit_status(3));
+        assert_eq!(field(&s, "root").as_ref().and_then(|j| j.str().map(String::from)), Some("exited".to_string()));
+        assert_eq!(field(&s, "root_code").as_ref().and_then(|j| j.num()), Some(3.0));
+        assert_eq!(field(&s, "root_signal"), Some(sheepr::json::Json::Null));
+        let mut k = Status::new();
+        (k.root_pid, k.root) = (42, "signaled");
+        k.record_root_end(42, killed_by(libc::SIGTERM));
+        assert_eq!(field(&k, "root_code"), Some(sheepr::json::Json::Null));
+        assert_eq!(field(&k, "root_signal").as_ref().and_then(|j| j.num()), Some(libc::SIGTERM as f64));
     }
 }
