@@ -783,11 +783,13 @@ fn relay_died() {
 
 /// The one wait on the root, the macOS recorder (#17): every reap of the root goes through here,
 /// so its end is in the status record (the first status for the root's pid wins there).
-/// `block`: wait until it ends (only once its exit was seen, or `root_ended` says it ended);
-/// else WNOHANG. None: the root still runs (WNOHANG). `Lost`: the wait failed, so the root's
-/// status cannot be known; nothing is recorded and nothing made up. (Stated: an EINTR would read
-/// as lost; sheepr blocks the signals it handles, and the blocking wait runs only once the root
-/// has ended.)
+/// `block`: wait until it ends, only once its exit was seen (NOTE_EXIT, NOTE_EXIT refused with
+/// ESRCH, or `root_ended`); else a poll (WNOHANG). None: no end seen. A poll that fails is never
+/// the root's end (review of slice 1, P2-1: a debugger's attach makes the running root another
+/// process's child, so the poll says ECHILD while it runs): it is noted and the loop goes on.
+/// `Lost` comes only from the blocking wait: the root ended and its status cannot be known;
+/// nothing is recorded and nothing made up. (Stated: an EINTR there would read as lost; sheepr
+/// blocks the signals it handles, and that wait runs only once the root has ended.)
 fn reap_root(pid: pid_t, block: bool) -> Option<crate::Reaped> {
     let mut st = 0;
     let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };
@@ -797,11 +799,21 @@ fn reap_root(pid: pid_t, block: bool) -> Option<crate::Reaped> {
     if r == pid && crate::seam_flag("SHEEPR_TEST_ROOT_WAIT_LOST") {
         (r, e) = (-1, libc::ECHILD);
     }
+    // debug seam: a poll of a root that still runs fails with ECHILD (the real poll has run and
+    // found it running), as when a debugger's attach has made it another process's child
+    if !block && r == 0 && crate::seam_flag("SHEEPR_TEST_ROOT_POLL_FAIL") {
+        (r, e) = (-1, libc::ECHILD);
+        crate::note("seam root-poll-fail".to_string());
+    }
     match r {
         0 => None,
         r if r == pid => {
             crate::status::record_root_end(pid, st);
             Some(crate::Reaped::Status(st))
+        }
+        _ if !block => {
+            crate::note(format!("root-poll-failed {e}"));
+            None
         }
         _ => {
             crate::note(format!("root-wait-lost {e}"));

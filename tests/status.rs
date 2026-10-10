@@ -1358,3 +1358,25 @@ fn a_root_not_yet_reapable_after_the_kill_is_waited_for() {
     assert_eq!(root_end(&x), (Some("signaled".into()), None, Some(libc::SIGTERM as i64)), "{:?}", x.status);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of slice 1, P2-1 (macOS): a poll of the root (WNOHANG) that fails is never the root's
+/// end: the loop goes on, and the root runs to its own exit. A debug seam makes every poll of the
+/// running root fail with ECHILD (the real poll runs; a debugger's attach does this for real).
+/// The root exits 3 by itself: sheepr exits 3, `root` "exited" with `root_code` 3, no error, no
+/// trigger, and the trace shows the failed polls (the seam took effect). A lost wait comes only
+/// from the blocking wait that runs once the exit was seen (`a_lost_wait_on_the_root_makes_up_no_status`,
+/// the control: 125 and "lost").
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failed_poll_of_the_root_is_not_its_end() {
+    let d = scratch("pollfail");
+    let trace = d.join("trace");
+    let x = run(&d, "poll", r#"-- /bin/sh -c 'sleep 0.6; exit 3'"#, &[("SHEEPR_TEST_ROOT_POLL_FAIL", "1"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())], |_| {});
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(t.lines().any(|l| l == "seam root-poll-fail"), "control: no poll was made to fail, so the seam did not act; trace:\n{t}");
+    assert_eq!(x.code, Some(3), "{:?}", x.status);
+    assert_eq!(root_end(&x), (Some("exited".into()), Some(3), None), "{:?}", x.status);
+    assert_eq!(field(&x, "error"), Some(&Json::Null), "{:?}", x.status);
+    assert_eq!(field(&x, "trigger"), Some(&Json::Null), "{:?}", x.status);
+    let _ = std::fs::remove_dir_all(&d);
+}

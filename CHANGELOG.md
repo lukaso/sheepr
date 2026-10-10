@@ -22,9 +22,11 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
     before, that was `"signaled"`;
   - with `--mode root-disclaim` (macOS, not a stable flag), a job ended by a TERM from outside
     is `"signaled"` with both new fields null, not `"not-started"`;
-  - on macOS, when sheepr's wait for the command fails, `root` is `"signaled"` with both new
-    fields null, `trigger` null, and `error` says the exit status was lost; before, `root` was
-    `"exited"`, as if the command had exited 125. The exit code stays 125.
+  - on macOS, when sheepr has seen the command end but its wait for it fails, `root` is
+    `"signaled"` with both new fields null, `trigger` null, and `error` says the exit status was
+    lost; before, `root` was `"exited"`, as if the command had exited 125. The exit code of that
+    case stays 125. A check on a command that is still running that fails (for example while a
+    debugger is attached to it) never ends the job, as before.
 
 ## 0.1.3 (2026-10-10)
 
