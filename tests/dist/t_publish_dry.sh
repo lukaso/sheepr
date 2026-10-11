@@ -139,7 +139,7 @@ pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 wh
 cask() { # tag -> rc: `__publish-cask-dry` (the cask step alone); the tap as it is; output in $FX/o
   rm -rf "$FX/calls" "$FX"/env.*
   (cd "$REPO" && env -u LC_ALL HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GH_TOKEN="$DECOY" \
-    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
+    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
   return $r_
 }
 nowrite() { ! grep -q -e '^gh api -X PUT' "$FX/calls"; }
@@ -524,6 +524,16 @@ w=$(pcwrites "$SR_ROOT/scripts/release.sh")
 awk '{ print } /^publish_check\(\) \{/ && !d { print "  tool \"$NETC\" \"$GITCMD\" ls-remote \"$UPSTREAM\" x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant1.sh"
 awk '{ print } /^cask_pre\(\) \{/ && !d { print "  tool \"$NETC\" \"$GH\" api -X PUT x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant2.sh"
 [ -n "$(pcwrites "$FX/rel-plant1.sh")" ] && [ -n "$(pcwrites "$FX/rel-plant2.sh")" ] && pass "control: a remote read planted in publish_check, and a write planted in cask_pre, are each caught" || fail "control: plant1 '$(pcwrites "$FX/rel-plant1.sh")' plant2 '$(pcwrites "$FX/rel-plant2.sh")'"
+
+# the entries set their tools with plain assignments: none reaches a child of release.sh through the
+# environment. A shasum on PATH (release.sh runs shasum itself, outside the tool classes) records
+# which of their names it sees (names only), then runs the real one
+mkdir -p "$FX/envbin"
+printf '#!/bin/sh\nfor k in GH GITCMD NPM NPMC DRY NETC CURL CURLC NOTIFY npm_part shipping; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\nexec /usr/bin/shasum "$@"\n' "$FX" > "$FX/envbin/shasum"; chmod +x "$FX/envbin/shasum"
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; rm -f "$FX/exported"; PUBX="PATH=$FX/envbin:$PATH"; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && [ ! -e "$FX/exported" ] && pass "__publish-dry: none of its tool variables is exported (0)" || fail "__publish-dry exports: rc=$r $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
+rm -f "$FX/exported"; tapset 0.0.9; PUBX="PATH=$FX/envbin:$PATH"; cask v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && [ ! -e "$FX/exported" ] && pass "__publish-cask-dry: none of its tool variables is exported (0)" || fail "__publish-cask-dry exports: rc=$r $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ') $(tail -1 "$FX/o")"
 
 # the last row (every run of the cell comes before it): this cell's own dry HOMEs (each run prints
 # the one it made; other sessions may run these cells at the same time, so the whole /private/tmp
