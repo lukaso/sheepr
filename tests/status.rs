@@ -1370,15 +1370,18 @@ fn the_root_is_reaped_only_through_the_recorder() {
 fn a_root_killed_while_suspended_records_nothing() {
     let d = scratch("suspkill");
     let m = marker();
-    let (ready, trace) = (d.join("ready"), d.join("trace"));
+    let (ready, release, trace) = (d.join("ready"), d.join("release"), d.join("trace"));
+    // the TERM comes while sheepr holds before its CONT check (a hold the cell releases, not a
+    // timed window): a TERM sent to a sheepr that blocks it is pending at once
     let x = run(
         &d,
         "susp",
         &format!("-- /bin/sleep {m}"),
-        &[("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS", "1500"), ("SHEEPR_TEST_READY_FILE", ready.to_str().unwrap()), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
+        &[("SHEEPR_TEST_HOLD_BEFORE_CONT_CHECK", release.to_str().unwrap()), ("SHEEPR_TEST_READY_FILE", ready.to_str().unwrap()), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
         |c| {
             wait_file(&ready);
             common::send_child(c, libc::SIGTERM);
+            std::fs::write(&release, b"").unwrap();
         },
     );
     kill_marked(&m);

@@ -1329,6 +1329,7 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
     }
     crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
+    crate::seam_hold("SHEEPR_TEST_HOLD_AFTER_SPAWN");
     if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
         unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
     }
@@ -1353,6 +1354,10 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         // the root was spawned: any SIGCONT could have run it, so this end is not "not-started"
         let p = p.spawned();
         kill_suspended_root(root);
+        // as the job's own kill: no registration is served during it (an inner run then fails
+        // fast), and the run was refused, so no limit applies to it (none sets `trigger`)
+        drop(listener);
+        crate::caps::off();
         let initial = tracker.borrow().known.clone();
         crate::JOB_KILL.store(true, std::sync::atomic::Ordering::SeqCst);
         let result = kill_tree(
@@ -1364,7 +1369,9 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
             initial,
         );
         unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
-        journal.into_inner().finish(result.is_ok());
+        // no journal is left (plan §3): its members were never journaled, so a kept one would
+        // name nothing for `sweep`
+        journal.into_inner().finish(true);
         if let Err(e) = result {
             let _ = crate::kill_failed(e);
         }
@@ -1394,6 +1401,7 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
         panic!("test seam: a panic after the stop signals' unblock, before sheepr's CONT");
     }
     crate::seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS");
+    crate::seam_hold("SHEEPR_TEST_HOLD_BEFORE_CONT_CHECK");
     let mut ended = false;
     if !cont_blocked {
         // The job may have ended while the root was suspended (its relay died, or TERM

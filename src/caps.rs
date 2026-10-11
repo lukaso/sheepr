@@ -35,6 +35,12 @@ pub fn set(timeout: Option<Duration>, max_mem: Option<u64>, max_procs: Option<us
     }
 }
 
+/// No limit applies from now on (a run refused before its command runs: its kill is not the job's).
+#[cfg(target_os = "macos")]
+pub fn off() {
+    *C.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// The job starts now (after the auto-sweep, right before the root is spawned): the timeout
 /// counts the command's time only.
 pub fn start() {
