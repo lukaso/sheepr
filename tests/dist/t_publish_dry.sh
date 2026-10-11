@@ -30,7 +30,9 @@
 #     remote tag's, split out of publish_exec, which calls it first: it reads no remote and writes
 #     nothing; no remote tag, or one at another commit, is still refused before any POST;
 #   - `shipping` is never inherited: an exported shipping=yes neither skips the second
-#     confirmation nor requires verify's binding.
+#     confirmation nor requires verify's binding; under __publish-dry's knob SR_PUBLISH_DRY_SHIPPING=yes
+#     (the shipping branches), an unverified archive is refused before any call, and a verified one
+#     is published with no second confirmation.
 set -u
 . "$(dirname "$0")/lib.sh"
 fx_dir; fx_repo
@@ -484,6 +486,14 @@ SR_PUBLISH_DRY_VERIFIED=$AH; export SR_PUBLISH_DRY_VERIFIED; PUBX=shipping=yes; 
 [ $r = 0 ] && [ "$(grep -c '^ask ' "$FX/calls")" = 1 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes: the second confirmation is still asked (0)" || fail "exported shipping, the ask: rc=$r asks=$(grep -c '^ask ' "$FX/calls") $(tail -1 "$FX/o")"
 PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
 [ $r = 0 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes without verify's hash: publish goes on, as today (0)" || fail "exported shipping, verify: rc=$r $(tail -1 "$FX/o")"
+# the shipping branches, reached through __publish-dry's own knob (SR_PUBLISH_DRY_SHIPPING=yes; read
+# by that entry only, release.sh's shipping still set at its start): verify's binding required (no
+# verified archive: refused before any npm or gh call), and no second confirmation (the PATCH with
+# no ask)
+PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 1 ] && [ ! -s "$FX/calls" ] && grep -q 'verify has not judged the archive' "$FX/o" && pass "shipping, no verified archive: refused before any npm or gh call (1)" || fail "shipping, unverified: rc=$r calls=$(seq) $(tail -1 "$FX/o")"
+SR_PUBLISH_DRY_VERIFIED=$AH; export SR_PUBLISH_DRY_VERIFIED; PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && [ "$(grep -c '^ask ' "$FX/calls")" = 0 ] && pass "shipping, the archive verified: published with no second confirmation (0)" || fail "shipping, verified: rc=$r asks=$(grep -c '^ask ' "$FX/calls") $(seq) $(tail -1 "$FX/o")"
 # publish_check: defined once; publish_exec calls it first; it reads no remote and writes nothing
 pc=$(body publish_check); pe=$(body publish_exec)
 n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{(]|\$)|publish_check[[:space:]]*[(][[:space:]]*[)])" "$SR_ROOT/scripts/release.sh")

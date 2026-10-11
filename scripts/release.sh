@@ -518,6 +518,8 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-dry (stand-ins; verify not run; a temp HOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
+  # the cells' way into the shipping branches (only `yes` sets it; the planned ship sets shipping itself)
+  [ "${SR_PUBLISH_DRY_SHIPPING:-}" = yes ] && shipping=yes
   GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry \
     CURL=$SR_PUBLISH_DRY_CURL CURLC=dry publish_exec "$out/$tag"
   rm -rf "$DRYHOME"
