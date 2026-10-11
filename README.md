@@ -203,8 +203,10 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   `not-started` when it never ran. `root_code` is its exit code when it exited and
   `root_signal` the number of the signal that ended it; the other one is null. Both are null
   when the command never ran, and when sheepr did not see how it ended (then `root` is
-  `signaled`). When `trigger` is set, they say how sheepr's kill ended the command (a signal
-  sheepr sent, or an exit while it had time to end), not the command's own result.
+  `signaled`). When `trigger` is set, they say how the command ended while the job was being
+  ended: by itself (it exited just as the TERM came, or while it had time to end), by your
+  signal (a TERM to the whole process group reaches the command too), or by sheepr's kill. They
+  are not the command's own result for the job.
 - `sweep` exits 0 when it is done, also when there is nothing to sweep; 1 when it refuses and
   signals nothing (the state directory or its journal folder is not safe, cannot be reached or
   cannot be listed; sheepr cannot follow its own chain of parent processes; on Linux, no /proc of

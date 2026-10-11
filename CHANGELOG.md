@@ -11,15 +11,17 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
 - `run --status-fd`: two new fields, `root_code` (the command's exit code when it exited) and
   `root_signal` (the number of the signal that ended it), each null otherwise. Both are null when
   the command never ran, and when sheepr did not see how it ended. When `trigger` is set (`term`,
-  `timeout`, `cap`), they say how sheepr's kill ended the command (a signal sheepr sent, or an exit
-  while it had time to end), not the command's own result
-  ([#17](https://github.com/lukaso/sheepr/issues/17)).
+  `timeout`, `cap`), they say how the command ended while the job was being ended: by itself (it
+  exited just as the TERM came, or while it had time to end), by the caller's signal (a TERM to
+  the whole process group reaches the command too), or by sheepr's kill. They are not the
+  command's own result for the job ([#17](https://github.com/lukaso/sheepr/issues/17)).
 - `run --status-fd`: `root` now follows how the command really ended. Values that change:
-  - a command that exits by itself while sheepr ends the job (after a TERM from outside or a
-    limit, during the grace) is `"exited"`, not `"signaled"`;
+  - a command that exits by itself as sheepr takes a TERM, or while sheepr ends the job (after a
+    TERM from outside or a limit, during the grace), is `"exited"`, not `"signaled"`;
   - on Linux, a command that cannot be run (not found, not executable) is `"not-started"` also
     when a TERM reaches sheepr at the same moment, or when it fails while the job is being ended;
-    before, that was `"signaled"`;
+    before, that was `"signaled"`. When it fails while the job is being ended, `error` now says
+    `cannot run …`; before, it was null;
   - with `--mode root-disclaim` (macOS, not a stable flag), a job ended by a TERM from outside
     is `"signaled"` with both new fields null, not `"not-started"`;
   - on macOS, when sheepr has seen the command end but its wait for it fails, `root` is

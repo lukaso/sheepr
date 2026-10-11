@@ -13,12 +13,16 @@
 //! when it exited, `root_signal` the number of the signal that ended it; `root` follows them
 //! ("exited" exactly with `root_code`, "signaled" exactly with `root_signal`). Both are null when
 //! the command never ran (`root` "not-started": an exec that failed clears and blocks them) and
-//! when its end was not observed (`root` "signaled"): a macOS wait on the root that failed (a lost
-//! wait: exit 125, `error` names it, nothing made up), a root still alive after the kill (the
-//! macOS reap after the kill never waits on a root whose identity still reads, as a setuid root
-//! the scan cannot see), and `--mode root-disclaim`'s TERM path, which does not reap the root.
-//! Under a trigger they say how sheepr's kill ended the root (a signal it sent, or an exit
-//! during the grace), not the command's own verdict.
+//! when its end was not observed (`root` "signaled"): a macOS wait on the root that failed once
+//! its exit was seen (a lost wait: exit 125, `error` names it, nothing made up; a failed poll of
+//! a running root is never an end), a root still alive after the kill (the macOS reap after the
+//! kill never waits on a root whose identity still reads, as a setuid root the scan cannot see),
+//! a root that the macOS reap after the kill saw exiting but could not reap within its 1 s
+//! (`root-after-kill unseen` in the debug trace), and `--mode root-disclaim`'s TERM path, which
+//! does not reap the root. Under a trigger they are the root's end whoever caused it: its own end
+//! (an exit as the TERM was taken, or during the grace), the caller's signal (a TERM to the whole
+//! process group reaches the root too), or sheepr's kill; not the command's own verdict on the
+//! job.
 
 use std::io::Write;
 use std::sync::Mutex;
