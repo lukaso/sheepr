@@ -1,6 +1,7 @@
 #!/bin/sh
 # scripts/release.sh's typed-tag confirmation, at a real terminal (a pty from `script`): `publish`,
-# `publish-npm` and `publish-cask` make a release public and ask for the tag (their only human confirmation);
+# `publish-npm`, `publish-cask` and `ship` make a release public and ask for the tag (ship once, for
+# every public step);
 # `build --sign` does not ask (the notary keychain's own password is its gate). Every run names a
 # tag that does not exist, with no input: a run that asks stops at the empty answer (exit 4), one
 # that does not goes on to the checks and stops there (no tag: exit 1), before any tool runs.
@@ -24,4 +25,6 @@ t "build --sign --no-notarize at a terminal: no typed tag either" 1 no "release:
 t "control: publish at a terminal asks for the tag (no answer: not confirmed)" 4 yes "Type the tag" publish v9.9.9
 t "control: publish-npm at a terminal asks for the tag" 4 yes "Type the tag" publish-npm v9.9.9
 t "publish-cask at a terminal asks for the tag" 4 yes "Type the tag" publish-cask v9.9.9
+t "ship at a terminal asks for the tag (no answer: not confirmed)" 4 yes "Type the tag" ship v9.9.9
+[ "$(grep -o 'Type the tag' "$FX/o" | grep -c .)" = 1 ] && grep -q 'release: ship v9.9.9: build, sign and notarize it' "$FX/o" && pass "  ship asks once, its own question" || fail "  ship's questions: $(grep -o 'Type the tag' "$FX/o" | grep -c .)"
 finish

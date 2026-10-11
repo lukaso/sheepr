@@ -345,6 +345,7 @@ want_publish_cask='publish_cask() {
   publish_cask_exec "$out/$tag"
 }'
 want_real_tools='real_tools() {
+  [ "$dryentry" = no ] || die "real_tools in a dry entry"
   GH=gh GITCMD=git NPM=npm NPMC=npm DRY=no NETC=net CURL=/usr/bin/curl CURLC=web
 }'
 for e in publish publish_cask real_tools; do

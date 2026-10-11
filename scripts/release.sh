@@ -12,6 +12,8 @@
 #                                                     public (a retry after exit 5; the operator)
 #   release.sh publish-npm [--out DIR] vTAG           publish the four npm packages (the operator)
 #   release.sh verify [--out DIR] vTAG                the release's facts from its archive (read-only)
+#   release.sh ship [--out DIR] vTAG                  the whole release of a final tag in one run, the
+#                                                     human steps grouped (the operator; the ship plan)
 #
 # The checks (check, build): the tag is vX.Y.Z or vX.Y.Z-rc.N; the tree is clean (no change, no
 # untracked file); HEAD is the tag's commit; the tag's Cargo.toml and Cargo.lock say X.Y.Z; the tag's
@@ -39,10 +41,16 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # publish_check requires verify's binding); npm_part (publish_npm_exec's sub-mode: platform, main,
 # or empty for today's order); NOTIFY (the notifier publish_npm_exec calls: the real notify.sh only
 # in a real entry, a stand-in in a dry one; empty refuses)
-unset shipping npm_part NOTIFY
-shipping=no npm_part="" NOTIFY=""
+# ship's tools come from variables of release.sh's own too, each set by an entry (the real ones in
+# the real entries, stand-ins in the dry ones), never from the environment: SHIP_BUILD (the build
+# child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
+# CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
+unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh
+shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
-usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
+usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; exit 1; }
 
 [ $# -ge 1 ] || usage
@@ -60,14 +68,14 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$tag" ] || usage
 case $sub in
-  check|build|publish|publish-cask|publish-npm|npm-check|verify|__publish-dry|__publish-cask-dry|__publish-npm-dry|__npm-env|__curl-env) ;;
+  check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env) ;;
   *) usage ;;
 esac
 [ $sign = no ] || [ "$sub" = build ] || usage
 [ $nonot = no ] || [ $sign = yes ] || usage
 
 # the gate of the operator-only entries
-if { [ "$sub" = build ] && [ $sign = yes ]; } || [ "$sub" = publish ] || [ "$sub" = publish-cask ] || [ "$sub" = publish-npm ]; then
+if { [ "$sub" = build ] && [ $sign = yes ]; } || [ "$sub" = publish ] || [ "$sub" = publish-cask ] || [ "$sub" = publish-npm ] || [ "$sub" = ship ]; then
   # the system's env and grep, the grep with no environment: neither a tool on PATH nor a variable
   # it reads (GREP_OPTIONS) can hide the test environment; only grep's "no match" (1) lets it on,
   # so a grep that fails refuses too
@@ -81,7 +89,12 @@ if { [ "$sub" = build ] && [ $sign = yes ]; } || [ "$sub" = publish ] || [ "$sub
   # publish, publish-cask and publish-npm make a release public: the typed tag is their human confirmation. A
   # signed build asks for nothing here: the notary keychain's own password, typed at the terminal,
   # is its gate (operator, 2026-10-06)
-  if [ "$sub" != build ]; then
+  if [ "$sub" = ship ]; then
+    # ship's one question covers every step that makes the release public (publish asks no second one)
+    printf 'release: ship %s: build, sign and notarize it, push main and the tag, publish it on GitHub, update lukaso/homebrew-tap and publish the four npm packages. Type the tag to go on: ' "$tag" > /dev/tty
+    IFS= read -r answer < /dev/tty || exit 4
+    [ "$answer" = "$tag" ] || { echo "release: not confirmed" >&2; exit 4; }
+  elif [ "$sub" != build ]; then
     printf 'release: %s %s. Type the tag to go on: ' "$sub" "$tag" > /dev/tty
     IFS= read -r answer < /dev/tty || exit 4
     [ "$answer" = "$tag" ] || { echo "release: not confirmed" >&2; exit 4; }
@@ -490,6 +503,7 @@ publish_exec() { # dir
 # the real run's tools and classes, one definition for publish, publish-cask and __curl-env (which
 # prints the curl class, so a cell sees the class the real entries use)
 real_tools() {
+  [ "$dryentry" = no ] || die "real_tools in a dry entry"
   GH=gh GITCMD=git NPM=npm NPMC=npm DRY=no NETC=net CURL=/usr/bin/curl CURLC=web
 }
 publish() {
@@ -513,6 +527,7 @@ standins() { # VAR...: each names a stand-in for a dry run, or refuse
   done
 }
 publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; verify is not run
+  dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
@@ -624,6 +639,7 @@ publish_cask() {
   publish_cask_exec "$out/$tag"
 }
 publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real gh or curl
+  dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
@@ -779,6 +795,7 @@ publish_npm_exec() { # dir
 # exported, and stays, under the system's sh (measured)
 publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
 publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the real one
+  dryentry=yes
   standins SR_PUBLISH_DRY_NPM
   # the notifier, when one is given: a stand-in, never the tree's own notify.sh (the real notifier).
   # None given leaves NOTIFY empty, which publish_npm_exec refuses before any npm call
@@ -870,6 +887,61 @@ verify() { # dir -> exit 1 naming the tool that refused
   echo "release: $d: signed, notarized and stapled (checked from the archive)"
 }
 
+# --- ship: the whole release of a final tag in one run (the ship plan; PHASE3.md §5) ------------
+# One orchestration, ship_run, serves `ship` (the real tools; behind the gate and its one question)
+# and `__ship-dry` (stand-ins; the cells). The real entry's values are pinned by text in t_ship_dry.
+ship() {
+  SHIP_BUILD=/bin/sh SHIP_NPMCHECK=npm_check SHIP_VERIFY=verify NOTIFY=frozen-tree CAFFEINATE=/usr/bin/caffeinate SHIP_IDENTITY=/usr/bin/security SHIP_DOCKER=docker
+  real_tools
+  shipping=yes
+  ship_run
+}
+ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no gate, no question
+  dryentry=yes
+  standins SR_SHIP_DRY_BUILD SR_SHIP_DRY_NPMCHECK SR_SHIP_DRY_NOTIFY SR_SHIP_DRY_CAFFEINATE SR_SHIP_DRY_IDENTITY SR_SHIP_DRY_DOCKER \
+    SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
+  cmp -s "$SR_SHIP_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_SHIP_DRY_NOTIFY is the real notify.sh, not a stand-in"
+  DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
+  SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
+  CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
+  GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry
+  shipping=yes
+  ship_run
+}
+ship_dry_verify() { # dir: verify's stand-in in __ship-dry (verify runs the real Apple tools): the
+                    # archive judged is the hash SR_PUBLISH_DRY_VERIFIED names, or none (1)
+  [ -n "${SR_PUBLISH_DRY_VERIFIED:-}" ] || { echo "release: verify (dry): no SR_PUBLISH_DRY_VERIFIED, no archive judged" >&2; return 1; }
+  verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
+}
+ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A, B, C)
+  # A1. the tag first (every path below is built from it): a final vX.Y.Z only
+  valid "$tag" || die "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
+  case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
+  case $out in /*) ;; *) out=$(pwd -P)/$out || die "cannot read the working directory" ;; esac
+  mkdir -p "$out" || die "cannot make $out"
+  st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
+  locked=no logged_in=no armed=no phase=preflight oroot=$root
+  trap 'ship_exit $?' EXIT
+  trap 'exit 1' INT HUP TERM
+  # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
+  mkdir "$out/.ship.lock" 2>/dev/null || die "another ship holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when no ship runs, remove that directory, then run ship again"
+  echo $$ > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
+  locked=yes
+  # this run's own record, started once it holds the lock: the stop text is built from it
+  shipprog=$out/.$tag.ship-progress
+  printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
+  die "ship's pre-flight is not built yet; nothing was done"
+}
+ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
+  trap '' INT HUP TERM PIPE
+  rc=$1
+  [ -z "$DRYHOME" ] || rm -rf "$DRYHOME"
+  rm -rf "${st:?}"
+  [ "$locked" = yes ] && rm -rf "${out:?}/.ship.lock"
+  exit "$rc"
+}
+
 case $sub in
   check) checks ;;
   verify) verify "$out/$tag" ;;
@@ -888,6 +960,8 @@ case $sub in
   publish-npm) publish_npm ;;
   __publish-npm-dry) publish_npm_dry ;;
   # the cells' view of the npm class: the environment the real run's npm gets (it runs only env)
+  ship) ship ;;
+  __ship-dry) ship_dry ;;
   __npm-env) tool npm /usr/bin/env ;;
   __curl-env) real_tools; tool "$CURLC" /usr/bin/env ;;
   npm-check) npm_check "$out/$tag" ;;

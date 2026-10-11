@@ -4,7 +4,7 @@
 # or malformed tag, a tag whose X.Y.Z is not Cargo.toml's version, a build counter not above the
 # previous tag's (previous = highest tag below, with -rc sorting before the final), a final tag
 # whose CHANGELOG has no `## X.Y.Z (YYYY-MM-DD)` entry (still "not yet released", or none): exit 1.
-# `build --sign`, `publish` and `publish-npm` refuse under the test environment (exit 3) and without a terminal
+# `build --sign`, `publish`, `publish-npm`, `publish-cask` and `ship` refuse under the test environment (exit 3) and without a terminal
 # (exit 4), before anything runs; a usage error is exit 2. The codes tell the reasons apart, so a
 # script that refused everything would not pass.
 set -u
@@ -83,12 +83,14 @@ for v in SHEEPR_TEST_TAG=0123456789abcdef SHEEPR_TEST_STATE=/x; do
   refused 3 "publish under $v" $E "$v" sh "$RS" publish v0.1.0
   refused 3 "publish-npm under $v" $E "$v" sh "$RS" publish-npm v0.1.0
   refused 3 "publish-cask under $v" $E "$v" sh "$RS" publish-cask v0.1.0
+  refused 3 "ship under $v" $E "$v" sh "$RS" ship v0.1.0
 done
 # with a lying `env` first on PATH (it lists nothing), the test environment is still seen
 mkdir -p "$FX/liar"; printf '#!/bin/sh\nexit 0\n' > "$FX/liar/env"; chmod 755 "$FX/liar/env"
 printf '#!/bin/sh\nexec env PATH="%s" HOME="%s" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"\n' "$FX/liar:$FX/sh:$PATH" "$FX/ghome" > "$FX/eL"; chmod +x "$FX/eL"
 refused 3 "publish under SHEEPR_TEST_STATE with a lying env on PATH" "$FX/eL" SHEEPR_TEST_STATE=/x sh "$RS" publish v0.1.0
 refused 3 "publish-cask under SHEEPR_TEST_STATE with a lying env on PATH" "$FX/eL" SHEEPR_TEST_STATE=/x sh "$RS" publish-cask v0.1.0
+refused 3 "ship under SHEEPR_TEST_STATE with a lying env on PATH" "$FX/eL" SHEEPR_TEST_STATE=/x sh "$RS" ship v0.1.0
 # premise for the GREP_OPTIONS rows below: the system grep reads it, and GREP_OPTIONS=-x hides the
 # variable by "no match" (exit 1, not an error the gate would refuse on anyway); without it, a match
 printf 'SHEEPR_TEST_X=1\n' | GREP_OPTIONS=-x /usr/bin/grep -q '^SHEEPR_TEST_' 2>/dev/null; g1=$?
@@ -97,7 +99,7 @@ printf 'SHEEPR_TEST_X=1\n' | /usr/bin/grep -q '^SHEEPR_TEST_' 2>/dev/null; g0=$?
 # and with a lying `grep` (it never matches): the gate's tools are the system's
 mkdir -p "$FX/liarg"; printf '#!/bin/sh\nexit 1\n' > "$FX/liarg/grep"; chmod 755 "$FX/liarg/grep"
 printf '#!/bin/sh\nexec env PATH="%s" HOME="%s" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"\n' "$FX/liarg:$FX/sh:$PATH" "$FX/ghome" > "$FX/eG"; chmod +x "$FX/eG"
-for e in "publish" "publish-npm" "publish-cask" "build --sign"; do
+for e in "publish" "publish-npm" "publish-cask" "build --sign" "ship"; do
   refused 3 "$e under SHEEPR_TEST_STATE with a lying grep on PATH" "$FX/eG" SHEEPR_TEST_STATE=/x sh "$RS" $e v0.1.0
   # GREP_OPTIONS (the system grep reads it) cannot hide it either; control: alone, no terminal (4)
   refused 3 "$e under SHEEPR_TEST_STATE with GREP_OPTIONS set" $E SHEEPR_TEST_STATE=/x GREP_OPTIONS=-x sh "$RS" $e v0.1.0
@@ -109,8 +111,9 @@ refused 4 "build --sign with no terminal (new session)" nott sh -c "echo v0.1.0 
 refused 4 "publish with no terminal (new session)" nott sh -c "echo v0.1.0 | $E sh '$RS' publish v0.1.0"
 refused 4 "publish-npm with no terminal (new session)" nott sh -c "echo v0.1.0 | $E sh '$RS' publish-npm v0.1.0"
 refused 4 "publish-cask with no terminal (new session)" nott sh -c "echo v0.1.0 | $E sh '$RS' publish-cask v0.1.0"
+refused 4 "ship with no terminal (new session)" nott sh -c "echo v0.1.0 | $E sh '$RS' ship v0.1.0"
 # control for the GREP_OPTIONS rows above: GREP_OPTIONS alone changes nothing (no terminal: 4)
-for e in "publish" "publish-npm" "publish-cask" "build --sign"; do
+for e in "publish" "publish-npm" "publish-cask" "build --sign" "ship"; do
   refused 4 "$e with GREP_OPTIONS alone (control: no terminal)" nott sh -c "echo v0.1.0 | $E GREP_OPTIONS=-x sh '$RS' $e v0.1.0"
 done
 finish
