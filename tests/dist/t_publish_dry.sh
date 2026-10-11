@@ -488,9 +488,28 @@ PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
 pc=$(body publish_check); pe=$(body publish_exec)
 n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{(]|\$)|publish_check[[:space:]]*[(][[:space:]]*[)])" "$SR_ROOT/scripts/release.sh")
 [ -n "$pc" ] && [ "$n" = 1 ] && pass "publish_check: defined once" || fail "publish_check is defined $n times"
-[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1"' ] && pass "publish_exec calls publish_check first" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
-[ -z "$pc" ] || printf '%s\n' "$pc" | grep -v '^ *#' | grep -q -e 'ls-remote' -e 'GITCMD' -e '-X POST' -e '-X PATCH' -e '-X PUT' -e 'release-plan' -e 'confirm ' \
-  && fail "publish_check reads the remote, plans, asks or writes: $(printf '%s\n' "$pc" | grep -e ls-remote -e GITCMD -e '-X ' -e release-plan -e 'confirm ' | head -2 | tr '\n' ' ')" \
-  || pass "publish_check reads no remote, runs no planner, asks nothing and writes nothing"
+# publish_exec calls publish_check first and stops unless it returns 0 (so every success row above,
+# a final tag with the cask put, already there, older, and an rc, pins that it returns 0)
+[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1" || die "the checks before publishing did not pass; nothing is published"' ] \
+  && pass "publish_exec calls publish_check first, and stops unless it returns 0" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
+# the text of publish_check and of each function it calls (a fixed list: the text cannot follow a
+# call it does not name): no remote tag read, no planner, no question, no write. It reads the
+# network otherwise (npm's owners, the tap's cask and its write right)
+fbody() { # name file -> the function's text (a one-line function: its line)
+  awk -v n="$1" '$0 ~ "^" n "\\(\\) \\{" { f = 1; print; if ($0 ~ /\}[[:space:]]*(#.*)?$/) exit; next } f { print } f && /^}/ { exit }' "$2"
+}
+pcwrites() { # file -> the lines of publish_check and its callees that read the remote tag, plan, ask or write
+  for fn in publish_check private_manifest stamp_ok stamp_line files_ok man_hash npm_list npm_owners npy cask_pre blob_id; do
+    b=$(fbody "$fn" "$1"); [ -n "$b" ] || { echo "MISSING $fn"; continue; }
+    printf '%s\n' "$b" | grep -v '^ *#' | grep -e 'ls-remote' -e 'GITCMD' -e '-X POST' -e '-X PATCH' -e '-X PUT' -e 'release-plan' -e 'confirm '
+  done
+}
+w=$(pcwrites "$SR_ROOT/scripts/release.sh")
+[ -n "$pc" ] && [ -z "$w" ] && pass "publish_check and the functions it calls read no remote tag, run no planner, ask nothing and write nothing" || fail "publish_check's text: $(printf '%s' "$w" | head -2 | tr '\n' ' ')"
+# the control: a copy with a remote read planted in publish_check, and one with a write planted in
+# cask_pre (a callee); each is caught (the copies are never run)
+awk '{ print } /^publish_check\(\) \{/ && !d { print "  tool \"$NETC\" \"$GITCMD\" ls-remote \"$UPSTREAM\" x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant1.sh"
+awk '{ print } /^cask_pre\(\) \{/ && !d { print "  tool \"$NETC\" \"$GH\" api -X PUT x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant2.sh"
+[ -n "$(pcwrites "$FX/rel-plant1.sh")" ] && [ -n "$(pcwrites "$FX/rel-plant2.sh")" ] && pass "control: a remote read planted in publish_check, and a write planted in cask_pre, are each caught" || fail "control: plant1 '$(pcwrites "$FX/rel-plant1.sh")' plant2 '$(pcwrites "$FX/rel-plant2.sh")'"
 
 finish

@@ -402,9 +402,11 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 }
 # publish_check: every check publish makes before a write, except the remote tag's (that is the
 # planner's, in publish_exec): the private manifest, npm-check's stamp, the files, verify's binding,
-# SHA256SUMS, npm's list and owners, the Homebrew cask's checks. It reads no remote and writes
-# nothing; ship runs it before its push (the ship plan, C3). It makes this run's private temp dir
-# ($pt, removed at exit) and sets what publish_exec goes on with (MAN, sums_h, cask, cask_put, ...).
+# SHA256SUMS, npm's list and owners, the Homebrew cask's checks. It does not read the remote tag
+# and writes nothing public; it does read the network (npm owner ls for the four names; the tap's
+# cask and its write right, through gh). The planned ship runs it before its push (the ship plan,
+# C3). It makes this run's private temp dir ($pt, removed at exit), sets what publish_exec goes on
+# with (MAN, sums_h, cask, cask_put, ...) and returns 0 when every check passed.
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
@@ -433,9 +435,10 @@ publish_check() { # dir
        # a backport (a final tag older than the tap's cask): published, the cask never moved back
        [ "$cask_put" = older ] && { cask=no; echo "release: $TAP's cask is $cask_tap, newer than $tag: the Homebrew cask is not touched"; } ;;
   esac
+  return 0   # every check passed (a refusal dies above); publish_exec and ship test it
 }
 publish_exec() { # dir
-  publish_check "$1"
+  publish_check "$1" || die "the checks before publishing did not pass; nothing is published"
   tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote" || die "git ls-remote $UPSTREAM"
   tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases" --paginate --jq '.[].tag_name' > "$pt/releases" || die "gh: cannot list the releases"
   (cd "$root" && sh scripts/release-plan.sh --out "$d" --manifest "$MAN" --tag "$tag" --remote "$pt/remote" --releases "$pt/releases") > "$pt/plan" || die "the planner refused"
