@@ -770,18 +770,26 @@ publish_npm_exec() { # dir
   if [ "$npm_part" = platform ]; then echo "release: the platform packages of $tag are uploaded; npm shows each one after its scan"
   else echo "release: the four npm packages of $tag are on npm. Next: npm logout, and the token check (PHASE3.md §5)"; fi
 }
-publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh publish_npm_exec "$out/$tag"; }
+# the entries set their tools with plain assignments: an assignment before a function call is
+# exported, and stays, under the system's sh (measured)
+publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
 publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the real one
-  standins SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_NOTIFY
-  # the tree's own notify.sh is not a stand-in: it is the real notifier
-  cmp -s "$SR_PUBLISH_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_PUBLISH_DRY_NOTIFY is the real notify.sh, not a stand-in"
+  standins SR_PUBLISH_DRY_NPM
+  # the notifier, when one is given: a stand-in, never the tree's own notify.sh (the real notifier).
+  # None given leaves NOTIFY empty, which publish_npm_exec refuses before any npm call
+  if [ -n "${SR_PUBLISH_DRY_NOTIFY+set}" ]; then
+    standins SR_PUBLISH_DRY_NOTIFY
+    cmp -s "$SR_PUBLISH_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_PUBLISH_DRY_NOTIFY is the real notify.sh, not a stand-in"
+    NOTIFY=$SR_PUBLISH_DRY_NOTIFY
+  fi
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME)"
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
   [ -z "${SR_PUBLISH_DRY_NPM_PART+set}" ] || npm_part=$SR_PUBLISH_DRY_NPM_PART
-  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry NOTIFY=$SR_PUBLISH_DRY_NOTIFY publish_npm_exec "$out/$tag"
+  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry
+  publish_npm_exec "$out/$tag"
   rm -rf "$DRYHOME"
 }
 

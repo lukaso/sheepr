@@ -18,7 +18,9 @@
 #     refused there;
 #   - __publish-npm-dry refuses a stand-in outside /private/tmp/sr-p3-fixtures.*;
 #   - the notifier (the ship plan, slice 2): NOTIFY, a stand-in in the dry entry
-#     (SR_PUBLISH_DRY_NOTIFY; unset, or the real notify.sh, refused before any npm call), is called
+#     (SR_PUBLISH_DRY_NOTIFY; unset, NOTIFY stays empty and publish_npm_exec refuses it, "no
+#     notifier"; empty, outside the fixtures, a symlink or the real notify.sh: refused by the stand-in
+#     checks; each before any npm call; NOTIFY, NPM and NETC are never exported), is called
 #     with SR_NOTIFY_OSASCRIPT set (so no dry run can show a real notification): `npm-approve-again`
 #     right before the main package's upload; the real entry's body pinned;
 #   - npm_part (the batch order under ship; SR_PUBLISH_DRY_NPM_PART in the dry entry, never
@@ -100,12 +102,13 @@ chmod +x "$FX/npm"
 # the notifier's stand-in: "notify KEY TAG" into the calls, and whether SR_NOTIFY_OSASCRIPT was set
 printf '#!/bin/sh\necho "notify $*" >> "%s/calls"\necho "${SR_NOTIFY_OSASCRIPT+set}" >> "%s/notifyenv"\n' "$FX" "$FX" > "$FX/notify"
 chmod +x "$FX/notify"
-mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\n' "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
+# (it also records which of the entry's own variables reached it through the environment: names only)
+mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\nfor k in NOTIFY NPM NETC npm_part shipping; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\n' "$FX" "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
 echo lukasco > "$FX/whoami"
 pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the notifier (default the
        # stand-in; "-": none); PUBX: one more assignment. Set them as plain assignments, clear after
   rm -f "$FX/calls" "$FX"/env.npm.* "$FX/pubsha" "$FX"/pub.* "$FX/sleeps" "$FX/notifyenv"
-  if [ "${NOTI:-}" = - ]; then nv_=SR_PUBLISH_DRY_NOTHING=; else nv_=SR_PUBLISH_DRY_NOTIFY=${NOTI:-$FX/notify}; fi
+  case ${NOTI:-} in -) nv_=SR_PUBLISH_DRY_NOTHING= ;; --empty) nv_=SR_PUBLISH_DRY_NOTIFY= ;; *) nv_=SR_PUBLISH_DRY_NOTIFY=${NOTI:-$FX/notify} ;; esac
   (cd "$REPO" && no_osascript env HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
     HTTPS_PROXY=http://127.0.0.1:9 NPM_CONFIG_USERCONFIG="$FX/decoy-npmrc" \
     PATH="$FX/bin:$PATH" SR_PUBLISH_DRY_NPM="$FX/npm" ${PART:+SR_PUBLISH_DRY_NPM_PART="$PART"} ${PUBX:+"$PUBX"} "$nv_" \
@@ -309,7 +312,9 @@ mkout "$D" v0.1.0; PUBX=npm_part=platform; pub v0.1.0; r=$?; PUBX=
 [ $r = 0 ] && [ "$(order)" = "$TODAY" ] && pass "an exported npm_part=platform: today's order, unchanged (0)" || fail "exported npm_part: rc=$r $(order)"
 # the notifier: none, or the real notify.sh (the fixture's), refused before any npm call
 mkout "$D" v0.1.0; NOTI=-; pub v0.1.0; r=$?; NOTI=
-[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'SR_PUBLISH_DRY_NOTIFY is not an executable file' "$FX/o" && pass "no notifier (SR_PUBLISH_DRY_NOTIFY unset): refused by the stand-in check, npm never called" || fail "no notifier: rc=$r $(order) $(tail -1 "$FX/o")"
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'release: no notifier' "$FX/o" && pass "no notifier (SR_PUBLISH_DRY_NOTIFY unset, NOTIFY empty): refused by publish_npm_exec, npm never called" || fail "no notifier: rc=$r $(order) $(tail -1 "$FX/o")"
+mkout "$D" v0.1.0; NOTI=--empty; pub v0.1.0; r=$?; NOTI=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'SR_PUBLISH_DRY_NOTIFY is not an executable file' "$FX/o" && pass "an empty SR_PUBLISH_DRY_NOTIFY: refused by the stand-in check, npm never called" || fail "empty notifier: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; NOTI=$REPO/scripts/lib/notify.sh; pub v0.1.0; r=$?; NOTI=
 [ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q 'the real notify.sh' "$FX/o" && pass "the real notify.sh as the dry notifier: refused, npm never called" || fail "real notify.sh: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; PART=bogus; pub v0.1.0; r=$?; PART=
@@ -355,7 +360,7 @@ integrity "$D/sheepr-0.1.0.tgz" > "$FX/view.sheepr"; PART=main; pub v0.1.0; r=$?
 [ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && grep -q 'already on npm (the same file)' "$FX/o" \
   && pass "main: the main package already on npm (this file): skipped, no notification (0)" || fail "main, main there: rc=$r $(order)"
 # the real entry, which no dry run reaches: its body exactly, defined once, and its dispatch arm
-want='publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh publish_npm_exec "$out/$tag"; }'
+want='publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'
 [ "$(grep -c '^publish_npm() ' "$SR_ROOT/scripts/release.sh")" = 1 ] && grep -qxF "$want" "$SR_ROOT/scripts/release.sh" \
   && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
 grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass "the dispatch: '  publish-npm) publish_npm ;;'" || fail "the publish-npm dispatch arm"
@@ -363,15 +368,30 @@ nb=$(sed -n '/^notify() {/,/^}/p' "$SR_ROOT/scripts/release.sh")
 printf '%s\n' "$nb" | grep -qF 'then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$1" "$tag"' && printf '%s\n' "$nb" | grep -qF 'else tool base "$NOTIFY" "$1" "$tag"; fi' \
   && pass "notify(): a dry entry's notifier with SR_NOTIFY_OSASCRIPT set, a real entry's in the base class" || fail "notify()'s body: $(printf '%s' "$nb" | tr '\n' ' ')"
 
-# __publish-npm-dry refuses a stand-in outside the fixtures; the outside one is never called
+# __publish-npm-dry refuses a stand-in outside the fixtures, for the npm and for the notifier, each
+# with the other one valid and a full release to publish: the refusal names it, the outside one is
+# never called (inside the wall, as every run here)
 OUT=$(mktemp -d /private/tmp/sr-outside.XXXXXX); trap 'rm -rf "$OUT" "$FX"' EXIT
 printf '#!/bin/sh\necho "OUTSIDE $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OUT/npm"; chmod +x "$OUT/npm"
-ln -s "$OUT/npm" "$FX/npm-link"
+printf '#!/bin/sh\necho "OUTSIDE notify $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OUT/notify"; chmod +x "$OUT/notify"
+ln -s "$OUT/npm" "$FX/npm-link"; ln -s "$OUT/notify" "$FX/notify-link"
+mkout "$D" v0.1.0
 for spec in "outside:$OUT/npm" "symlink:$FX/npm-link"; do
   l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
-  (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_NPM="$p" sh scripts/release.sh __publish-npm-dry --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; r=$?
-  [ $r != 0 ] && [ ! -e "$OUT/called" ] && pass "__publish-npm-dry, a $l npm: refused, the outside npm never called" || fail "__publish-npm-dry, $l: rc=$r"
+  PUBX=SR_PUBLISH_DRY_NPM=$p; pub v0.1.0; r=$?; PUBX=
+  [ $r = 1 ] && [ ! -e "$OUT/called" ] && grep -q -e 'SR_PUBLISH_DRY_NPM must' -e 'SR_PUBLISH_DRY_NPM is not' "$FX/o" \
+    && pass "__publish-npm-dry, a $l npm: refused for the npm stand-in, the outside npm never called" || fail "__publish-npm-dry, $l npm: rc=$r called=$(head -1 "$OUT/called" 2>/dev/null) $(tail -1 "$FX/o")"
 done
+for spec in "outside:$OUT/notify" "symlink:$FX/notify-link"; do
+  l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
+  NOTI=$p; pub v0.1.0; r=$?; NOTI=
+  [ $r = 1 ] && [ ! -e "$OUT/called" ] && [ ! -e "$FX/calls" ] && grep -q -e 'SR_PUBLISH_DRY_NOTIFY must' -e 'SR_PUBLISH_DRY_NOTIFY is not' "$FX/o" \
+    && pass "__publish-npm-dry, a $l notifier: refused for the notifier stand-in before any npm call, the outside notifier never called" || fail "__publish-npm-dry, $l notifier: rc=$r called=$(head -1 "$OUT/called" 2>/dev/null) $(tail -1 "$FX/o")"
+done
+# the entry's variables are plain assignments: none reached a child through the environment (the
+# sleep stand-in runs during a wait, outside the npm class)
+mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-linux-x64"
+[ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && pass "NOTIFY, NPM, NETC, npm_part and shipping are not exported (a waited run's sleep sees none)" || fail "exported to a child: rc=$r sleeps=$(grep -c . "$FX/sleeps" 2>/dev/null) exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
 n=$(ls -d /private/tmp/sr-dryhome.* 2>/dev/null | wc -l | tr -d ' ')
 [ "$n" = 0 ] && pass "no dry HOME is left, after the refused runs too" || fail "$n dry HOME dirs left"
 finish
