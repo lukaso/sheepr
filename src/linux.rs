@@ -888,6 +888,26 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
     }
 }
 
+/// Never let the shim run its command, and reap it: the go pipe is closed unsent, so the shim
+/// exits without its exec. Bounded: a shim that something else stopped never hangs sheepr; after
+/// 2 s it gets SIGKILL (it is this supervisor's own unreaped child, so its pid cannot be reused).
+/// Its end records nothing (never through the recorder: the command never ran).
+fn abandon_shim(shim: &mut Root) {
+    shim.abandon();
+    let root = shim.pid;
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {
+        if std::time::Instant::now() > end {
+            unsafe {
+                libc::kill(root, libc::SIGKILL); // raw signal site: the shim this supervisor spawned (PHASE2.md §0.3)
+                libc::waitpid(root, std::ptr::null_mut(), 0);
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// The Linux state at the end of its pre-root segment: the go byte is sent.
 struct Started {
     relay: Option<i32>,
@@ -941,7 +961,13 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
     if let Some(code) = crate::term_before_spawn(sig) {
         return Err(Before::Ended(code));
     }
-    let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv));
+    let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv, a.require_journal));
+    // plan §3: under --require-journal a journal that cannot be kept refuses the command
+    if a.require_journal && !journal.borrow().ready() {
+        let (what, e) = journal.borrow().why();
+        journal.into_inner().finish(true);
+        return Err(PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}")).into());
+    }
     let mut shim = match spawn(&a.cmd, &sig.caller_mask) {
         Ok(r) => r,
         Err(p) => {
@@ -951,28 +977,30 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
     };
     let root = shim.pid;
     crate::status::set_root_pid(root);
-    // the root is journaled before it runs: the shim waits for the go byte
-    if let Some(id) = sheepr::ident::identity(root) {
+    // the root is journaled before it runs: the shim waits for the go byte (debug seam
+    // SHEEPR_TEST_FAIL_STEP=root-identity: its identity reads as unreadable)
+    let id = if crate::steps::injected(Step::RootIdentity).is_some() { None } else { sheepr::ident::identity(root) };
+    if let Some(id) = id {
         journal.borrow_mut().record_root(root, id, &a.cmd);
     }
-    crate::seam_hold("SHEEPR_TEST_HOLD_BEFORE_GO");
-    // a TERM that came while the root was being journaled: the command never runs (closing the
-    // go pipe unsent makes the shim exit without its exec)
-    if sig.watch_term && crate::term_pending() {
-        shim.abandon();
-        // bounded: a shim that something else stopped never hangs sheepr; after 2 s it gets
-        // SIGKILL (it is this supervisor's own unreaped child, so its pid cannot be reused)
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {
-            if std::time::Instant::now() > end {
-                unsafe {
-                    libc::kill(root, libc::SIGKILL); // raw signal site: the shim this supervisor spawned (PHASE2.md §0.3)
-                    libc::waitpid(root, std::ptr::null_mut(), 0);
-                }
-                break;
+    // plan §3: under --require-journal the command runs only after its line is written: the
+    // shim never gets its go byte and is reaped
+    if a.require_journal && !journal.borrow().kept() {
+        let p = match id {
+            None => PreRoot::new(Step::RootIdentity, None, "the command's identity cannot be read, so it cannot be journaled before it runs; it did not run"),
+            Some(_) => {
+                let (what, e) = journal.borrow().why();
+                PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}"))
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        };
+        abandon_shim(&mut shim);
+        journal.into_inner().finish(true);
+        return Err(p.into());
+    }
+    crate::seam_hold("SHEEPR_TEST_HOLD_BEFORE_GO");
+    // a TERM that came while the root was being journaled: the command never runs
+    if sig.watch_term && crate::term_pending() {
+        abandon_shim(&mut shim);
         crate::status::set_root_final("not-started");
         journal.into_inner().finish(true);
         return Err(Before::Ended(crate::die_by_term(143)));
@@ -1063,6 +1091,13 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
         // as a TERM would, exit 124)
         if crate::caps::check(&live) {
             break None;
+        }
+        // --require-journal (plan §3): a journal this pass's scan found dead ends the job
+        if a.require_journal {
+            if let Some((what, e)) = journal.borrow().lost() {
+                crate::end_by_journal(&what, e);
+                break None;
+            }
         }
         for s in [libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
             if got.contains(&s) {

@@ -66,9 +66,30 @@ fn run(d: &Path, name: &str, args: &str, env: &[(&str, &str)], pre: impl FnOnce(
 /// `run`, with shell text `prefix` run before the `exec` (e.g. a background child, so sheepr
 /// starts with children and forks its relay).
 fn run_after(d: &Path, name: &str, prefix: &str, args: &str, env: &[(&str, &str)], pre: impl FnOnce(&mut std::process::Child)) -> Run {
+    run_full(d, name, prefix, args, env, None, pre)
+}
+
+/// `run_after` by a caller that blocks signal `block` (the mask crosses the shell's exec).
+fn run_masked(d: &Path, name: &str, prefix: &str, args: &str, env: &[(&str, &str)], block: Option<i32>) -> Run {
+    run_full(d, name, prefix, args, env, block, |_| {})
+}
+
+fn run_full(d: &Path, name: &str, prefix: &str, args: &str, env: &[(&str, &str)], block: Option<i32>, pre: impl FnOnce(&mut std::process::Child)) -> Run {
+    use std::os::unix::process::CommandExt;
     let out = d.join(format!("{name}.status"));
     let err = d.join(format!("{name}.err"));
     let mut cmd = Command::new("/bin/sh");
+    if let Some(sig) = block {
+        unsafe {
+            cmd.pre_exec(move || {
+                let mut s: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut s);
+                libc::sigaddset(&mut s, sig);
+                libc::sigprocmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+    }
     cmd.args(["-c", &format!(r#"{prefix} exec "$SD" run --status-fd 3 {args} 3>"{}" 2>"{}""#, out.display(), err.display())])
         .env("SD", sheepr())
         .env("FX", fixture());
@@ -1310,12 +1331,12 @@ fn the_root_is_reaped_only_through_the_recorder() {
         ("linux.rs", "doctor_mechanisms", Wait::Reaps, "libc::waitpid(c, &mut st, 0) == c && libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0"),
         ("linux.rs", "spawn", Wait::Reaps, "libc::waitpid(pid, &mut st, 0);"),
         ("linux.rs", "relay_if_needed", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
-        ("linux.rs", "pre_root", Wait::Reaps, "while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {"),
-        ("linux.rs", "pre_root", Wait::Reaps, "libc::waitpid(root, std::ptr::null_mut(), 0);"),
+        ("linux.rs", "abandon_shim", Wait::Reaps, "while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {"),
+        ("linux.rs", "abandon_shim", Wait::Reaps, "libc::waitpid(root, std::ptr::null_mut(), 0);"),
         ("macos.rs", "reap_root", Wait::Reaps, "let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };"),
         ("macos.rs", "probe_child", Wait::Reaps, "(unsafe { libc::waitpid(pid, &mut st, 0) } == pid && libc::WIFEXITED(st)).then(|| libc::WEXITSTATUS(st))"),
         ("macos.rs", "relay_loop", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
-        ("macos.rs", "responsible", Wait::Reaps, "libc::waitpid(root, &mut st, 0);"),
+        ("macos.rs", "kill_suspended_root", Wait::Reaps, "libc::waitpid(root, &mut st, 0);"),
         ("main.rs", "has_children", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_ALL, 0, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),
         ("main.rs", "root_ended", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_PID, root as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),
     ];
@@ -1521,6 +1542,9 @@ struct StepRow {
     missing: bool,
     /// a background child before sheepr starts (so it forks its relay)
     child: bool,
+    /// a test state directory (the journal kept), and a caller that blocks SIGCONT
+    state: bool,
+    block_cont: bool,
     env: &'static [(&'static str, &'static str)],
     code: i32,
     error_code: Option<&'static str>,
@@ -1529,24 +1553,27 @@ struct StepRow {
 
 /// The step table's rows: each pre-root step at least once, on its OS.
 const STEP_ROWS: &[StepRow] = &[
-    StepRow { step: "relay-fork", os: "any", seam: "relay-fork:EAGAIN", args: "", missing: false, child: true, env: &[], code: 125, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "mode", os: "any", seam: "", args: "--mode bogus", missing: false, child: false, env: &[], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "usage", os: "any", seam: "", args: "--no-such-flag", missing: false, child: false, env: &[], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "spawn", os: "macos", seam: "", args: "", missing: true, child: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
-    StepRow { step: "spawn", os: "macos", seam: "spawn:EAGAIN", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "spawn", os: "macos", seam: "spawn:EPERM", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
-    StepRow { step: "inherit", os: "macos", seam: "", args: "--inherit-terminal-permissions", missing: false, child: false, env: &[("SHEEPR_TEST_PHASE1", "1")], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "exec", os: "linux", seam: "", args: "", missing: true, child: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
-    StepRow { step: "exec", os: "linux", seam: "exec:EPERM", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
-    StepRow { step: "proc", os: "linux", seam: "proc:ENOENT", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
-    StepRow { step: "self-exe", os: "linux", seam: "self-exe:EACCES", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EACCES"), source: "sheepr" },
-    StepRow { step: "pipe", os: "linux", seam: "pipe:EMFILE", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EMFILE"), source: "resources" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:EAGAIN", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:E2BIG", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("E2BIG"), source: "command" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:ENOENT", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
-    StepRow { step: "handshake", os: "linux", seam: "handshake", args: "", missing: false, child: false, env: &[], code: 125, error_code: None, source: "sheepr" },
-    StepRow { step: "shim-prctl", os: "linux", seam: "shim-prctl:EPERM", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EPERM"), source: "sheepr" },
-    StepRow { step: "shim-parent", os: "linux", seam: "shim-parent", args: "", missing: false, child: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "relay-fork", os: "any", seam: "relay-fork:EAGAIN", args: "", missing: false, child: true, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "mode", os: "any", seam: "", args: "--mode bogus", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "usage", os: "any", seam: "", args: "--no-such-flag", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "spawn", os: "macos", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
+    StepRow { step: "inherit", os: "macos", seam: "", args: "--inherit-terminal-permissions", missing: false, child: false, state: false, block_cont: false, env: &[("SHEEPR_TEST_PHASE1", "1")], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "exec", os: "linux", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
+    StepRow { step: "exec", os: "linux", seam: "exec:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
+    StepRow { step: "proc", os: "linux", seam: "proc:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
+    StepRow { step: "self-exe", os: "linux", seam: "self-exe:EACCES", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EACCES"), source: "sheepr" },
+    StepRow { step: "pipe", os: "linux", seam: "pipe:EMFILE", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EMFILE"), source: "resources" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:E2BIG", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("E2BIG"), source: "command" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
+    StepRow { step: "handshake", os: "linux", seam: "handshake", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "shim-prctl", os: "linux", seam: "shim-prctl:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EPERM"), source: "sheepr" },
+    StepRow { step: "journal", os: "any", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "0:ENOSPC")], code: 125, error_code: Some("ENOSPC"), source: "resources" },
+    StepRow { step: "root-identity", os: "any", seam: "root-identity", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "cont-blocked", os: "macos", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: true, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "shim-parent", os: "linux", seam: "shim-parent", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
 ];
 
 /// Plan §2 (#21, #23): every way `run` ends before its command, one row per step of the table on
@@ -1570,7 +1597,14 @@ fn every_pre_root_step_says_why() {
             env.push(("SHEEPR_TEST_FAIL_STEP", r.seam));
         }
         let prefix = if r.child { format!("/bin/sleep {m} &") } else { String::new() };
-        let x = run_after(&d, &format!("s{i}"), &prefix, &format!("{} -- {cmd}", r.args), &env, |_| {});
+        let state = d.join(format!("state{i}"));
+        let state_s = state.to_str().unwrap().to_string();
+        if r.state {
+            std::fs::create_dir_all(&state).unwrap();
+            std::fs::write(state.join(".sheepr-test"), b"").unwrap();
+            env.push(("SHEEPR_TEST_STATE", state_s.as_str()));
+        }
+        let x = run_masked(&d, &format!("s{i}"), &prefix, &format!("{} -- {cmd}", r.args), &env, r.block_cont.then_some(libc::SIGCONT));
         kill_marked(&m);
         let what = format!("{} ({}): {:?}\nstderr: {}", r.step, r.seam, x.status, x.stderr);
         assert_eq!(x.code, Some(r.code), "{what}");
@@ -1864,8 +1898,11 @@ fn without_tests(src: &str) -> String {
 /// reported missing, and the stripping drops a test module's site.
 #[test]
 fn every_step_has_its_seam_its_site_and_its_row() {
-    const MID_JOB: [&str; 4] = ["Panic", "KillInternal", "LostWait", "Unrecorded"];
-    const BY_ARGS: [&str; 3] = ["Mode", "Usage", "Inherit"];
+    const MID_JOB: [&str; 5] = ["Panic", "KillInternal", "LostWait", "Unrecorded", "JournalDead"];
+    // provoked by the arguments, or by the caller's own signal mask
+    const BY_ARGS: [&str; 4] = ["Mode", "Usage", "Inherit", "ContBlocked"];
+    // a step whose seam is a seam of its own, named here
+    const OWN_SEAM: [(&str, &str); 1] = [("Journal", "SHEEPR_TEST_JOURNAL_FAIL_AFTER")];
     let table = step_table();
     assert!(table.iter().any(|(v, w)| v == "Pipe" && w == "pipe"), "control: the table read: {table:?}");
     let mut files = Vec::new();
@@ -1885,7 +1922,8 @@ fn every_step_has_its_seam_its_site_and_its_row() {
             }
             return m;
         }
-        if !BY_ARGS.contains(&variant) && !code.contains(&format!("injected(Step::{variant})")) {
+        let own = OWN_SEAM.iter().find(|(v, _)| *v == variant).is_some_and(|(_, seam)| code.contains(seam));
+        if !BY_ARGS.contains(&variant) && !own && !code.contains(&format!("injected(Step::{variant})")) {
             m.push(format!("{variant}: no seam point"));
         }
         if !["PreRoot::new(Step::", "PreRoot::said(Step::", "fail(Step::"].iter().any(|p| code.contains(&format!("{p}{variant},"))) {

@@ -611,3 +611,265 @@ fn a_leave_strays_journal_is_never_kept_without_its_mark() {
     }
 }
 
+
+// ---- #16: run --require-journal (plan §3) ----
+
+/// One `sheepr run --status-fd 3 ARGS` through `/bin/sh -c 'exec ...'` (SIGCONT blocked when
+/// `block_cont`), within 30 s: (exit code, status line, stderr).
+fn run_st(d: &Path, name: &str, args: &str, env: &[(&str, &str)], block_cont: bool) -> (Option<i32>, Option<Json>, String) {
+    use std::os::unix::process::CommandExt;
+    let (out, err) = (d.join(format!("{name}.status")), d.join(format!("{name}.err")));
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 {args} 3>"{}" 2>"{}""#, out.display(), err.display())]).env("SD", sheepr()).env("FX", fixture());
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    if block_cont {
+        unsafe {
+            c.pre_exec(|| {
+                let mut s: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut s);
+                libc::sigaddset(&mut s, libc::SIGCONT);
+                libc::sigprocmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+    }
+    let code = finish(c.spawn().unwrap());
+    let st = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    (code, st, std::fs::read_to_string(&err).unwrap_or_default())
+}
+
+fn get<'a>(st: &'a Option<Json>, k: &str) -> Option<&'a Json> {
+    st.as_ref().and_then(|j| j.get(k))
+}
+
+/// A run refused before its command: 125, root "not-started", trigger null, an error that
+/// starts with `starts`, its errno's name, its source; the command never ran.
+fn refused(code: Option<i32>, st: &Option<Json>, mark: &Path, starts: &str, error_code: Option<&str>, source: &str) {
+    assert_eq!(code, Some(125), "{st:?}");
+    assert_eq!(get(st, "root").and_then(Json::str), Some("not-started"), "{st:?}");
+    assert_eq!(get(st, "trigger"), Some(&Json::Null), "{st:?}");
+    assert!(get(st, "error").and_then(Json::str).is_some_and(|e| e.starts_with(starts)), "{st:?}");
+    assert_eq!(get(st, "error_code").and_then(Json::str), error_code, "{st:?}");
+    assert_eq!(get(st, "error_source").and_then(Json::str), Some(source), "{st:?}");
+    assert!(!mark.exists(), "the command ran: {st:?}");
+}
+
+/// Plan §3 (#16): with --require-journal a journal sheepr cannot keep refuses the command before
+/// it runs: its state dir's `jobs` a regular file (mkdir: ENOTDIR, also as root): 125,
+/// "not-started", trigger null, "the job journal cannot be kept: ...", ENOTDIR, source "sheepr",
+/// the command never ran, and before any root is spawned (a spawn made to fail too is not the
+/// error); a header that cannot be written for lack of space (seam: ENOSPC):
+/// "resources", ENOSPC; no state directory at all: refused, source "sheepr". The controls: a
+/// writable state dir runs the command (and leaves no journal); without the option the
+/// unwritable dir runs it as today (a `journal-failed` note, no error). No refusal leaves a
+/// journal behind.
+#[test]
+fn require_journal_refuses_a_journal_it_cannot_keep() {
+    let d = scratch("reqopen");
+    let (s, bad) = (state(&d), d.join("bad"));
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(bad.join(".sheepr-test"), b"").unwrap();
+    std::fs::write(bad.join("jobs"), b"a regular file").unwrap();
+    let cmd = |m: &Path| format!(r#"-- /bin/sh -c 'touch "{}"'"#, m.display());
+    let (m1, m2, m3, m4, m5) = (d.join("m1"), d.join("m2"), d.join("m3"), d.join("m4"), d.join("m5"));
+    let bad_s = bad.to_str().unwrap();
+    let (c, st, _) = run_st(&d, "notdir", &format!("--require-journal {}", cmd(&m1)), &[("SHEEPR_TEST_STATE", bad_s)], false);
+    refused(c, &st, &m1, "the job journal cannot be kept: ", Some("ENOTDIR"), "sheepr");
+    let (c, st, _) = run_st(&d, "nospace", &format!("--require-journal {}", cmd(&m2)), &[("SHEEPR_TEST_STATE", s.to_str().unwrap()), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "0:ENOSPC")], false);
+    refused(c, &st, &m2, "the job journal cannot be kept: ", Some("ENOSPC"), "resources");
+    let (c, st, _) = run_st(&d, "nostate", &format!("--require-journal {}", cmd(&m3)), &[], false);
+    refused(c, &st, &m3, "the job journal cannot be kept: ", None, "sheepr");
+    // the refusal comes before the root is spawned: with the spawn failing too (seam), the
+    // error is still the journal's
+    let spawn_seam = if cfg!(target_os = "macos") { "spawn:EAGAIN" } else { "shim-spawn:EAGAIN" };
+    let (c, st, _) = run_st(&d, "first", &format!("--require-journal {}", cmd(&m3)), &[("SHEEPR_TEST_STATE", bad_s), ("SHEEPR_TEST_FAIL_STEP", spawn_seam)], false);
+    refused(c, &st, &m3, "the job journal cannot be kept: ", Some("ENOTDIR"), "sheepr");
+    assert!(journals(&s).is_empty(), "a refusal left a journal: {:?}", journals(&s));
+    // controls
+    let (c, st, _) = run_st(&d, "ok", &format!("--require-journal {}", cmd(&m4)), &[("SHEEPR_TEST_STATE", s.to_str().unwrap())], false);
+    assert_eq!((c, get(&st, "error")), (Some(0), Some(&Json::Null)), "control: a writable dir: {st:?}");
+    assert!(m4.exists(), "control: the command did not run");
+    assert!(journals(&s).is_empty(), "control: the clean end left a journal");
+    let (c, st, _) = run_st(&d, "today", &cmd(&m5), &[("SHEEPR_TEST_STATE", bad_s)], false);
+    assert_eq!((c, get(&st, "error")), (Some(0), Some(&Json::Null)), "control: without the option: {st:?}");
+    assert!(m5.exists(), "control: without the option the command did not run");
+    let notes: Vec<&str> = get(&st, "notes").and_then(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).collect();
+    assert!(notes.iter().any(|n| n.starts_with("journal-failed")), "{notes:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §3: with --require-journal the root runs only after its root line is written. A root
+/// line that fails (seam: the journal's second write) or that cannot be made (seam: the root's
+/// identity unreadable) abandons the root before it runs: 125, "not-started", the command never
+/// ran and nothing of it is left; the identity's refusal names the identity, not the journal. No
+/// journal is left. The control: the identity seam without the option runs the command (today:
+/// it runs unjournaled).
+#[test]
+fn require_journal_runs_the_root_only_after_its_line() {
+    let d = scratch("reqline");
+    let s = state(&d);
+    let ss = s.to_str().unwrap();
+    let mk = marker();
+    let (m1, m2, m3) = (d.join("m1"), d.join("m2"), d.join("m3"));
+    let cmd = |m: &Path| format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {mk}'"#, m.display());
+    let (c, st, _) = run_st(&d, "line", &format!("--require-journal {}", cmd(&m1)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")], false);
+    let left1 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    refused(c, &st, &m1, "the job journal cannot be kept: ", Some("EIO"), "sheepr");
+    let (c, st, _) = run_st(&d, "ident", &format!("--require-journal {}", cmd(&m2)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
+    let left2 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    refused(c, &st, &m2, "the command's identity cannot be read", None, "sheepr");
+    assert_eq!((left1, left2), (Ok(0), Ok(0)), "an abandoned root was left");
+    assert!(journals(&s).is_empty(), "a refusal left a journal: {:?}", journals(&s));
+    let (c, st, _) = run_st(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, m3.display()), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
+    assert_eq!((c, get(&st, "error")), (Some(0), Some(&Json::Null)), "control: {st:?}");
+    assert!(m3.exists(), "control: the command did not run");
+    common::kill_marked(&[&mk]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §3: with --require-journal a journal that goes dead while the job runs ends the job
+/// (seam: the journal's third write, the first scan's): the tree is killed (the background sleep
+/// is gone), `trigger` "journal", exit 125 (not a death by TERM), "the job journal failed: ...",
+/// its errno's name, no "term after the trigger" note, and the kill report names the journal
+/// (`report-cause journal`); stderr never says "the job runs". The control: the same without the
+/// option runs to its own end (exit 0, trigger null, a `journal-failed` note).
+#[test]
+fn require_journal_ends_the_job_when_its_journal_dies() {
+    let d = scratch("reqdead");
+    let s = state(&d);
+    let ss = s.to_str().unwrap();
+    let mk = marker();
+    let trace = d.join("trace");
+    let t0 = Instant::now();
+    let (c, st, err) = run_st(
+        &d,
+        "dead",
+        &format!("--require-journal -- /bin/sh -c '/bin/sleep {mk} & wait'"),
+        &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "2:ENOSPC"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
+        false,
+    );
+    let took = t0.elapsed();
+    let left = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    common::kill_marked(&[&mk]);
+    let notes: Vec<&str> = get(&st, "notes").and_then(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).collect();
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert_eq!(c, Some(125), "{st:?}");
+    assert!(took < Duration::from_secs(10), "the job ran on for {took:?}");
+    assert_eq!(left, Ok(0), "the tree was not killed");
+    assert_eq!(get(&st, "trigger").and_then(Json::str), Some("journal"), "{st:?}");
+    assert!(get(&st, "error").and_then(Json::str).is_some_and(|e| e.starts_with("the job journal failed: ")), "{st:?}");
+    assert_eq!(get(&st, "error_code").and_then(Json::str), Some("ENOSPC"), "{st:?}");
+    assert_eq!(get(&st, "error_source").and_then(Json::str), Some("resources"), "{st:?}");
+    assert!(!notes.iter().any(|n| n.contains("after the trigger")), "{notes:?}");
+    assert!(t.lines().any(|l| l == "report-cause journal"), "trace:\n{t}");
+    assert!(!err.contains("the job runs"), "stderr:\n{err}");
+    let (c, st, _) = run_st(&d, "ctl", "-- /bin/sh -c '/bin/sleep 0.5 & wait'", &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "2:ENOSPC")], false);
+    let notes: Vec<&str> = get(&st, "notes").and_then(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).collect();
+    assert_eq!((c, get(&st, "trigger"), get(&st, "error")), (Some(0), Some(&Json::Null), Some(&Json::Null)), "control: {st:?}");
+    assert!(notes.iter().any(|n| n.starts_with("journal-failed")), "control: {notes:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §3: --require-journal with --mode root-disclaim (which keeps no journal) is refused
+/// before anything runs: 125, source "usage", the command never ran.
+#[test]
+fn require_journal_with_root_disclaim_is_a_usage_error() {
+    let d = scratch("reqdisclaim");
+    let s = state(&d);
+    let m = d.join("ran");
+    let (c, st, err) = run_st(&d, "rd", &format!(r#"--require-journal --mode root-disclaim -- /bin/sh -c 'touch "{}"'"#, m.display()), &[("SHEEPR_TEST_STATE", s.to_str().unwrap())], false);
+    assert_eq!(c, Some(125), "{st:?}");
+    assert!(err.contains("root-disclaim"), "the refusal does not name the combination; stderr:\n{err}");
+    assert_eq!(get(&st, "error_source").and_then(Json::str), Some("usage"), "{st:?}");
+    assert!(!m.exists(), "the command ran");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §3 (macOS): a caller that blocks SIGCONT gets a root that is not suspended, so it would
+/// run before its line is written: --require-journal refuses it before anything runs: 125,
+/// "not-started", an error that names SIGCONT, source "sheepr" (the caller's environment). The
+/// control: the same caller without the option runs the command.
+#[cfg(target_os = "macos")]
+#[test]
+fn require_journal_refuses_a_caller_that_blocks_sigcont() {
+    let d = scratch("reqcont");
+    let s = state(&d);
+    let (m1, m2) = (d.join("m1"), d.join("m2"));
+    let ss = s.to_str().unwrap();
+    let (c, st, _) = run_st(&d, "cont", &format!(r#"--require-journal -- /bin/sh -c 'touch "{}"'"#, m1.display()), &[("SHEEPR_TEST_STATE", ss)], true);
+    refused(c, &st, &m1, "", None, "sheepr");
+    assert!(get(&st, "error").and_then(Json::str).is_some_and(|e| e.contains("SIGCONT")), "{st:?}");
+    let (c, _, _) = run_st(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, m2.display()), &[("SHEEPR_TEST_STATE", ss)], true);
+    assert_eq!(c, Some(0), "control");
+    assert!(m2.exists(), "control: the command did not run");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The children of `pid` (macOS, `ps`), each with its identity read now.
+#[cfg(target_os = "macos")]
+fn children_of(pid: i32) -> Vec<(i32, u64)> {
+    let out = Command::new("ps").args(["-Ao", "pid=,ppid="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let (p, pp): (i32, i32) = (w.next()?.parse().ok()?, w.next()?.parse().ok()?);
+            (pp == pid).then(|| common::found(p)).flatten()
+        })
+        .collect()
+}
+
+/// Plan §3 (macOS): a root that cannot be journaled is killed with its tree, since an outside CONT
+/// may have resumed it while it waited suspended: here the cell itself sends that CONT in the
+/// window after the spawn (seam), the root starts a child and marks that it ran, then its root
+/// line fails (seam): the run is refused (125, "the job journal cannot be kept: ...") and the
+/// root's child is gone too. The control: the root did run (its mark) before the refusal.
+#[cfg(target_os = "macos")]
+#[test]
+fn require_journal_kills_a_resumed_root_and_its_tree() {
+    let d = scratch("reqtree");
+    let s = state(&d);
+    let mk = marker();
+    let (mark, ready, out) = (d.join("ran"), d.join("ready"), d.join("status"));
+    let mut c = Command::new("/bin/sh")
+        .args(["-c", &format!(r#"exec "$SD" run --require-journal --status-fd 3 -- /bin/sh -c '/bin/sleep {mk} & touch "{}"; wait' 3>"{}" 2>/dev/null"#, mark.display(), out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_STATE", &s)
+        .env("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")
+        .env("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS", "1500")
+        .env("SHEEPR_TEST_READY_FILE", &ready)
+        .spawn()
+        .unwrap();
+    assert!(wait_for(&ready, 20), "the window never opened");
+    let roots = children_of(c.id() as i32);
+    for &(p, id) in &roots {
+        common::send(p, id, libc::SIGCONT); // the outside CONT
+    }
+    let ran = wait_for(&mark, 2);
+    let code = {
+        let end = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(st) = c.try_wait().unwrap() {
+                break st.code();
+            }
+            if Instant::now() > end {
+                common::send_child(&mut c, libc::SIGKILL);
+                let _ = c.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let left = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    common::kill_marked(&[&mk]);
+    let st = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    assert_eq!(roots.len(), 1, "expected the one suspended root: {roots:?}");
+    assert!(ran, "control: the outside CONT did not run the root, so this proves nothing");
+    assert_eq!(code, Some(125), "{st:?}");
+    assert!(get(&st, "error").and_then(Json::str).is_some_and(|e| e.starts_with("the job journal cannot be kept: ")), "{st:?}");
+    assert_eq!(left, Ok(0), "the root's child was left");
+    let _ = std::fs::remove_dir_all(&d);
+}

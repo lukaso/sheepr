@@ -103,7 +103,7 @@ including processes that escaped with setsid, double-forks or reparenting.
 To stop a running job, send TERM to sheepr. Exit 124 means a limit fired.
 Commands: run, kill, strays, ps, sweep, doctor. `sheepr help <command>` for details.";
 
-const USAGE_RUN: &str = "sheepr run [--timeout DURATION] [--max-mem SIZE] [--max-procs N] [--grace DURATION] [--kill-deadline DURATION] [--leave-strays] [--no-sweep] [--inherit-terminal-permissions] [--quiet] [--forward-int-to-root] [--owner NAME] [--status-fd N] -- command [args...]";
+const USAGE_RUN: &str = "sheepr run [--timeout DURATION] [--max-mem SIZE] [--max-procs N] [--grace DURATION] [--kill-deadline DURATION] [--leave-strays] [--no-sweep] [--require-journal] [--inherit-terminal-permissions] [--quiet] [--forward-int-to-root] [--owner NAME] [--status-fd N] -- command [args...]";
 
 /// `sheepr help <command>`: that command's usage (one home: each module's own text).
 fn help(cmd: Option<&OsString>) -> i32 {
@@ -197,6 +197,9 @@ pub struct Args {
     pub owner: String,
     /// `--status-fd N`: the status line goes to this fd at the end
     pub status_fd: Option<i32>,
+    /// `--require-journal` (plan §3, #16): the command runs only once its journal line is
+    /// written, and a journal that goes dead ends the job (trigger "journal", exit 125)
+    pub require_journal: bool,
     /// skip the auto-sweep before the command (PLAN.md §3.5)
     pub no_sweep: bool,
     /// macOS: no disclaim; the job keeps the terminal's privacy permissions and tracking falls
@@ -324,7 +327,7 @@ fn value_rule(flag: &[u8]) -> Option<&'static str> {
 
 /// `run`'s options that take no value.
 fn bool_flag(b: &[u8]) -> bool {
-    matches!(b, b"--leave-strays" | b"--no-sweep" | b"--inherit-terminal-permissions" | b"--quiet" | b"--forward-int-to-root")
+    matches!(b, b"--leave-strays" | b"--no-sweep" | b"--require-journal" | b"--inherit-terminal-permissions" | b"--quiet" | b"--forward-int-to-root")
 }
 
 /// A word made only of dashes that are not `-` (an em or en dash, a minus sign): `--` as an editor
@@ -504,6 +507,7 @@ fn parse(argv: Vec<OsString>) -> Result<Args, i32> {
     let mut status_fd = None;
     let (mut timeout, mut max_mem, mut max_procs, mut kill_deadline) = (None, None, None, None);
     let mut no_sweep = false;
+    let mut require_journal = false;
     let mut inherit = false;
     // the options' values first, in order: a bad value is the first problem said
     let mut i = 0;
@@ -528,10 +532,11 @@ fn parse(argv: Vec<OsString>) -> Result<Args, i32> {
         match flag {
             b"--leave-strays" => leave_strays = true,
             b"--no-sweep" => no_sweep = true,
+            b"--require-journal" => require_journal = true,
             b"--inherit-terminal-permissions" => inherit = true,
             b"--quiet" => quiet = true,
             b"--forward-int-to-root" => forward_int_to_root = true,
-            // opts_end passes only run's options, and bool_flag names these five; never a panic
+            // opts_end passes only run's options, and bool_flag names these six; never a panic
             _ => return Err(usage_because(format!("unknown option {}.", shown(&w[i])))),
         }
         i += 1;
@@ -562,7 +567,11 @@ fn parse(argv: Vec<OsString>) -> Result<Args, i32> {
     if cmd.is_empty() {
         return Err(usage_because("no command after --.".to_string()));
     }
-    Ok(Args { argv, mode, cmd, grace, leave_strays, quiet, forward_int_to_root, owner, status_fd, no_sweep, inherit, timeout, max_mem, max_procs, kill_deadline })
+    // plan §3 (#16): root-disclaim keeps no journal, so it cannot require one
+    if require_journal && mode.as_deref() == Some("root-disclaim") {
+        return Err(usage_because("--require-journal cannot be used with --mode root-disclaim, which keeps no job journal.".to_string()));
+    }
+    Ok(Args { argv, mode, cmd, grace, leave_strays, quiet, forward_int_to_root, owner, status_fd, no_sweep, require_journal, inherit, timeout, max_mem, max_procs, kill_deadline })
 }
 
 /// Exit code for a wait status: the command's code, or 128+signal.
@@ -1759,16 +1768,21 @@ pub fn self_stop(sig: c_int) {
 /// The `root` field, `root_code` and `root_signal` come from the recorder (#17), never from here.
 pub fn finish(status: Option<Reaped>, result: Result<(), KillError>, ints: &mut Interrupts, sig: &Signals) -> i32 {
     ints.drain_pending(sig);
+    // --require-journal ended the job (plan §3): its own branch, never a TERM's
+    let by_journal = status.is_none() && status::trigger() == Some("journal");
     match status {
         Some(Reaped::Lost(e)) => status::set_error(steps::Step::LostWait, Some(e), &format!("the command ended, but its exit status was lost (the wait for it failed: {})", std::io::Error::from_raw_os_error(e))),
+        None if by_journal => {}
         None if !caps::triggered() => status::set_trigger("term"), // ended by a TERM from outside
         _ => {}
     }
     status::report(status, result.is_ok());
-    // a cap or the timeout ended the job: 124 (below 125, above the command's own code)
-    if status.is_none() && caps::triggered() {
+    // a cap or the timeout ended the job: 124 (below 125, above the command's own code); a dead
+    // journal under --require-journal: 125
+    if status.is_none() && (caps::triggered() || by_journal) {
         return match result {
             Err(e) => kill_failed(e),
+            Ok(()) if by_journal => 125,
             Ok(()) => 124,
         };
     }
@@ -1788,6 +1802,15 @@ pub fn finish(status: Option<Reaped>, result: Result<(), KillError>, ints: &mut 
             }
         }
     }
+}
+
+/// --require-journal (plan §3): the journal went dead while the job ran. The job ends as a cap
+/// ends it, with `trigger` "journal" (a value only this option gives), `error` "the job journal
+/// failed: ..." with its errno, and exit 125 (`finish`).
+pub fn end_by_journal(what: &str, errno: Option<c_int>) {
+    say!("sheepr: the job journal failed ({what}); --require-journal ends the job");
+    status::set_trigger("journal");
+    status::set_error(steps::Step::JournalDead, errno, &format!("the job journal failed: {what}"));
 }
 
 /// Before the root is spawned: a TERM that is already pending (the caller blocked TERM and it

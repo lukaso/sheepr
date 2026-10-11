@@ -61,6 +61,15 @@ pub enum Step {
     LostWait,
     /// a release build's line guard: sheepr ended before the command and recorded no reason
     Unrecorded,
+    /// --require-journal: the job journal cannot be kept before the command runs (its open, or
+    /// the root's line)
+    Journal,
+    /// --require-journal: the root's identity cannot be read, so its line cannot be written
+    RootIdentity,
+    /// --require-journal, macOS: the caller blocks SIGCONT, so the root would run before its line
+    ContBlocked,
+    /// --require-journal: the journal went dead while the job ran (it ends the job)
+    JournalDead,
 }
 
 /// What a step's failure is when its errno is not a resource one.
@@ -93,6 +102,10 @@ impl Step {
             Step::KillInternal => ("kill-internal", Kind::Sheepr, true),
             Step::LostWait => ("lost-wait", Kind::Sheepr, false),
             Step::Unrecorded => ("unrecorded", Kind::Sheepr, false),
+            Step::Journal => ("journal", Kind::Sheepr, false),
+            Step::RootIdentity => ("root-identity", Kind::Sheepr, false),
+            Step::ContBlocked => ("cont-blocked", Kind::Sheepr, false),
+            Step::JournalDead => ("journal-dead", Kind::Sheepr, false),
         }
     }
 
@@ -348,7 +361,9 @@ mod tests {
         for s in [Step::Usage, Step::Mode, Step::Inherit] {
             assert_eq!(s.source(None), "usage", "{s:?}");
         }
-        for s in [Step::Proc, Step::SelfExe, Step::Handshake, Step::ShimPrctl, Step::ShimParent, Step::Panic, Step::KillInternal, Step::LostWait, Step::RelayFork] {
+        assert_eq!(Step::Journal.source(Some(libc::ENOSPC)), "resources", "§3: a journal with no space");
+        assert_eq!(Step::JournalDead.source(Some(libc::EDQUOT)), "resources");
+        for s in [Step::Proc, Step::SelfExe, Step::Handshake, Step::ShimPrctl, Step::ShimParent, Step::Panic, Step::KillInternal, Step::LostWait, Step::RelayFork, Step::Journal, Step::RootIdentity, Step::ContBlocked, Step::JournalDead] {
             assert_eq!(s.source(None), "sheepr", "{s:?}");
             assert_eq!(s.source(Some(libc::EPERM)), "sheepr", "{s:?}");
         }

@@ -879,6 +879,7 @@ fn wait(
     group_is_ours: &mut dyn FnMut(i32) -> bool,
     ints: &mut crate::Interrupts,
     mut reg: Option<(&mut crate::register::Listener, &mut crate::register::Admit)>,
+    journal_lost: &dyn Fn() -> Option<(String, Option<i32>)>,
 ) -> (Option<crate::Reaped>, bool) {
     let mut jobs = crate::JobControl::new(relay);
     let watch_term = sig.watch_term;
@@ -1052,6 +1053,11 @@ fn wait(
             if crate::caps::check(&live) {
                 break None;
             }
+            // --require-journal (plan §3): a journal the last scan found dead ends the job
+            if let Some((what, e)) = journal_lost() {
+                crate::end_by_journal(&what, e);
+                break None;
+            }
             for (got, s) in [(int, libc::SIGINT), (hup, libc::SIGHUP), (quit, libc::SIGQUIT)] {
                 if got {
                     ints.forward(s, pid, members);
@@ -1164,6 +1170,11 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         }
         Some(m) => return Err(PreRoot::new(Step::Mode, None, format!("unknown mode {m}")).into()),
     }
+    // plan §3: under --require-journal a caller that blocks SIGCONT is refused before anything
+    // runs: its root cannot be held suspended, so it would run before its line is written
+    if a.require_journal && unsafe { libc::sigismember(&sig.caller_mask, libc::SIGCONT) } == 1 {
+        return Err(PreRoot::new(Step::ContBlocked, None, "--require-journal: the caller blocks SIGCONT, so the command would run before its journal line is written; unblock SIGCONT, or run without --require-journal").into());
+    }
     relay_if_needed(sig)?;
     // registration (PLAN.md §3.2): with every enclosing supervisor, before the disclaim;
     // the re-exec'd image (already responsible for itself) does not register again
@@ -1224,7 +1235,13 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         return Err(Before::Ended(code));
     }
     // after the SETEXEC (the lock is CLOEXEC and would not survive it), before the root
-    let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv));
+    let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv, a.require_journal));
+    // plan §3: under --require-journal a journal that cannot be kept refuses the command
+    if a.require_journal && !journal.borrow().ready() {
+        let (what, e) = journal.borrow().why();
+        journal.into_inner().finish(true);
+        return Err(PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}")).into());
+    }
     // the listener for nested runs, and the chain the root inherits (a phase-2 source:
     // none under the phase-1 opt-out)
     let listener = if crate::seam_flag("SHEEPR_TEST_PHASE1") {
@@ -1303,23 +1320,64 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         }
     };
     crate::status::set_root_pid(root);
+    crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
+    if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
+        unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
+    }
+    // the root's line, before the resuming CONT: the root is journaled before it runs (debug
+    // seam SHEEPR_TEST_FAIL_STEP=root-identity: its identity reads as unreadable)
+    let u = if crate::steps::injected(Step::RootIdentity).is_some() { None } else { uniq(root).map(|u| u.0) };
+    if let Some(u) = u {
+        tracker.borrow_mut().ever.insert(u);
+        journal.borrow_mut().record_root(root, u, &a.cmd);
+    }
+    // plan §3: under --require-journal the command runs only after its line is written; a root
+    // that cannot be journaled is killed before sheepr resumes it, with its tree (an outside CONT
+    // may have run it), and the run ends there
+    if a.require_journal && !journal.borrow().kept() {
+        let p = match u {
+            None => PreRoot::new(Step::RootIdentity, None, "the command's identity cannot be read, so it cannot be journaled before it runs; it did not run"),
+            Some(_) => {
+                let (what, e) = journal.borrow().why();
+                PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}"))
+            }
+        };
+        kill_suspended_root(root);
+        let initial = tracker.borrow().known.clone();
+        crate::JOB_KILL.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = kill_tree(
+            &crate::KillOpts::from_env().with_grace(a.grace).with_deadline(a.kill_deadline),
+            || members(&mut tracker.borrow_mut()),
+            || {},
+            || None,
+            crate::signal,
+            initial,
+        );
+        unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
+        journal.into_inner().finish(result.is_ok());
+        if let Err(e) = result {
+            let _ = crate::kill_failed(e);
+        }
+        return Err(p.into());
+    }
     Ok(Pre::Responsible(Started { relay, journal, listener, tracker, cont_blocked, held, stops, root }))
+}
+
+/// SIGKILL the root this supervisor spawned while it is still suspended, and reap it: its end
+/// records nothing (it was never resumed by sheepr).
+fn kill_suspended_root(root: pid_t) {
+    unsafe {
+        libc::kill(root, libc::SIGKILL); // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
+        let mut st = 0;
+        libc::waitpid(root, &mut st, 0);
+    }
 }
 
 /// The responsible mode after its root is spawned.
 fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
     let Started { relay, journal, mut listener, tracker, cont_blocked, held, stops, root } = s;
-    crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
     if crate::seam_flag("SHEEPR_TEST_PANIC_AFTER_SPAWN") {
         panic!("test seam: a panic after the spawn, before the stop signals' unblock");
-    }
-    if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
-        unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
-    }
-    if let Some((u, _)) = uniq(root) {
-        tracker.borrow_mut().ever.insert(u);
-        // before the resuming CONT below: the root is journaled before it runs
-        journal.borrow_mut().record_root(root, u, &a.cmd);
     }
     // round 3 N3: once the stop signals are let through, a stop of sheepr and the job's CONT (or
     // any CONT from outside) can run the suspended root before sheepr's own CONT
@@ -1340,11 +1398,7 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
         // CONT may still have run it meanwhile, so the kill below is the whole tree's
         // (S2 review rounds 4-5).
         if relay.is_some_and(relay_exited) || (sig.watch_term && crate::term_pending()) {
-            unsafe {
-                libc::kill(root, libc::SIGKILL); // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
-                let mut st = 0;
-                libc::waitpid(root, &mut st, 0);
-            }
+            kill_suspended_root(root);
             // its end records nothing; it may have run (N3), so `root` reads "signaled"
             ended = true;
         } else {
@@ -1393,7 +1447,7 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
     let reg = listener.as_mut().map(|l| (l, &mut admit as &mut crate::register::Admit));
     // `taken`: the root's end is already taken (the loop reaped it, or lost its wait, or the
     // early end above reaped it)
-    let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg) };
+    let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg, &|| if a.require_journal { journal.borrow().lost() } else { None }) };
     // no registration is served during the kill: an inner run then fails fast (no socket)
     drop(listener);
     if a.leave_strays && status.is_some() {
@@ -1438,7 +1492,7 @@ fn root_disclaim(sig: &crate::Signals, root: pid_t) -> i32 {
     }
     let r = uniq(root).map(|u| u.0).unwrap_or(0);
     let mut ints = crate::Interrupts::none();
-    let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);
+    let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None, &|| None);
     let result = kill_tree(&crate::KillOpts::from_env(), || responsible_to(r), || {}, || None, crate::signal, Default::default());
     crate::finish(status, result, &mut ints, sig)
 }

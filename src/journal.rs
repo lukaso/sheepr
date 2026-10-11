@@ -12,7 +12,10 @@
 //! clean end unlinks the journal, then releases the lock by closing the fd.
 //!
 //! The journal never stops the job (decision 2): any failure disables it with one warning, a
-//! `journal-failed` note, and the job runs and is killed as without a journal.
+//! `journal-failed` note, and the job runs and is killed as without a journal. Unless the run
+//! asks for it (`--require-journal`, plan §3): then the caller refuses the command before it runs
+//! when the journal cannot be kept (`ready`, then `kept` once the root's line is written), and
+//! ends the job when the journal goes dead (`lost`); the warning that the job runs is not said.
 //!
 //! `cmd` text: at most 256 bytes; a backslash is written `\\` and a byte that is not UTF-8
 //! `\xHH`, so the text is never ambiguous; then JSON-escaped.
@@ -39,6 +42,27 @@ pub struct Journal {
     /// a write failed: nothing more is written, but the fd (and so the lock) is kept until the
     /// end, so the published file never looks like a dead job's to `sweep`
     dead: bool,
+    /// the first failure, or why there is no journal: what, and its errno
+    why: Option<(String, Option<i32>)>,
+    /// --require-journal: a failure is the caller's to say (never "the job runs")
+    required: bool,
+    /// the root's line is written
+    root_written: bool,
+    /// successful writes (the header is the first), for SHEEPR_TEST_JOURNAL_FAIL_AFTER
+    writes: usize,
+}
+
+/// Debug seam SHEEPR_TEST_JOURNAL_FAIL_AFTER=<n>[:<errno>]: after `n` successful writes (the
+/// header is the first, the root's line the second), every write fails with that errno (an errno
+/// name or number; EIO when left out).
+fn seam_fail(writes: usize) -> Option<std::io::Error> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let v = std::env::var("SHEEPR_TEST_JOURNAL_FAIL_AFTER").ok()?;
+    let (n, e) = v.split_once(':').map_or((v.as_str(), None), |(n, e)| (n, Some(e)));
+    let n: usize = n.parse().ok()?;
+    (writes >= n).then(|| std::io::Error::from_raw_os_error(e.and_then(crate::steps::errno_of).unwrap_or(libc::EIO)))
 }
 
 /// The text form of raw bytes (see the module header), before JSON escaping.
@@ -165,62 +189,73 @@ fn num(v: Option<impl std::fmt::Display>) -> String {
 }
 
 impl Journal {
-    /// No journal (and why, as a note).
-    fn off(why: &str) -> Journal {
-        crate::note(why.to_string());
-        crate::status::add_note(why);
-        Journal { file: None, path: None, seen: HashSet::new(), job: None, warned: false, dead: false }
+    fn new(required: bool) -> Journal {
+        Journal { file: None, path: None, seen: HashSet::new(), job: None, warned: false, dead: false, why: None, required, root_written: false, writes: 0 }
     }
 
-    fn failed(&mut self, what: &str) {
+    /// No journal (and why: `note` as a note, `what` for --require-journal's refusal).
+    fn off(note: &str, what: &str, required: bool) -> Journal {
+        crate::note(note.to_string());
+        crate::status::add_note(note);
+        Journal { why: Some((what.to_string(), None)), ..Journal::new(required) }
+    }
+
+    fn failed(&mut self, what: &str, errno: Option<i32>) {
         let n = format!("journal-failed: {what}");
+        if self.why.is_none() {
+            self.why = Some((what.to_string(), errno));
+        }
         if !self.warned {
             self.warned = true;
-            crate::say!("sheepr: cannot keep the job journal ({what}); the job runs, but `sweep` cannot clean up after it if sheepr is killed");
+            if !self.required {
+                crate::say!("sheepr: cannot keep the job journal ({what}); the job runs, but `sweep` cannot clean up after it if sheepr is killed");
+            }
         }
         crate::note(n.clone());
         crate::status::add_note(&n);
         self.dead = true; // the fd stays open: a published journal stays locked until the end
     }
 
-    /// Publish this job's journal (after the macOS SETEXEC, before the root runs).
-    pub fn open(owner: &str, argv: &[OsString]) -> Journal {
+    /// Publish this job's journal (after the macOS SETEXEC, before the root runs). `required`:
+    /// --require-journal (the caller says a failure; see `ready`).
+    pub fn open(owner: &str, argv: &[OsString], required: bool) -> Journal {
         // the phase-1 opt-out disables state outright (PHASE2.md §0.1)
         if crate::seam_flag("SHEEPR_TEST_PHASE1") {
-            return Journal::off("journal-disabled");
+            return Journal::off("journal-disabled", "the phase-1 test environment disables it (SHEEPR_TEST_PHASE1)", required);
         }
         let Some(state) = crate::state::resolve(cfg!(debug_assertions), |k| std::env::var_os(k), |p| p.exists()) else {
-            return Journal::off("state-unset");
+            return Journal::off("state-unset", "no state directory is set (SHEEPR_STATE, XDG_STATE_HOME or HOME)", required);
         };
-        let mut j = Journal { file: None, path: None, seen: HashSet::new(), job: None, warned: false, dead: false };
+        let mut j = Journal::new(required);
         let Some(boot) = boot_id() else {
-            j.failed("no boot id");
+            j.failed("no boot id", None);
             return j;
         };
         let dir = state.join("jobs").join(format!("{boot}-{}", pidns()));
         if let Err(e) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
-            j.failed(&format!("{}: {e}", dir.display()));
+            j.failed(&format!("{}: {e}", dir.display()), e.raw_os_error());
             return j;
         }
         let me = unsafe { libc::getpid() };
         let sup_id = identity(me).unwrap_or(0);
         for attempt in 0..8 {
             let Some(id) = new_id(attempt == 0) else {
-                j.failed("no entropy for a job id");
+                j.failed("no entropy for a job id", None);
                 return j;
             };
             let tmp = dir.join(format!(".tmp-{id}-{me}"));
             let f = match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
                 Ok(f) => f,
                 Err(e) => {
-                    j.failed(&format!("{}: {e}", tmp.display()));
+                    j.failed(&format!("{}: {e}", tmp.display()), e.raw_os_error());
                     return j;
                 }
             };
             // std opens with O_CLOEXEC: the lock never reaches the job
             if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                let e = std::io::Error::last_os_error();
                 let _ = std::fs::remove_file(&tmp);
-                j.failed(&format!("lock: {}", std::io::Error::last_os_error()));
+                j.failed(&format!("lock: {e}"), e.raw_os_error());
                 return j;
             }
             let header = format!(
@@ -233,11 +268,16 @@ impl Journal {
                 json_str(&text(&joined(argv)))
             );
             let mut f = f;
-            if let Err(e) = f.write_all(header.as_bytes()) {
+            let r = match seam_fail(j.writes) {
+                Some(e) => Err(e),
+                None => f.write_all(header.as_bytes()),
+            };
+            if let Err(e) = r {
                 let _ = std::fs::remove_file(&tmp);
-                j.failed(&format!("header: {e}"));
+                j.failed(&format!("header: {e}"), e.raw_os_error());
                 return j;
             }
+            j.writes += 1;
             let fin = dir.join(format!("{id}.journal"));
             match std::fs::hard_link(&tmp, &fin) {
                 Ok(()) => {
@@ -254,13 +294,37 @@ impl Journal {
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp);
-                    j.failed(&format!("link: {e}"));
+                    j.failed(&format!("link: {e}"), e.raw_os_error());
                     return j;
                 }
             }
         }
-        j.failed("no free job id");
+        j.failed("no free job id", None);
         j
+    }
+
+    /// Published and alive: the root's line can be written (--require-journal's first check).
+    pub fn ready(&self) -> bool {
+        self.file.is_some() && !self.dead
+    }
+
+    /// Published, alive, and the root's line written (plan §3).
+    pub fn kept(&self) -> bool {
+        self.ready() && self.root_written
+    }
+
+    /// Why the journal is not kept: its first failure (what, errno), or why there is none.
+    pub fn why(&self) -> (String, Option<i32>) {
+        self.why.clone().unwrap_or_else(|| ("the root's line was not written".to_string(), None))
+    }
+
+    /// The failure of a journal that went dead (None while it lives, or never published).
+    pub fn lost(&self) -> Option<(String, Option<i32>)> {
+        if self.dead && self.file.is_some() {
+            self.why.clone()
+        } else {
+            None
+        }
     }
 
     /// One write; false if it failed (then the journal is dead).
@@ -270,14 +334,17 @@ impl Journal {
         }
         let r = if crate::seam_flag("SHEEPR_TEST_JOURNAL_WRITE_FAIL") {
             Err(std::io::Error::other("test seam"))
+        } else if let Some(e) = seam_fail(self.writes) {
+            Err(e)
         } else {
             // write_all completes a short write
             self.file.as_mut().map_or(Ok(()), |f| f.write_all(out.as_bytes()))
         };
         if let Err(e) = r {
-            self.failed(&format!("write: {e}"));
+            self.failed(&format!("write: {e}"), e.raw_os_error());
             return false;
         }
+        self.writes += 1;
         true
     }
 
@@ -327,6 +394,7 @@ impl Journal {
                 json_str(&text(&joined(cmd)))
             );
             if self.write(&line) {
+                self.root_written = true;
                 crate::trace(format!("journal {pid}"));
             }
         }

@@ -227,6 +227,10 @@ pub fn set_trigger(t: &'static str) {
 pub fn set_trigger_if_none(t: &'static str) {
     with(|s| s.set_trigger_if_none(t));
 }
+/// The trigger recorded, if any.
+pub fn trigger() -> Option<&'static str> {
+    with(|s| s.trigger.map(|t| t.0))
+}
 /// Whether a trigger is already recorded (a TERM from outside, taken before a cap fired).
 pub fn has_trigger() -> bool {
     with(|s| s.trigger.is_some())
@@ -281,6 +285,7 @@ pub fn report(root_status: Option<crate::Reaped>, clean: bool) {
             Some(crate::Reaped::Status(st)) if libc::WIFSIGNALED(st) => ("signaled".to_string(), format!("the command died of signal {}", libc::WTERMSIG(st))),
             Some(crate::Reaped::Status(st)) => ("exited".to_string(), format!("the command exited {}", libc::WEXITSTATUS(st))),
             Some(crate::Reaped::Lost(_)) => ("lost".to_string(), "the command ended (its exit status was lost)".to_string()),
+            None if trigger() == Some("journal") => ("journal".to_string(), "the job journal failed (--require-journal)".to_string()),
             None => match crate::caps::by() {
                 Some(flag) => (flag.to_string(), format!("the {flag} limit fired")),
                 None => ("term".to_string(), "TERM from outside".to_string()),
