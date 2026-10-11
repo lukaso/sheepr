@@ -207,6 +207,20 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   ended: by itself (it exited just as the TERM came, or while it had time to end), by your
   signal (a TERM to the whole process group reaches the command too), or by sheepr's kill. They
   are not the command's own result for the job.
+- When something failed, `error` says what, `error_code` names the errno behind it (for example
+  `ENOENT`, `EAGAIN`; null when there is none, or for a value sheepr has no name for), and
+  `error_source` says whose failure it is: `command` (the command could not be run: not found,
+  not executable), `resources` (the machine was out of processes, memory, file descriptors or
+  disk space: trying again later, or freeing some, may help), `usage` (a usage error, or an
+  option refused here), or `sheepr` (sheepr itself failed). When two things fail in one run,
+  `error` is the first, and the others are in `notes` as `also: …`; an internal error is never
+  only a note. A run that ends before its command runs always says why: an `error`, or `trigger`
+  `term` when a TERM ended it.
+- After an internal error (a panic) once the command may have run, sheepr does not end the
+  process tree; the job's journal is kept, and `sheepr sweep` (or your next `sheepr run`) ends it.
+  No status line is written when sheepr ends before it can: before it has read `--status-fd`,
+  before it has set up its signals, and on macOS when a TERM was already pending across its
+  self re-exec, or that re-exec failed.
 - `sweep` exits 0 when it is done, also when there is nothing to sweep; 1 when it refuses and
   signals nothing (the state directory or its journal folder is not safe, cannot be reached or
   cannot be listed; sheepr cannot follow its own chain of parent processes; on Linux, no /proc of

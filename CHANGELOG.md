@@ -30,6 +30,33 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
     case stays 125. A check on a command that is still running that fails (for example while a
     debugger is attached to it) never ends the job, as before.
 
+- `run --status-fd`: two new fields, `error_code` (the errno behind `error`, by name, such as
+  `ENOENT` or `EAGAIN`) and `error_source` (`command`, `resources`, `sheepr` or `usage`: whose
+  failure it is; `resources` means a retry, or freeing processes, memory, files or disk space,
+  may help) ([#21](https://github.com/lukaso/sheepr/issues/21),
+  [#23](https://github.com/lukaso/sheepr/issues/23)).
+- `run --status-fd`: a run that ends before its command runs now always says why. Values that
+  change:
+  - `trigger` (and `trigger_at`) is `"term"`, not null, when a TERM ends the run before the
+    command: a TERM already pending when sheepr starts, one before its relay starts, one before
+    the command is let go (Linux), and on macOS a relay that is gone before the command starts
+    and `--mode root-disclaim`;
+  - `error` names the failure, not null, when sheepr cannot start the command: an unknown mode,
+    a failed fork, and on Linux no usable /proc, its own executable not found, no pipe, the
+    command's starter not started, or not answering (its end, or "no answer in 5000 ms");
+  - after an internal error (a panic), `error` is `internal error (a panic)`, not null; `root`
+    is `"not-started"` only when the command cannot have run yet: on Linux before the command
+    is let go (it was `"signaled"` there), on macOS before the stop signals are let through
+    (it was `"signaled"`);
+  - when two errors happen in one run, `error` is the first one (before: the last), and the
+    others are in `notes` as `also: …`; an internal error is never only a note;
+  - on macOS, a command that sheepr ends while it is still suspended (a TERM, or its relay's
+    end, just before sheepr would resume it) is `"signaled"`, not `"not-started"`: a stop and
+    the job's CONT may have run it.
+- `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
+  it answered (its exit code or signal), it gave no answer in time, or which of its own steps
+  failed, with the errno.
+
 ## 0.1.3 (2026-10-10)
 
 - `sweep` and the auto-sweep before each `run` (macOS): they remove the registration folders

@@ -1961,3 +1961,29 @@ fn two_errors_keep_their_own_code_and_source() {
     assert!(notes.iter().any(|n| n.starts_with("also: the command ended, but its exit status was lost")), "{notes:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Plan §2 (README): after a panic once the command may have run, the job's journal is kept, so
+/// `sweep` (or the next run) ends what is left. A panic in the event loop leaves the journal; the
+/// control, a run that ends by itself, leaves none.
+#[test]
+fn a_panic_after_the_command_started_keeps_its_journal() {
+    let d = scratch("panicjournal");
+    let m = marker();
+    let s = d.join("state");
+    std::fs::create_dir_all(&s).unwrap();
+    std::fs::write(s.join(".sheepr-test"), b"").unwrap();
+    let journals = || -> usize {
+        std::fs::read_dir(s.join("jobs")).into_iter().flatten().flatten().flat_map(|b| std::fs::read_dir(b.path()).into_iter().flatten().flatten()).filter(|f| f.path().extension().is_some_and(|e| e == "journal")).count()
+    };
+    let st = s.to_str().unwrap();
+    let ctl = run(&d, "ctl", "--no-sweep -- /bin/sh -c 'exit 0'", &[("SHEEPR_TEST_STATE", st)], |_| {});
+    let after_ctl = journals();
+    let x = run(&d, "panic", &format!("--no-sweep -- /bin/sleep {m}"), &[("SHEEPR_TEST_STATE", st), ("SHEEPR_TEST_PANIC_IN_LOOP", "1")], |_| {});
+    let after_panic = journals();
+    kill_marked(&m);
+    assert_eq!(ctl.code, Some(0));
+    assert_eq!(after_ctl, 0, "control: a clean end leaves no journal");
+    assert_eq!(field(&x, "error").and_then(Json::str), Some("internal error (a panic)"), "{:?}", x.status);
+    assert_eq!(after_panic, 1, "the panic's journal was not kept");
+    let _ = std::fs::remove_dir_all(&d);
+}

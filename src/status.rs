@@ -3,9 +3,20 @@
 //! `signaled`, `not-started`), `root_code`, `root_signal`, `code`, `trigger` (null, `term`,
 //! `timeout`, `cap`), `trigger_at` (ms since start), `deadline_missed`, `killed`
 //! (`[{pid, cmd, escaped}]`, escaped: null | `setsid` | `reparented`), `survivors`, `tracking`,
-//! `degraded`, `error`, `notes`. The fd is set CLOEXEC once the supervisor runs (after the macOS
-//! SETEXEC), so the job never holds it. The same record feeds the kill report on stderr
-//! (PLAN.md §10.4).
+//! `degraded`, `error`, `error_code`, `error_source`, `notes`. The fd is set CLOEXEC once the
+//! supervisor runs (after the macOS SETEXEC), so the job never holds it. The same record feeds the
+//! kill report on stderr (PLAN.md §10.4).
+//!
+//! Why a run ended (issues #21, #23): ONE setter writes `error`, `error_code` (the errno's name
+//! from crate::steps' table, null without one) and `error_source` (`command`, `resources`,
+//! `sheepr`, `usage`: crate::steps' one table) together; the first error wins and later ones are
+//! notes `also: ...`, except that an internal error (a panic, the kill loop's) is never a note
+//! behind another. Every end before the command (crate::steps::PreRoot) and every TERM (`trigger`
+//! "term") says why, and the line's guard keeps it so: root "not-started" with neither an error
+//! nor a trigger panics in a debug build and gets "sheepr ended before the command started and
+//! recorded no reason" in a release build. `root` is "not-started" only before the command may
+//! run (`root_may_run`: the Linux go byte; macOS, the stop signals' unblock or a spawn that is not
+//! suspended), so a panic says it right too.
 //!
 //! The root's own end (issue #17): one recorder per OS takes the wait status of every reap of
 //! the root (Linux `wait_any`, the one `waitpid(-1, ...)`; macOS `reap_root`, the one wait on
