@@ -647,8 +647,13 @@ fn get<'a>(st: &'a Option<Json>, k: &str) -> Option<&'a Json> {
 /// A run refused before its command: 125, root "not-started", trigger null, an error that
 /// starts with `starts`, its errno's name, its source; the command never ran.
 fn refused(code: Option<i32>, st: &Option<Json>, mark: &Path, starts: &str, error_code: Option<&str>, source: &str) {
+    refused_as(code, st, mark, "not-started", starts, error_code, source);
+}
+
+/// `refused`, with the `root` it must read.
+fn refused_as(code: Option<i32>, st: &Option<Json>, mark: &Path, root: &str, starts: &str, error_code: Option<&str>, source: &str) {
     assert_eq!(code, Some(125), "{st:?}");
-    assert_eq!(get(st, "root").and_then(Json::str), Some("not-started"), "{st:?}");
+    assert_eq!(get(st, "root").and_then(Json::str), Some(root), "{st:?}");
     assert_eq!(get(st, "trigger"), Some(&Json::Null), "{st:?}");
     assert!(get(st, "error").and_then(Json::str).is_some_and(|e| e.starts_with(starts)), "{st:?}");
     assert_eq!(get(st, "error_code").and_then(Json::str), error_code, "{st:?}");
@@ -702,9 +707,10 @@ fn require_journal_refuses_a_journal_it_cannot_keep() {
 
 /// Plan §3: with --require-journal the root runs only after its root line is written. A root
 /// line that fails (seam: the journal's second write) or that cannot be made (seam: the root's
-/// identity unreadable) abandons the root before it runs: 125, "not-started", the command never
-/// ran and nothing of it is left; the identity's refusal names the identity, not the journal. No
-/// journal is left. The control: the identity seam without the option runs the command (today:
+/// identity unreadable) abandons the root before it runs: 125, the command never ran and nothing
+/// of it is left; the identity's refusal names the identity, not the journal. No journal is left.
+/// `root`: "not-started" on Linux (the shim never got its go byte); "signaled" on macOS, where the
+/// root was spawned (suspended) and any SIGCONT could have run it (review of slice 2, P2-1). The control: the identity seam without the option runs the command (today:
 /// it runs unjournaled).
 #[test]
 fn require_journal_runs_the_root_only_after_its_line() {
@@ -716,10 +722,11 @@ fn require_journal_runs_the_root_only_after_its_line() {
     let cmd = |m: &Path| format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {mk}'"#, m.display());
     let (c, st, _) = run_st(&d, "line", &format!("--require-journal {}", cmd(&m1)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")], false);
     let left1 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
-    refused(c, &st, &m1, "the job journal cannot be kept: ", Some("EIO"), "sheepr");
+    let spawned = if cfg!(target_os = "macos") { "signaled" } else { "not-started" };
+    refused_as(c, &st, &m1, spawned, "the job journal cannot be kept: ", Some("EIO"), "sheepr");
     let (c, st, _) = run_st(&d, "ident", &format!("--require-journal {}", cmd(&m2)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
     let left2 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
-    refused(c, &st, &m2, "the command's identity cannot be read", None, "sheepr");
+    refused_as(c, &st, &m2, spawned, "the command's identity cannot be read", None, "sheepr");
     assert_eq!((left1, left2), (Ok(0), Ok(0)), "an abandoned root was left");
     assert!(journals(&s).is_empty(), "a refusal left a journal: {:?}", journals(&s));
     let (c, st, _) = run_st(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, m3.display()), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);

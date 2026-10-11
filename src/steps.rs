@@ -152,11 +152,20 @@ pub struct PreRoot {
     pub text: String,
     /// the stderr line was already written (by the shim, by the usage check)
     said: bool,
+    /// the root was spawned and may have run (macOS: any SIGCONT resumes a suspended root): the
+    /// end is not "not-started" for certain
+    spawned: bool,
 }
 
 impl PreRoot {
     pub fn new(step: Step, errno: Option<i32>, text: impl Into<String>) -> PreRoot {
-        PreRoot { step, errno, code: step.code(errno), text: text.into(), said: false }
+        PreRoot { step, errno, code: step.code(errno), text: text.into(), said: false, spawned: false }
+    }
+
+    /// The same, for a root already spawned that may have run (`root` then reads "signaled").
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub fn spawned(self) -> PreRoot {
+        PreRoot { spawned: true, ..self }
     }
 
     /// The same, for a failure whose stderr line is already written.
@@ -165,13 +174,15 @@ impl PreRoot {
     }
 
     /// The status half of the one conversion: the stderr line, the error triple, and root
-    /// "not-started" for certain (no later end changes it).
+    /// "not-started" for certain (no later end changes it), unless the root was `spawned`.
     pub fn record(&self) {
         if !self.said {
             crate::say!("sheepr: {}", self.text);
         }
         crate::status::set_error(self.step, self.errno, &self.text);
-        crate::status::set_root_final("not-started");
+        if !self.spawned {
+            crate::status::set_root_final("not-started");
+        }
     }
 }
 

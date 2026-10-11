@@ -1347,6 +1347,8 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
                 PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}"))
             }
         };
+        // the root was spawned: any SIGCONT could have run it, so this end is not "not-started"
+        let p = p.spawned();
         kill_suspended_root(root);
         let initial = tracker.borrow().known.clone();
         crate::JOB_KILL.store(true, std::sync::atomic::Ordering::SeqCst);

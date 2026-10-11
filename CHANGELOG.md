@@ -54,8 +54,8 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
     (a `timeout` that sends TERM and CONT, a plain `kill -CONT`) may have run it.
 - `run --require-journal`: the command runs only once sheepr has written it into its job journal
   (the record `sheepr sweep` uses to end a job whose sheepr was killed). When the journal cannot
-  be kept, the command does not run: exit 125, root `"not-started"`, and `error` says why (with
-  `error_code`, and `error_source` `resources` for a full disk). When the journal fails while the
+  be kept, the command does not run: exit 125, and `error` says why (with `error_code`, and
+  `error_source` `resources` for a full disk). When the journal fails while the
   job runs, sheepr ends the job: exit 125 and `trigger` `"journal"`, a value only this option
   gives. It cannot be used with `--mode root-disclaim`, and on macOS it refuses a caller that
   blocks SIGCONT. Without the option nothing changes
