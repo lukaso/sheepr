@@ -56,7 +56,7 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   (the record `sheepr sweep` uses to end a job whose sheepr was killed). When the journal cannot
   be kept, the command does not run: exit 125, and `error` says why (with `error_code`, and
   `error_source` `resources` for a full disk). When the journal fails while the
-  job runs, sheepr ends the job: exit 125 and `trigger` `"journal"`, a value only this option
+  job runs (a write fails, or its file is removed or replaced), sheepr ends the job: exit 125 and `trigger` `"journal"`, a value only this option
   gives; a failure while the job is already ending (during the kill, with a TERM, a limit or the
   command's own end, at the `--leave-strays` mark) does not, and is one stderr line. It cannot be used with `--mode root-disclaim`, and on macOS it refuses a caller that
   blocks SIGCONT. Without the option nothing changes

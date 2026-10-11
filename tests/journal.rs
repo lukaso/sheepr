@@ -773,6 +773,10 @@ fn require_journal_ends_the_job_when_its_journal_dies() {
     assert_eq!(get(&st, "error_source").and_then(Json::str), Some("resources"), "{st:?}");
     assert!(!notes.iter().any(|n| n.contains("after the trigger")), "{notes:?}");
     assert!(t.lines().any(|l| l == "report-cause journal"), "trace:\n{t}");
+    // the root was killed by sheepr's kill (review of slice 3, P4)
+    assert_eq!(get(&st, "root").and_then(Json::str), Some("signaled"), "{st:?}");
+    assert_eq!(get(&st, "root_code"), Some(&Json::Null), "{st:?}");
+    assert!(get(&st, "root_signal").and_then(Json::num).is_some(), "{st:?}");
     assert!(!err.contains("the job runs"), "stderr:\n{err}");
     assert_eq!(err.lines().filter(|l| l.contains("No space left")).count(), 1, "one line names the failure:\n{err}");
     let (c, st, _) = run_st(&d, "ctl", "-- /bin/sh -c '/bin/sleep 0.5 & wait'", &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "2:ENOSPC")], false);
@@ -918,6 +922,58 @@ fn require_journal_says_a_journal_that_dies_as_the_job_ends() {
         assert_eq!(recs.len(), 3, "{name}: the escapee was born during the kill: {recs:?}");
         assert_eq!(said.len(), 1, "{name}: one line names the failure:\n{e}");
         assert_eq!(said[0].contains("the job runs"), !opt, "{name}:\n{e}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 3, P3-2: under --require-journal a journal whose name no longer names the open
+/// file while the job runs is lost: removed (no link left) or replaced (another file at its name).
+/// The job ends: trigger "journal", exit 125, `error` names the journal; a replacing file is not
+/// sheepr's, and is left. The control: without the option the job runs to its end (exit 0).
+#[test]
+fn require_journal_ends_the_job_when_its_journal_is_removed() {
+    let d = scratch("reqgone");
+    for (name, opt, replace) in [("removed", true, false), ("replaced", true, true), ("ctl", false, false)] {
+        let s = state(&d.join(name));
+        let out = d.join(format!("{name}.status"));
+        let flags = if opt { "--require-journal" } else { "" };
+        let t0 = Instant::now();
+        let c = Command::new("/bin/sh")
+            .args(["-c", &format!(r#"exec "$SD" run --status-fd 3 {flags} -- /bin/sleep 3 3>"{}""#, out.display())])
+            .env("SD", sheepr())
+            .env("SHEEPR_TEST_STATE", &s)
+            .spawn()
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        let j = loop {
+            if let Some(j) = journals(&s).pop() {
+                break Some(j);
+            }
+            if Instant::now() > end {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let j = j.expect("the job's journal");
+        if replace {
+            let other = j.with_extension("other");
+            std::fs::write(&other, b"not sheepr's\n").unwrap();
+            std::fs::rename(&other, &j).unwrap();
+        } else {
+            std::fs::remove_file(&j).unwrap();
+        }
+        let code = finish(c);
+        let took = t0.elapsed();
+        let st = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+        if opt {
+            assert_eq!(code, Some(125), "{name}: {st:?}");
+            assert!(took < Duration::from_millis(2500), "{name}: the job ran on for {took:?}");
+            assert_eq!(get(&st, "trigger").and_then(Json::str), Some("journal"), "{name}: {st:?}");
+            assert!(get(&st, "error").and_then(Json::str).is_some_and(|e| e.starts_with("the job journal failed: ") && e.contains(j.to_str().unwrap()) && e.contains(if replace { "replaced" } else { "was removed" })), "{name}: {st:?}");
+            assert_eq!(std::fs::read(&j).ok().as_deref() == Some(&b"not sheepr's\n"[..]), replace, "{name}: the replacing file");
+        } else {
+            assert_eq!((code, get(&st, "trigger")), (Some(0), Some(&Json::Null)), "{name}: {st:?}");
+        }
     }
     let _ = std::fs::remove_dir_all(&d);
 }

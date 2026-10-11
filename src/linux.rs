@@ -1114,7 +1114,8 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
         }
         // --require-journal (plan §3): a journal this pass's scan found dead ends the job
         if a.require_journal {
-            if let Some((what, e)) = journal.borrow().lost() {
+            let lost = journal.borrow_mut().lost();
+            if let Some((what, e)) = lost {
                 crate::end_by_journal(&what, e);
                 break None;
             }

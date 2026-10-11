@@ -205,6 +205,20 @@ fn num(v: Option<impl std::fmt::Display>) -> String {
     v.map_or_else(|| "null".to_string(), |x| x.to_string())
 }
 
+/// Why `path` no longer names the open file `f` (what, errno): it was removed, or another file
+/// is at its name (by device and inode), or its name cannot be read; None while it names `f`, or
+/// when the open file itself cannot be read.
+fn not_named(f: &File, path: &std::path::Path) -> Option<(String, Option<i32>)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = f.metadata().ok()?;
+    match std::fs::symlink_metadata(path) {
+        Ok(n) if n.ino() == m.ino() && n.dev() == m.dev() => None,
+        Ok(_) => Some((format!("{} was replaced by another file", path.display()), None)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some((format!("{} was removed", path.display()), Some(libc::ENOENT))),
+        Err(e) => Some((format!("{}: {e}", path.display()), e.raw_os_error())),
+    }
+}
+
 impl Journal {
     fn new(required: bool) -> Journal {
         Journal { file: None, path: None, seen: HashSet::new(), job: None, warned: false, dead: false, why: None, required, root_written: false, writes: 0 }
@@ -335,8 +349,16 @@ impl Journal {
         self.why.clone().unwrap_or_else(|| ("the root's line was not written".to_string(), None))
     }
 
-    /// The failure of a journal that went dead (None while it lives, or never published).
-    pub fn lost(&self) -> Option<(String, Option<i32>)> {
+    /// The failure of a journal that went dead (None while it lives, or never published). A
+    /// journal whose name no longer names its open file (removed, or replaced: review of slice 3,
+    /// P3-2) is dead too: it is found here, the check after each scan pass under
+    /// --require-journal.
+    pub fn lost(&mut self) -> Option<(String, Option<i32>)> {
+        if let (false, Some(f), Some(p)) = (self.dead, &self.file, &self.path) {
+            if let Some((what, e)) = not_named(f, p) {
+                self.failed(&what, e);
+            }
+        }
         if self.dead && self.file.is_some() {
             self.why.clone()
         } else {
@@ -427,8 +449,9 @@ impl Journal {
         self.write("{\"v\":1,\"kind\":\"leave-strays\"}\n")
     }
 
-    /// The end: after a clean kill the journal is unlinked, then the lock released by closing
-    /// the fd; otherwise it is kept for `sweep` (debug seam SHEEPR_TEST_KEEP_JOURNAL keeps it).
+    /// The end: after a clean kill the journal is unlinked (only while its name still names this
+    /// file: a file that replaced it is not sheepr's), then the lock released by closing the fd;
+    /// otherwise it is kept for `sweep` (debug seam SHEEPR_TEST_KEEP_JOURNAL keeps it).
     pub fn finish(mut self, clean: bool) {
         // --require-journal: a journal that died after the root's line where it did not end the
         // job (during the kill, in the pass that a TERM, a cap or the root's end ended it, at the
@@ -440,8 +463,10 @@ impl Journal {
             }
         }
         if clean && !crate::seam_flag("SHEEPR_TEST_KEEP_JOURNAL") {
-            if let Some(p) = &self.path {
-                let _ = std::fs::remove_file(p); // before the lock is released below
+            if let (Some(f), Some(p)) = (&self.file, &self.path) {
+                if not_named(f, p).is_none() {
+                    let _ = std::fs::remove_file(p); // before the lock is released below
+                }
             }
         }
         self.file = None; // closing the fd releases the lock

@@ -1450,7 +1450,7 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
     let reg = listener.as_mut().map(|l| (l, &mut admit as &mut crate::register::Admit));
     // `taken`: the root's end is already taken (the loop reaped it, or lost its wait, or the
     // early end above reaped it)
-    let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg, &|| if a.require_journal { journal.borrow().lost() } else { None }) };
+    let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg, &|| if a.require_journal { journal.borrow_mut().lost() } else { None }) };
     // no registration is served during the kill: an inner run then fails fast (no socket)
     drop(listener);
     if a.leave_strays && status.is_some() {
