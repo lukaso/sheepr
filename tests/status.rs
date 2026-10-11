@@ -1114,14 +1114,16 @@ fn a_missing_command_and_a_term_in_one_wake_is_not_started() {
 /// One run of `cmd` whose shim reaches its exec only while the job is being killed (Linux): the
 /// caller blocks TERM, so the kill's TERM stays pending in the shim and its exec goes ahead;
 /// sheepr gets a TERM while the shim is held before its exec (seam), and the shim is let go
-/// once the kill's grace has sent it that TERM (the signal log says so). Returns sheepr's exit
-/// code, the status line, and whether the grace's TERM to the shim was seen before the release.
+/// once the kill's grace has sent it that TERM (the signal log says so). The grace is 20 s, so a
+/// slow (emulated) start of the released shim is never cut by the kill's SIGKILL; it ends as
+/// soon as the shim has exited. Returns sheepr's exit code, the status line, and whether the
+/// grace's TERM to the shim was seen before the release.
 #[cfg(target_os = "linux")]
 fn exec_during_the_kill(d: &Path, name: &str, cmd: &str) -> (Option<i32>, Option<Json>, bool) {
     use std::os::unix::process::CommandExt;
     let (out, ready, rel, log) = (d.join(format!("{name}.status")), d.join(format!("{name}.ready")), d.join(format!("{name}.release")), d.join(format!("{name}.log")));
     let mut c = Command::new("/bin/sh");
-    c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- {cmd} 3>"{}" 2>/dev/null"#, out.display())])
+    c.args(["-c", &format!(r#"exec "$SD" run --grace 20s --status-fd 3 -- {cmd} 3>"{}" 2>/dev/null"#, out.display())])
         .env("SD", sheepr())
         .env("FX", fixture())
         .env("SHEEPR_TEST_HOLD_SHIM", &rel)
@@ -1152,7 +1154,7 @@ fn exec_during_the_kill(d: &Path, name: &str, cmd: &str) -> (Option<i32>, Option
         std::thread::sleep(Duration::from_millis(5));
     };
     std::fs::write(&rel, b"").unwrap();
-    let end = Instant::now() + Duration::from_secs(30);
+    let end = Instant::now() + Duration::from_secs(45);
     let code = loop {
         if let Some(s) = c.try_wait().unwrap() {
             break s.code();
@@ -1451,5 +1453,20 @@ fn a_group_term_does_not_hold_sheepr() {
     assert_eq!(get("trigger").as_ref().and_then(Json::str), Some("term"), "{b:?}");
     assert_eq!(get("root").as_ref().and_then(Json::str), Some("signaled"), "{b:?}");
     assert_eq!(get("root_signal").as_ref().and_then(Json::num), Some(libc::SIGTERM as f64), "{b:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 1, P4: with `--leave-strays` the job ends at the root's own end, before any
+/// kill, so the shim's `E` line read after the loop is the only one (Linux): a command that
+/// cannot be run is "not-started" with both fields null and `error` set, exit 127 (on macOS the
+/// spawn itself fails, the same answer).
+#[test]
+fn leave_strays_with_a_missing_command_is_not_started() {
+    let d = scratch("leavemiss");
+    let x = run(&d, "miss", "--leave-strays -- /nonexistent/sr-missing", &[], |_| {});
+    assert_eq!(x.code, Some(127), "{:?}", x.status);
+    assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{:?}", x.status);
+    assert!(both_null(&x), "{:?}", x.status);
+    assert!(field(&x, "error").and_then(Json::str).is_some(), "{:?}", x.status);
     let _ = std::fs::remove_dir_all(&d);
 }
