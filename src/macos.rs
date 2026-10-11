@@ -577,7 +577,7 @@ fn spawn(cmd: &[OsString], disclaim_root: bool, suspended: bool, caller_mask: &l
     if rc != 0 {
         let m = format!("cannot run {}: {}", crate::shown(&cmd[0]), std::io::Error::from_raw_os_error(rc));
         say!("sheepr: {m}");
-        crate::status::set_error(&m);
+        crate::status::set_error(crate::steps::Step::Spawn, Some(rc), &m);
         crate::status::set_root("not-started");
         return Err(if rc == libc::ENOENT { 127 } else { 126 });
     }
@@ -1148,7 +1148,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 // under the phase-1 opt-out the source is disabled outright: nothing starts
                 if crate::wall::gate().is_none() {
                     crate::fail!("sheepr: --inherit-terminal-permissions is disabled in this test environment (SHEEPR_TEST_PHASE1). Nothing was run.");
-                    crate::status::set_error("inherit mode disabled");
+                    crate::status::set_error(crate::steps::Step::Inherit, None, "inherit mode disabled");
                     return 125;
                 }
                 if !a.quiet {

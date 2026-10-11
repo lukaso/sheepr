@@ -1,0 +1,236 @@
+//! Every place `run` can fail, and the one table that names its errno and its source (issues #21,
+//! #23; plan §2). `error` says what failed, `error_code` the errno behind it (a fixed name table
+//! per OS, canonical spellings), `error_source` whose failure it is:
+//! - `resources`: the errno is EAGAIN, ENOMEM, EMFILE, ENFILE, ENOSPC or EDQUOT, on any step
+//!   (the machine could not: a retry, or freeing space, may help);
+//! - `command`: the command's own exec failed with any other errno (Linux: the shim's `E` line;
+//!   macOS: `posix_spawnp` of the command), and the Linux shim spawn's E2BIG (the command line's
+//!   size);
+//! - `usage`: a parse error, an unknown mode, an option refused here;
+//! - `sheepr`: any other step (a pipe, a fork, the handshake, its own executable, /proc, a panic).
+//!
+//! A step before the command can run returns `PreRoot`, and `Before::end` is the ONE place that
+//! turns it into the status (`error`, `error_code`, `error_source`, root "not-started") and the
+//! exit code; each OS's pre-root segment is one function returning `Result<_, Before>`, so an
+//! early return there cannot compile without a step.
+//!
+//! Debug seam `SHEEPR_TEST_FAIL_STEP=<step>[:<errno>]` (an errno name or number; EIO when left
+//! out): the step's syscall runs and its result is replaced by that failure, so the real error
+//! branch runs; a step that creates a process (a fork, a spawn, the command's exec) skips the
+//! call instead, so no second supervisor or stray root exists.
+
+/// Every step that can fail (`name` is the seam's word).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub enum Step {
+    /// Linux: /proc is missing or another pid namespace's
+    Proc,
+    /// the relay's fork (sheepr started with children)
+    RelayFork,
+    /// an unknown `--mode`
+    Mode,
+    /// Linux: sheepr's own executable, for the shim
+    SelfExe,
+    /// Linux: the shim's pipes
+    Pipe,
+    /// Linux: the shim's posix_spawn
+    ShimSpawn,
+    /// Linux: the shim's handshake (no answer, EOF, an unexpected answer)
+    Handshake,
+    /// Linux: the shim could not set PR_SET_PDEATHSIG (its `F` line)
+    ShimPrctl,
+    /// Linux: the shim's parent is not the supervisor (its `F` line)
+    ShimParent,
+    /// Linux: the command's exec in the shim (its `E` line)
+    Exec,
+    /// macOS: posix_spawnp of the command
+    Spawn,
+    /// macOS: --inherit-terminal-permissions refused in a phase-1 test environment
+    Inherit,
+    /// a usage error of `run`
+    Usage,
+    /// a panic
+    Panic,
+    /// the kill loop panicked
+    KillInternal,
+    /// macOS: the root's end was seen but its wait failed
+    LostWait,
+}
+
+/// What a step's failure is when its errno is not a resource one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Command,
+    Usage,
+    Sheepr,
+}
+
+impl Step {
+    /// The one table: (seam word, kind, internal). An internal error is never moved into a note
+    /// behind an earlier error (it says the tree may not be clean).
+    fn row(self) -> (&'static str, Kind, bool) {
+        match self {
+            Step::Proc => ("proc", Kind::Sheepr, false),
+            Step::RelayFork => ("relay-fork", Kind::Sheepr, false),
+            Step::Mode => ("mode", Kind::Usage, false),
+            Step::SelfExe => ("self-exe", Kind::Sheepr, false),
+            Step::Pipe => ("pipe", Kind::Sheepr, false),
+            Step::ShimSpawn => ("shim-spawn", Kind::Sheepr, false),
+            Step::Handshake => ("handshake", Kind::Sheepr, false),
+            Step::ShimPrctl => ("shim-prctl", Kind::Sheepr, false),
+            Step::ShimParent => ("shim-parent", Kind::Sheepr, false),
+            Step::Exec => ("exec", Kind::Command, false),
+            Step::Spawn => ("spawn", Kind::Command, false),
+            Step::Inherit => ("inherit", Kind::Usage, false),
+            Step::Usage => ("usage", Kind::Usage, false),
+            Step::Panic => ("panic", Kind::Sheepr, true),
+            Step::KillInternal => ("kill-internal", Kind::Sheepr, true),
+            Step::LostWait => ("lost-wait", Kind::Sheepr, false),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        self.row().0
+    }
+
+    pub fn internal(self) -> bool {
+        self.row().2
+    }
+
+    /// `error_source` for this step's failure with `errno`.
+    pub fn source(self, errno: Option<i32>) -> &'static str {
+        const RESOURCES: [i32; 6] = [libc::EAGAIN, libc::ENOMEM, libc::EMFILE, libc::ENFILE, libc::ENOSPC, libc::EDQUOT];
+        match (self.row().1, errno) {
+            (_, Some(e)) if RESOURCES.contains(&e) => "resources",
+            (Kind::Command, _) => "command",
+            _ if self == Step::ShimSpawn && errno == Some(libc::E2BIG) => "command",
+            (Kind::Usage, _) => "usage",
+            (Kind::Sheepr, _) => "sheepr",
+        }
+    }
+
+    /// The exit code of a run that ends at this step before its command ran (as phase 1 and
+    /// v0.1.3 gave them).
+    pub fn code(self, errno: Option<i32>) -> i32 {
+        match self {
+            // phase 1's posix_spawnp: no resources or too long arguments is 126; any other
+            // failure is sheepr's own (it cannot run its own binary)
+            Step::ShimSpawn if matches!(errno, Some(libc::EAGAIN | libc::ENOMEM | libc::E2BIG)) => 126,
+            Step::Exec | Step::Spawn if errno == Some(libc::ENOENT) => 127,
+            Step::Exec | Step::Spawn => 126,
+            _ => 125,
+        }
+    }
+}
+
+/// The errnos `error_code` names on this OS, each with its canonical spelling (EAGAIN, never
+/// EWOULDBLOCK; EDEADLK; EOPNOTSUPP, and on macOS also ENOTSUP, a value of its own there). The
+/// names are libc's constants (the macro writes each name and its constant from one word).
+macro_rules! errnos {
+    ($($n:ident),* $(,)?) => { &[$((stringify!($n), libc::$n)),*] };
+}
+
+/// POSIX's errnos.
+#[rustfmt::skip]
+const POSIX: &[(&str, i32)] = errnos![
+    E2BIG, EACCES, EADDRINUSE, EADDRNOTAVAIL, EAFNOSUPPORT, EAGAIN, EALREADY, EBADF, EBADMSG, EBUSY,
+    ECANCELED, ECHILD, ECONNABORTED, ECONNREFUSED, ECONNRESET, EDEADLK, EDESTADDRREQ, EDOM, EDQUOT,
+    EEXIST, EFAULT, EFBIG, EHOSTUNREACH, EIDRM, EILSEQ, EINPROGRESS, EINTR, EINVAL, EIO, EISCONN,
+    EISDIR, ELOOP, EMFILE, EMLINK, EMSGSIZE, EMULTIHOP, ENAMETOOLONG, ENETDOWN, ENETRESET,
+    ENETUNREACH, ENFILE, ENOBUFS, ENODATA, ENODEV, ENOENT, ENOEXEC, ENOLCK, ENOLINK, ENOMEM, ENOMSG,
+    ENOPROTOOPT, ENOSPC, ENOSR, ENOSTR, ENOSYS, ENOTCONN, ENOTDIR, ENOTEMPTY, ENOTRECOVERABLE,
+    ENOTSOCK, ENOTTY, ENXIO, EOPNOTSUPP, EOVERFLOW, EOWNERDEAD, EPERM, EPIPE, EPROTO,
+    EPROTONOSUPPORT, EPROTOTYPE, ERANGE, EROFS, ESPIPE, ESRCH, ESTALE, ETIME, ETIMEDOUT, ETXTBSY, EXDEV,
+];
+
+/// macOS's own: ENOTSUP (45, apart from EOPNOTSUPP's 102) and the exec errors.
+#[cfg(target_os = "macos")]
+const OWN: &[(&str, i32)] = errnos![ENOTSUP, EBADEXEC, EBADARCH, ESHLIBVERS, EBADMACHO];
+/// Linux has none of its own here (its ENOTSUP is EOPNOTSUPP's value).
+#[cfg(not(target_os = "macos"))]
+const OWN: &[(&str, i32)] = &[];
+
+/// The errno's canonical name, or None for a value outside the table (the text keeps strerror).
+pub fn errno_name(errno: i32) -> Option<&'static str> {
+    POSIX.iter().chain(OWN).find(|&&(_, v)| v == errno).map(|&(n, _)| n)
+}
+
+/// The errno named `s` (a name from the table, or a number).
+pub fn errno_of(s: &str) -> Option<i32> {
+    s.parse().ok().or_else(|| POSIX.iter().chain(OWN).find(|(n, _)| *n == s).map(|&(_, v)| v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table: one name per value (so each errno has ONE spelling), and the spellings that
+    /// matter: EAGAIN for EWOULDBLOCK, EDEADLK, EOPNOTSUPP; macOS's ENOTSUP and EOPNOTSUPP apart
+    /// and its exec errors; Linux's ENOTSUP is EOPNOTSUPP's value and name. A value outside the
+    /// table has no name.
+    #[test]
+    fn the_errno_table_has_one_canonical_name_per_value() {
+        let all: Vec<(&str, i32)> = POSIX.iter().chain(OWN).copied().collect();
+        let mut values: Vec<i32> = all.iter().map(|e| e.1).collect();
+        values.sort();
+        values.dedup();
+        assert_eq!(values.len(), all.len(), "two names share a value");
+        for &(n, v) in &all {
+            assert_eq!(errno_name(v), Some(n), "{n}");
+            assert_eq!(errno_of(n), Some(v), "{n}");
+        }
+        assert_eq!(errno_name(libc::EWOULDBLOCK), Some("EAGAIN"));
+        assert_eq!(errno_name(libc::EDEADLK), Some("EDEADLK"));
+        assert_eq!(errno_name(libc::EOPNOTSUPP), Some("EOPNOTSUPP"));
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!((libc::ENOTSUP, libc::EOPNOTSUPP), (45, 102));
+            assert_eq!(errno_name(45), Some("ENOTSUP"));
+            for n in ["EBADEXEC", "EBADARCH", "ESHLIBVERS", "EBADMACHO"] {
+                assert!(errno_of(n).and_then(errno_name) == Some(n), "{n}");
+            }
+        }
+        #[cfg(target_os = "linux")]
+        assert_eq!(errno_name(libc::ENOTSUP), Some("EOPNOTSUPP"));
+        assert_eq!(errno_name(9999), None);
+        assert_eq!(errno_name(0), None);
+        assert_eq!(errno_of("42"), Some(42));
+        assert_eq!(errno_of("ENOPE"), None);
+    }
+
+    /// The one source table: a resource errno is "resources" on any step; the command's exec is
+    /// "command" for any other errno, and so is the shim spawn's E2BIG (only E2BIG); the usage
+    /// steps are "usage"; everything else is "sheepr". The exit codes are v0.1.3's.
+    #[test]
+    fn the_source_table() {
+        for e in [libc::EAGAIN, libc::ENOMEM, libc::EMFILE, libc::ENFILE, libc::ENOSPC, libc::EDQUOT] {
+            for s in [Step::Pipe, Step::Exec, Step::Spawn, Step::ShimSpawn, Step::RelayFork, Step::Handshake, Step::LostWait] {
+                assert_eq!(s.source(Some(e)), "resources", "{s:?} {e}");
+            }
+        }
+        assert_eq!(Step::Exec.source(Some(libc::EPERM)), "command");
+        assert_eq!(Step::Exec.source(Some(libc::ENOENT)), "command");
+        assert_eq!(Step::Spawn.source(Some(libc::EACCES)), "command");
+        assert_eq!(Step::ShimSpawn.source(Some(libc::E2BIG)), "command");
+        assert_eq!(Step::ShimSpawn.source(Some(libc::ENOENT)), "sheepr");
+        assert_eq!(Step::Pipe.source(Some(libc::E2BIG)), "sheepr", "E2BIG is the command's only on the shim spawn");
+        for s in [Step::Usage, Step::Mode, Step::Inherit] {
+            assert_eq!(s.source(None), "usage", "{s:?}");
+        }
+        for s in [Step::Proc, Step::SelfExe, Step::Handshake, Step::ShimPrctl, Step::ShimParent, Step::Panic, Step::KillInternal, Step::LostWait, Step::RelayFork] {
+            assert_eq!(s.source(None), "sheepr", "{s:?}");
+            assert_eq!(s.source(Some(libc::EPERM)), "sheepr", "{s:?}");
+        }
+        assert_eq!(Step::ShimSpawn.code(Some(libc::EAGAIN)), 126);
+        assert_eq!(Step::ShimSpawn.code(Some(libc::E2BIG)), 126);
+        assert_eq!(Step::ShimSpawn.code(Some(libc::ENOENT)), 125);
+        assert_eq!(Step::Exec.code(Some(libc::ENOENT)), 127);
+        assert_eq!(Step::Exec.code(Some(libc::EACCES)), 126);
+        assert_eq!(Step::Spawn.code(Some(libc::ENOENT)), 127);
+        assert_eq!(Step::Spawn.code(Some(libc::EAGAIN)), 126);
+        for s in [Step::Proc, Step::RelayFork, Step::Mode, Step::SelfExe, Step::Pipe, Step::Handshake, Step::Inherit, Step::Usage] {
+            assert_eq!(s.code(Some(libc::EIO)), 125, "{s:?}");
+        }
+    }
+}

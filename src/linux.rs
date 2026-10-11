@@ -371,7 +371,7 @@ impl Root {
 fn exec_failure(shim: &mut Root, cmd: &OsString) {
     if let Some(e) = shim.exec_failed() {
         crate::status::set_root_final("not-started"); // the shim could not exec the command
-        crate::status::set_error(&format!("cannot run {}: {}", crate::shown(cmd), std::io::Error::from_raw_os_error(e)));
+        crate::status::set_error(crate::steps::Step::Exec, Some(e), &format!("cannot run {}: {}", crate::shown(cmd), std::io::Error::from_raw_os_error(e)));
     }
 }
 

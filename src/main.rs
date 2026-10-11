@@ -28,6 +28,7 @@ mod strays;
 mod register;
 mod state;
 mod status;
+mod steps;
 mod sweep;
 mod wall;
 #[cfg(target_os = "linux")]
@@ -932,7 +933,7 @@ pub fn kill_failed(e: KillError) -> i32 {
             deadline_missed(&alive)
         }
         KillError::Internal => {
-            status::set_error("internal error while killing the tree");
+            status::set_error(steps::Step::KillInternal, None, "internal error while killing the tree");
             125
         }
     }
@@ -1759,7 +1760,7 @@ pub fn self_stop(sig: c_int) {
 pub fn finish(status: Option<Reaped>, result: Result<(), KillError>, ints: &mut Interrupts, sig: &Signals) -> i32 {
     ints.drain_pending(sig);
     match status {
-        Some(Reaped::Lost(e)) => status::set_error(&format!("the command ended, but its exit status was lost (the wait for it failed: {})", std::io::Error::from_raw_os_error(e))),
+        Some(Reaped::Lost(e)) => status::set_error(steps::Step::LostWait, Some(e), &format!("the command ended, but its exit status was lost (the wait for it failed: {})", std::io::Error::from_raw_os_error(e))),
         None if !caps::triggered() => status::set_trigger("term"), // ended by a TERM from outside
         _ => {}
     }
@@ -1908,7 +1909,7 @@ fn run(argv: Vec<OsString>) -> i32 {
     let args = match parse(argv) {
         Ok(a) => a,
         Err(code) => {
-            status::set_error("usage");
+            status::set_error(steps::Step::Usage, None, "usage");
             return status::write(code);
         }
     };

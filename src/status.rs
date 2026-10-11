@@ -51,6 +51,11 @@ struct Status {
     tracking: &'static str,
     degraded: Option<String>,
     error: Option<String>,
+    /// the errno name behind `error` (crate::steps' table), and whose failure it is
+    error_code: Option<&'static str>,
+    error_source: Option<&'static str>,
+    /// `error` is an internal error (never moved into a note behind another)
+    error_internal: bool,
     quiet: bool,
     notes: Vec<String>,
 }
@@ -72,6 +77,9 @@ impl Status {
             tracking: "none",
             degraded: None,
             error: None,
+            error_code: None,
+            error_source: None,
+            error_internal: false,
             quiet: false,
             notes: Vec::new(),
         }
@@ -89,6 +97,30 @@ impl Status {
     }
 
     /// The root's end, known for certain: it clears what the recorder took and keeps it off.
+    /// The one setter of `error`, `error_code` and `error_source` (plan §2): the three are set
+    /// together from the step's row of crate::steps' table. The first error wins and a later one
+    /// becomes a note `also: <text>`, except that an internal error (the tree may not be clean)
+    /// is never a note behind an earlier one: it takes `error`, and the earlier one becomes the
+    /// note.
+    fn set_error(&mut self, step: crate::steps::Step, errno: Option<i32>, text: &str) {
+        let taken = match &self.error {
+            None => true,
+            Some(old) if step.internal() && !self.error_internal => {
+                self.notes.push(format!("also: {old}"));
+                true
+            }
+            Some(_) => false,
+        };
+        if !taken {
+            self.notes.push(format!("also: {text}"));
+            return;
+        }
+        self.error = Some(text.to_string());
+        self.error_code = errno.and_then(crate::steps::errno_name);
+        self.error_source = Some(step.source(errno));
+        self.error_internal = step.internal();
+    }
+
     fn set_root_final(&mut self, root: &'static str) {
         self.root = root;
         self.root_final = true;
@@ -184,8 +216,9 @@ pub fn set_tracking(t: &'static str) {
 pub fn set_degraded(why: &str) {
     with(|s| s.degraded = Some(why.to_string()));
 }
-pub fn set_error(e: &str) {
-    with(|s| s.error = Some(e.to_string()));
+/// The one setter of the error triple (`Status::set_error`).
+pub fn set_error(step: crate::steps::Step, errno: Option<i32>, text: &str) {
+    with(|s| s.set_error(step, errno, text));
 }
 pub fn set_quiet(q: bool) {
     with(|s| s.quiet = q);
@@ -458,7 +491,7 @@ fn render(s: &Status, code: i32) -> String {
     let (root, root_code, root_signal) = s.root_fields();
     let num = |v: Option<i32>| v.map_or_else(|| "null".to_string(), |n| n.to_string());
     format!(
-        "{{\"v\":1,\"job\":{},\"root\":\"{}\",\"root_code\":{},\"root_signal\":{},\"code\":{code},\"trigger\":{trigger},\"trigger_at\":{at},\"deadline_missed\":{},\"killed\":[{}],\"survivors\":[{}],\"tracking\":\"{}\",\"degraded\":{},\"error\":{},\"notes\":[{}]}}\n",
+        "{{\"v\":1,\"job\":{},\"root\":\"{}\",\"root_code\":{},\"root_signal\":{},\"code\":{code},\"trigger\":{trigger},\"trigger_at\":{at},\"deadline_missed\":{},\"killed\":[{}],\"survivors\":[{}],\"tracking\":\"{}\",\"degraded\":{},\"error\":{},\"error_code\":{},\"error_source\":{},\"notes\":[{}]}}\n",
         opt(&s.job),
         root,
         num(root_code),
@@ -469,6 +502,8 @@ fn render(s: &Status, code: i32) -> String {
         s.tracking,
         opt(&s.degraded),
         opt(&s.error),
+        s.error_code.map_or_else(|| "null".to_string(), js),
+        s.error_source.map_or_else(|| "null".to_string(), js),
         notes.join(",")
     )
 }
@@ -533,6 +568,48 @@ mod tests {
         b.set_root_final("not-started");
         b.record_root_end(42, crate::exit_status(127));
         assert_eq!(b.root_fields(), ("not-started", None, None), "blocked");
+    }
+
+    /// Plan §2: the one setter of the error triple. The first error wins, and its errno name and
+    /// source go with it; a later one becomes a note `also: <text>`.
+    #[test]
+    fn the_first_error_wins_and_later_ones_are_notes() {
+        use crate::steps::Step;
+        let mut s = Status::new();
+        s.set_error(Step::Pipe, Some(libc::EMFILE), "cannot make a pipe");
+        s.set_error(Step::Exec, Some(libc::ENOENT), "cannot run x");
+        assert_eq!((s.error.as_deref(), s.error_code, s.error_source), (Some("cannot make a pipe"), Some("EMFILE"), Some("resources")));
+        assert_eq!(s.notes, ["also: cannot run x"]);
+        let mut n = Status::new();
+        n.set_error(Step::Usage, None, "usage");
+        assert_eq!((n.error.as_deref(), n.error_code, n.error_source), (Some("usage"), None, Some("usage")));
+    }
+
+    /// Round 3 P4: an internal error is never moved into a note behind an earlier error: it takes
+    /// `error` (with its own code and source) and the earlier one becomes the note; a second
+    /// internal error is a note.
+    #[test]
+    fn an_internal_error_is_never_a_note_behind_an_earlier_one() {
+        use crate::steps::Step;
+        let mut s = Status::new();
+        s.set_error(Step::Exec, Some(libc::ENOENT), "cannot run x");
+        s.set_error(Step::KillInternal, None, "internal error while killing the tree");
+        assert_eq!((s.error.as_deref(), s.error_code, s.error_source), (Some("internal error while killing the tree"), None, Some("sheepr")));
+        assert_eq!(s.notes, ["also: cannot run x"]);
+        s.set_error(Step::Panic, None, "internal error (a panic)");
+        assert_eq!(s.error.as_deref(), Some("internal error while killing the tree"));
+        assert_eq!(s.notes, ["also: cannot run x", "also: internal error (a panic)"]);
+    }
+
+    /// Plan §2: the line carries `error_code` and `error_source` beside `error`, null without one.
+    #[test]
+    fn the_line_carries_the_error_s_code_and_source() {
+        let field = |s: &Status, k: &str| sheepr::json::parse(render(s, 0).trim_end()).expect("the line parses").get(k).cloned();
+        let mut s = Status::new();
+        assert_eq!((field(&s, "error_code"), field(&s, "error_source")), (Some(sheepr::json::Json::Null), Some(sheepr::json::Json::Null)));
+        s.set_error(crate::steps::Step::ShimSpawn, Some(libc::EAGAIN), "cannot start the command");
+        assert_eq!(field(&s, "error_code"), Some(sheepr::json::Json::Str("EAGAIN".into())));
+        assert_eq!(field(&s, "error_source"), Some(sheepr::json::Json::Str("resources".into())));
     }
 
     /// #17: the line carries `root_code` and `root_signal`, numbers or null, beside `root`.
