@@ -1757,10 +1757,11 @@ fn panic_run(d: &Path, name: &str, args: &str, env: &[(&str, &str)], mark: &Path
 /// Plan §2 (P1 of round 1, round 3 N3): a panic says "internal error (a panic)" (source "sheepr",
 /// exit 125), and `root` is "not-started" only when the command cannot have run. Before the root
 /// may run: a panic before the spawn (the control) and, on Linux, between the shim's spawn and the
-/// go byte; on macOS, between the suspended spawn and the stop signals' unblock: "not-started".
-/// After it may run: a panic in the event loop; root-disclaim's root after its spawn (never
-/// suspended); macOS's suspended root after the unblock, which an outside CONT runs (a seam sends
-/// it; the command's marker shows it ran) before sheepr's own CONT: not "not-started".
+/// go byte: "not-started". After it may run: a panic in the event loop; root-disclaim's root after
+/// its spawn (never suspended); macOS's suspended root at any point after its spawn, since any
+/// SIGCONT resumes it with no stop (review of slice 2, P2-1): the rows send that CONT right after
+/// the spawn (seam; the command's marker shows it ran) and panic before the unblock, or before
+/// sheepr's own CONT: not "not-started".
 #[test]
 fn a_panic_says_so_and_whether_the_command_may_have_run() {
     let d = scratch("panic");
@@ -1776,7 +1777,10 @@ fn a_panic_says_so_and_whether_the_command_may_have_run() {
         cases.push(("before the go byte", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_BEFORE_GO", "1")], "not-started"));
     }
     if cfg!(target_os = "macos") {
-        cases.push(("after the suspended spawn", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "not-started"));
+        // any SIGCONT resumes a suspended root with no stop: it may run from its spawn (review
+        // of slice 2, P2-1), so the only "not-started" panic on macOS is one before the spawn
+        cases.push(("after the suspended spawn", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "signaled"));
+        cases.push(("after an outside CONT right after the spawn", cmd.as_str(), vec![("SHEEPR_TEST_CONT_ROOT_EARLY", "1"), ("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "signaled"));
         cases.push(("after root-disclaim's spawn", disclaim.as_str(), vec![("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "signaled"));
         cases.push(("after an outside CONT", cmd.as_str(), vec![("SHEEPR_TEST_CONT_ROOT_EARLY", "1"), ("SHEEPR_TEST_PANIC_BEFORE_CONT", "1")], "signaled"));
     }
@@ -1793,7 +1797,7 @@ fn a_panic_says_so_and_whether_the_command_may_have_run() {
         if *root == "not-started" {
             assert!(!ran, "{name}: the command ran");
         }
-        if *name == "after an outside CONT" {
+        if name.starts_with("after an outside CONT") {
             assert!(ran, "control: the outside CONT did not run the root, so this row proves nothing");
         }
     }

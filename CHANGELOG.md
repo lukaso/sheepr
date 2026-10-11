@@ -46,13 +46,12 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
     command's starter not started, or not answering (its end, or "no answer in 5000 ms");
   - after an internal error (a panic), `error` is `internal error (a panic)`, not null; `root`
     is `"not-started"` only when the command cannot have run yet: on Linux before the command
-    is let go (it was `"signaled"` there), on macOS before the stop signals are let through
-    (it was `"signaled"`);
+    is let go (it was `"signaled"` there), on macOS before the command is started;
   - when two errors happen in one run, `error` is the first one (before: the last), and the
     others are in `notes` as `also: …`; an internal error is never only a note;
   - on macOS, a command that sheepr ends while it is still suspended (a TERM, or its relay's
-    end, just before sheepr would resume it) is `"signaled"`, not `"not-started"`: a stop and
-    the job's CONT may have run it.
+    end, just before sheepr would resume it) is `"signaled"`, not `"not-started"`: any CONT
+    (a `timeout` that sends TERM and CONT, a plain `kill -CONT`) may have run it.
 - `run --require-journal`: the command runs only once sheepr has written it into its job journal
   (the record `sheepr sweep` uses to end a job whose sheepr was killed). When the journal cannot
   be kept, the command does not run: exit 125, root `"not-started"`, and `error` says why (with

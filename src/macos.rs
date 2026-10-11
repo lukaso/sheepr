@@ -1307,10 +1307,10 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
             }
         }
     }
-    if cont_blocked {
-        // not suspended: it may run from its spawn (a failed spawn's end is final)
-        crate::status::set_root_may_run();
-    }
+    // the root may run from its spawn: suspended or not, any SIGCONT resumes it with no stop
+    // (GNU timeout's TERM+CONT to the group, a plain kill -CONT); a failed spawn's end is final
+    // (review of slice 2, P2-1)
+    crate::status::set_root_may_run();
     let root = match spawn(&a.cmd, false, !cont_blocked, &sig.caller_mask) {
         Ok(r) => r,
         Err(p) => {
@@ -1320,6 +1320,11 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         }
     };
     crate::status::set_root_pid(root);
+    if crate::seam_flag("SHEEPR_TEST_CONT_ROOT_EARLY") {
+        // debug seam: an outside CONT (any SIGCONT: GNU timeout's TERM+CONT to the group, a plain
+        // kill -CONT) runs the suspended root now, with no stop
+        unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
+    }
     crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
     if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
         unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
@@ -1377,16 +1382,9 @@ fn kill_suspended_root(root: pid_t) {
 fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
     let Started { relay, journal, mut listener, tracker, cont_blocked, held, stops, root } = s;
     if crate::seam_flag("SHEEPR_TEST_PANIC_AFTER_SPAWN") {
-        panic!("test seam: a panic after the spawn, before the stop signals' unblock");
+        panic!("test seam: a panic after the suspended spawn, before the stop signals' unblock");
     }
-    // round 3 N3: once the stop signals are let through, a stop of sheepr and the job's CONT (or
-    // any CONT from outside) can run the suspended root before sheepr's own CONT
-    crate::status::set_root_may_run();
     unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &stops, std::ptr::null_mut()) };
-    if crate::seam_flag("SHEEPR_TEST_CONT_ROOT_EARLY") {
-        // debug seam: an outside CONT runs the suspended root now
-        unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
-    }
     if crate::seam_flag("SHEEPR_TEST_PANIC_BEFORE_CONT") {
         panic!("test seam: a panic after the stop signals' unblock, before sheepr's CONT");
     }

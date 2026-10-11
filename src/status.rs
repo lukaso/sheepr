@@ -15,8 +15,8 @@
 //! "term") says why, and the line's guard keeps it so: root "not-started" with neither an error
 //! nor a trigger panics in a debug build and gets "sheepr ended before the command started and
 //! recorded no reason" in a release build. `root` is "not-started" only before the command may
-//! run (`root_may_run`: the Linux go byte; macOS, the stop signals' unblock or a spawn that is not
-//! suspended), so a panic says it right too.
+//! run (`root_may_run`: the Linux go byte; macOS, the spawn, since any SIGCONT resumes a suspended
+//! root with no stop), so a panic says it right too.
 //!
 //! The root's own end (issue #17): one recorder per OS takes the wait status of every reap of
 //! the root (Linux `wait_any`, the one `waitpid(-1, ...)`; macOS `reap_root`, the one wait on
@@ -53,9 +53,9 @@ struct Status {
     /// set once the root's end is known for certain (an exec that failed): later guesses keep off
     root_final: bool,
     root_pid: i32,
-    /// the command may have run (plan §2, round 3 N3): set just before the point where it can
-    /// (the Linux go byte; macOS: the stop signals' unblock, or a spawn that is not suspended);
-    /// before it, an end is "not-started"
+    /// the command may have run (plan §2; round 3 N3 and the review of slice 2, P2-1): set just
+    /// before the point where it can (the Linux go byte; macOS, the spawn: any SIGCONT resumes a
+    /// suspended root with no stop); before it, an end is "not-started"
     root_may_run: bool,
     /// the root's wait status, as the recorder took it (#17)
     root_end: Option<libc::c_int>,
