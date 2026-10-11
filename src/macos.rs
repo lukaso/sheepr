@@ -1,5 +1,6 @@
 //! macOS: responsibility-based membership (PLAN.md §2, §3.1, §3.2).
 
+use crate::steps::{Before, PreRoot, Step};
 use crate::{cstrings, kill_tree, say, Args};
 use std::io::Write;
 use std::ffi::OsString;
@@ -548,11 +549,9 @@ fn become_responsible(argv0: &[OsString], caller_mask: &libc::sigset_t) -> bool 
 /// with SETSIGMASK (sheepr itself runs with TERM and SIGCHLD blocked). PLAN.md §3.1, cell 23.
 /// Spawn the root with the caller's mask. `suspended`: it starts stopped before its first
 /// instruction, so its identity can be read before it can start or leave anything.
-fn spawn(cmd: &[OsString], disclaim_root: bool, suspended: bool, caller_mask: &libc::sigset_t) -> Result<pid_t, i32> {
-    let argv = cstrings(cmd).map_err(|e| {
-        say!("sheepr: {e}");
-        125
-    })?;
+fn spawn(cmd: &[OsString], disclaim_root: bool, suspended: bool, caller_mask: &libc::sigset_t) -> Result<pid_t, PreRoot> {
+    // (a NUL in an argument cannot come from a C argv: unreachable from a shell, kept as 125)
+    let argv = cstrings(cmd).map_err(|e| PreRoot::new(Step::Usage, None, e))?;
     let mut ptrs: Vec<*mut c_char> = argv.iter().map(|c| c.as_ptr() as *mut c_char).collect();
     ptrs.push(std::ptr::null_mut());
     let mut pid: pid_t = 0;
@@ -572,14 +571,14 @@ fn spawn(cmd: &[OsString], disclaim_root: bool, suspended: bool, caller_mask: &l
             }
         }
         let env = *_NSGetEnviron() as *const *mut c_char;
-        libc::posix_spawnp(&mut pid, ptrs[0], std::ptr::null(), &attr, ptrs.as_ptr(), env)
+        // debug seam: the spawn is skipped and fails with the injected errno (no root exists)
+        match crate::steps::injected(Step::Spawn) {
+            Some(e) => e,
+            None => libc::posix_spawnp(&mut pid, ptrs[0], std::ptr::null(), &attr, ptrs.as_ptr(), env),
+        }
     };
     if rc != 0 {
-        let m = format!("cannot run {}: {}", crate::shown(&cmd[0]), std::io::Error::from_raw_os_error(rc));
-        say!("sheepr: {m}");
-        crate::status::set_error(crate::steps::Step::Spawn, Some(rc), &m);
-        crate::status::set_root("not-started");
-        return Err(if rc == libc::ENOENT { 127 } else { 126 });
+        return Err(PreRoot::new(Step::Spawn, Some(rc), format!("cannot run {}: {}", crate::shown(&cmd[0]), std::io::Error::from_raw_os_error(rc))));
     }
     Ok(pid)
 }
@@ -616,19 +615,19 @@ fn my_relay() -> Option<pid_t> {
 /// session leader; never forwards INT (a terminal INT reaches the whole group); dies the way
 /// the supervisor died. macOS has no PDEATHSIG, so the supervisor watches the relay itself and
 /// raises TERM when it dies (`relay_gone`).
-fn relay_if_needed(sig: &crate::Signals) -> Option<i32> {
+fn relay_if_needed(sig: &crate::Signals) -> Result<(), Before> {
     if my_relay().is_some() {
-        return None; // the supervisor a relay forked, after its re-exec
+        return Ok(()); // the supervisor a relay forked, after its re-exec
     }
     let me = unsafe { libc::getpid() };
     let own_reexec = std::env::var(REEXEC_MARK).ok().as_deref() == Some(me.to_string().as_str());
     let self_responsible = !own_reexec && uniq(me).map(|u| u.0).is_some_and(|u| resp_uniq(me) == Some(u) && referred_to(me, u));
     if !crate::has_children() && !self_responsible {
-        return None;
+        return Ok(());
     }
     // a TERM pending now would stay in the relay (pending signals are not inherited across fork)
     if sig.watch_term && crate::term_pending() {
-        return Some(crate::die_by_term(143));
+        return Err(Before::Ended(crate::die_by_term(143)));
     }
     unsafe {
         let relay = libc::getpid();
@@ -639,20 +638,24 @@ fn relay_if_needed(sig: &crate::Signals) -> Option<i32> {
         }
         let mut old: libc::sigset_t = zeroed();
         libc::sigprocmask(libc::SIG_BLOCK, &set, &mut old);
-        match libc::fork() {
+        // debug seam: the fork is skipped and fails with the injected errno
+        let (pid, e) = match crate::steps::injected(Step::RelayFork) {
+            Some(e) => (-1, e),
+            None => (libc::fork(), std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        };
+        match pid {
             0 => {
                 std::env::set_var(RELAY_PID, format!("{relay}:{}", libc::getpid()));
                 libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
-                None
+                Ok(())
             }
             -1 => {
                 libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
-                say!("sheepr: fork failed: {}", std::io::Error::last_os_error());
-                Some(125)
+                Err(PreRoot::new(Step::RelayFork, Some(e), format!("fork failed: {}", std::io::Error::from_raw_os_error(e))).into())
             }
             sup => {
                 crate::status::disable(); // the supervisor writes the status line
-                Some(relay_loop(sup, relay, sig.watch_term))
+                Err(Before::Ended(relay_loop(sup, relay, sig.watch_term)))
             }
         }
     }
@@ -1111,276 +1114,306 @@ fn wait(
     }
 }
 
+/// What the pre-root segment hands on: the responsible mode's state once its root is spawned
+/// (suspended, unless the caller blocks SIGCONT), or `--mode root-disclaim`'s root.
+enum Pre {
+    Responsible(Started),
+    Disclaim(pid_t),
+}
+
+/// The responsible mode's state at the end of its pre-root segment.
+struct Started {
+    relay: Option<pid_t>,
+    journal: std::cell::RefCell<crate::journal::Journal>,
+    listener: Option<crate::register::Listener>,
+    tracker: std::cell::RefCell<crate::Tracker>,
+    cont_blocked: bool,
+    held: libc::sigset_t,
+    stops: libc::sigset_t,
+    root: pid_t,
+}
+
 pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
+    match pre_root(a, sig) {
+        Err(b) => b.end(),
+        Ok(Pre::Responsible(s)) => responsible(a, sig, s),
+        Ok(Pre::Disclaim(root)) => root_disclaim(sig, root),
+    }
+}
+
+/// The pre-root segment (plan §2): every step before the command can run. An early end is a
+/// `Before`: a step's failure (`PreRoot`, made the status in one place, `Before::end`), or an end
+/// of the process's own (death by a TERM, the relay's own end); never a bare exit code.
+fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
     match a.mode.as_deref() {
-        None | Some("responsible") => {
-            if let Some(code) = relay_if_needed(sig) {
-                return code;
-            }
-            // registration (PLAN.md §3.2): with every enclosing supervisor, before the disclaim;
-            // the re-exec'd image (already responsible for itself) does not register again
-            // (the re-exec'd image is known by the mark, never by responsibility: a process whose
-            // responsible process died also reads as responsible for itself)
-            let me_pid = unsafe { libc::getpid() };
-            let disclaimed = std::env::var(REEXEC_MARK).ok().as_deref() == Some(me_pid.to_string().as_str());
-            if !disclaimed && !crate::seam_flag("SHEEPR_TEST_PHASE1") {
-                let chain = crate::register::inherited(true);
-                if !chain.is_empty() {
-                    crate::register::register_all(&chain);
-                }
-            }
-            // --inherit-terminal-permissions: no disclaim (the job keeps the terminal's privacy
-            // permissions; tracking falls back to parent ids, R stays {this supervisor})
-            let ok = if a.inherit { false } else { become_responsible(&a.argv, &sig.caller_mask) };
-            std::env::remove_var(REEXEC_MARK);
-            let relay = my_relay();
-            std::env::remove_var(RELAY_PID);
-            // a relay that is already gone means the job must not start, whatever the caller did
-            // with TERM (S2 review rounds 3-4)
-            if relay.is_some_and(relay_exited) {
-                return crate::die_by_term(143);
-            }
-            crate::status::cloexec(); // after the SETEXEC, which the fd had to survive
-            crate::status::set_tracking(if ok { "responsibility" } else { "puniq" });
-            if a.inherit {
-                // a phase-2 source (PHASE2.md D1): the job is tracked by `puniq` and ever-seen
-                // facts only, so the test wall's latch comes on (a no-op in a release build);
-                // under the phase-1 opt-out the source is disabled outright: nothing starts
-                if crate::wall::gate().is_none() {
-                    crate::fail!("sheepr: --inherit-terminal-permissions is disabled in this test environment (SHEEPR_TEST_PHASE1). Nothing was run.");
-                    crate::status::set_error(crate::steps::Step::Inherit, None, "inherit mode disabled");
-                    return 125;
-                }
-                if !a.quiet {
-                    say!("sheepr: --inherit-terminal-permissions: this job keeps your terminal's privacy permissions, so tracking falls back to parent ids (fast-escaping processes can be missed).");
-                }
-                crate::trace("degraded".into());
-                crate::status::set_degraded("--inherit-terminal-permissions: tracking by parent ids only");
-            } else if !ok {
-                say!("sheepr: the macOS responsibility API is not available here, so tracking falls back to parent ids (fast-escaping processes can be missed). Details: sheepr doctor.");
-                crate::trace("degraded".into());
-                crate::status::set_degraded("the macOS responsibility API is not available");
-            }
-            // only a disclaimed job loses the terminal's permissions: this is the disclaimed
-            // re-exec (whether or not the read-back confirms it); without the re-exec the job
-            // keeps them, as it would without sheepr, and the warning's advice would be wrong
-            if disclaimed && !a.inherit {
-                tcc_warning(&a.cmd);
-            }
-            let me = uniq(unsafe { libc::getpid() }).map(|u| u.0).unwrap_or(0);
-            // the auto-sweep: once, after the re-exec, before the pre-spawn TERM check
-            if !a.no_sweep {
-                crate::sweep::auto(&a.owner, a.quiet);
-            }
-            crate::caps::start();
-            if let Some(code) = crate::term_before_spawn(sig) {
-                return code;
-            }
-            // after the SETEXEC (the lock is CLOEXEC and would not survive it), before the root
-            let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv));
-            // the listener for nested runs, and the chain the root inherits (a phase-2 source:
-            // none under the phase-1 opt-out)
-            let mut listener = if crate::seam_flag("SHEEPR_TEST_PHASE1") {
-                None
-            } else {
-                let mut chain = crate::register::inherited(false);
-                if chain.len() >= sheepr::regwire::MAX {
-                    crate::note("chain full".into());
-                    say!("sheepr: {} enclosing sheeprs already: jobs nested in this one are found by the scan only", sheepr::regwire::MAX);
-                    None
-                } else {
-                    let l = crate::register::Listener::open();
-                    if let Some(l) = &l {
-                        chain.push(l.entry());
-                        std::env::set_var(sheepr::regwire::VAR, sheepr::regwire::format(&chain));
-                    }
-                    l
-                }
-            };
-            let tracker = std::cell::RefCell::new(crate::Tracker::default());
-            tracker.borrow_mut().r.insert(me);
-            // the supervisor's ancestors are never members (their uniqueids; an unreadable chain
-            // leaves the set short, never wider)
-            let mut p = unsafe { libc::getppid() };
-            let mut n = 0;
-            while p > 1 && n < 4096 {
-                match uniq(p) {
-                    Some((u, _)) => {
-                        tracker.borrow_mut().never.insert(u);
-                    }
-                    None => break,
-                }
-                p = match crate::kill::parent(p) {
-                    Some(q) => q,
-                    None => break,
-                };
-                n += 1;
-            }
-            tracker.borrow_mut().ever.insert(me);
-            // the root's identity is known from its birth: a child it starts with the disclaim
-            // has only `puniq` = the root as its fact, even if the root exits before any scan
-            // Suspended, unless the caller blocks SIGCONT: then the resuming CONT would stay
-            // pending in the root, a signal its caller never sent. That case keeps the race of
-            // a root that exits before its identity is read (PLAN.md §3.2).
-            let cont_blocked = unsafe { libc::sigismember(&sig.caller_mask, libc::SIGCONT) } == 1;
-            // Every signal is held from the spawn until the root's identity is read, so nothing
-            // can end or stop sheepr in between (a stop and the job's CONT would resume the
-            // root before sheepr knows it). Then the stop signals are let through: a ctrl-Z stops
-            // sheepr before the CONT, and the job's CONT resumes both. Signals that end sheepr
-            // stay held until the CONT, so the root is never left stopped; they act after it.
-            let mut held: libc::sigset_t = unsafe { zeroed() };
-            let mut stops: libc::sigset_t = unsafe { zeroed() };
-            unsafe {
-                let mut all: libc::sigset_t = zeroed();
-                libc::sigfillset(&mut all);
-                libc::sigprocmask(libc::SIG_BLOCK, &all, &mut held);
-                libc::sigemptyset(&mut stops);
-                // the caller's mask decides (sheepr itself blocks the stop signals it watches
-                // for the event loop, so `held` has them all)
-                for s in [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
-                    if libc::sigismember(&sig.caller_mask, s) != 1 {
-                        libc::sigaddset(&mut stops, s);
-                    }
-                }
-            }
-            let root = match spawn(&a.cmd, false, !cont_blocked, &sig.caller_mask) {
-                Ok(r) => r,
-                Err(code) => {
-                    unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
-                    journal.into_inner().finish(true);
-                    return code;
-                }
-            };
-            crate::status::set_root_pid(root);
-            crate::status::set_root("signaled"); // until the root's own end is known
-            crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
-            if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
-                unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
-            }
-            if let Some((u, _)) = uniq(root) {
-                tracker.borrow_mut().ever.insert(u);
-                // before the resuming CONT below: the root is journaled before it runs
-                journal.borrow_mut().record_root(root, u, &a.cmd);
-            }
-            unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &stops, std::ptr::null_mut()) };
-            crate::seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS");
-            let mut ended = false;
-            if !cont_blocked {
-                // The job may have ended while the root was suspended (its relay died, or TERM
-                // came): the root is killed and never resumed by sheepr. A stop and the job's
-                // CONT may still have run it meanwhile, so the kill below is the whole tree's
-                // (S2 review rounds 4-5).
-                if relay.is_some_and(relay_exited) || (sig.watch_term && crate::term_pending()) {
-                    unsafe {
-                        libc::kill(root, libc::SIGKILL); // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
-                        let mut st = 0;
-                        libc::waitpid(root, &mut st, 0);
-                    }
-                    crate::status::set_root("not-started");
-                    ended = true;
-                } else {
-                    if cfg!(debug_assertions) {
-                        // debug seam: mark the moment the root is resumed, so a test can prove
-                        // its action came before it
-                        if let Ok(f) = std::env::var("SHEEPR_TEST_CONT_FILE") {
-                            let _ = std::fs::File::create(f);
-                        }
-                    }
-                    unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
-                }
-            }
-            // On an early end the signals that end sheepr stay held through the kill and the
-            // death by TERM (the stop signals were let through before the check, and a ctrl-Z can
-            // still stop it): releasing them now would let another deadly one (INT, HUP, QUIT)
-            // end sheepr before the tree is killed (S2 review round 6).
-            if !ended {
-                unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
-            }
-            let mut current = || {
-                let mut t = tracker.borrow_mut();
-                let found = members(&mut t);
-                journal.borrow_mut().record(&found);
-                t.refresh(found);
-                t.known.iter().map(|(&p, &id)| (p, id)).collect()
-            };
-            // a registration: the peer joins R only if it is a member now, by the scan's own
-            // function (PLAN.md §3.2 step 3)
-            let mut admit = |u: u64, commit: bool| -> bool {
-                let mut t = tracker.borrow_mut();
-                if !commit {
-                    let found = members(&mut t);
-                    journal.borrow_mut().record(&found);
-                    return t.ever.contains(&u);
-                }
-                // the first fact of this source enters R only after the gate (PHASE2.md §0.1)
-                if crate::wall::gate().is_none() {
-                    return false;
-                }
-                t.r.insert(u);
-                true
-            };
-            let mut ints = crate::Interrupts::new(a, relay);
-            let mut ours = |pg: i32| crate::only_ours(&group_pids(pg), relay, &tracker.borrow().known);
-            let reg = listener.as_mut().map(|l| (l, &mut admit as &mut crate::register::Admit));
-            // `taken`: the root's end is already taken (the loop reaped it, or lost its wait, or the
-            // early end above reaped it)
-            let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg) };
-            // no registration is served during the kill: an inner run then fails fast (no socket)
-            drop(listener);
-            if a.leave_strays && status.is_some() {
-                let mut j = journal.into_inner();
-                let marked = j.mark_leave_strays();
-                j.finish(!marked);
-                crate::release_relay(relay, stopped);
-                return crate::finish(status, Ok(()), &mut ints, sig);
-            }
-            let initial = tracker.borrow().known.clone();
-            crate::JOB_KILL.store(true, std::sync::atomic::Ordering::SeqCst);
-            let result = kill_tree(
-                &crate::KillOpts::from_env().with_grace(a.grace).with_deadline(a.kill_deadline),
-                || {
-                    let mut t = tracker.borrow_mut();
-                    let found = members(&mut t);
-                    journal.borrow_mut().record(&found);
-                    found
-                },
-                || {},
-                || None,
-                crate::signal,
-                initial,
-            );
-            // only a root whose end nothing took yet: a TERM or a cap ended the job before the root
-            // ended (the root reaped by the early end above, killed while suspended, records nothing)
-            if !taken {
-                reap_after_kill(root);
-            }
-            journal.into_inner().finish(result.is_ok());
-            crate::release_relay(relay, stopped);
-            crate::finish(status, result, &mut ints, sig)
-        }
+        None | Some("responsible") => {}
         Some("root-disclaim") => {
             if let Some(code) = crate::term_before_spawn(sig) {
-                return code;
+                return Err(Before::Ended(code));
             }
-            let root = match spawn(&a.cmd, true, false, &sig.caller_mask) {
-                Ok(r) => r,
-                Err(code) => return code,
-            };
-            // the recorder keys on the root's pid (#17); its TERM path does not reap the root
-            // (stated), so its end then stays unobserved: "signaled", both fields null
-            crate::status::set_root_pid(root);
-            crate::status::set_root("signaled");
-            let r = uniq(root).map(|u| u.0).unwrap_or(0);
-            let mut ints = crate::Interrupts::none();
-            let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);
-            let result = kill_tree(&crate::KillOpts::from_env(), || responsible_to(r), || {}, || None, crate::signal, Default::default());
-            crate::finish(status, result, &mut ints, sig)
+            return Ok(Pre::Disclaim(spawn(&a.cmd, true, false, &sig.caller_mask)?));
         }
-        Some(m) => {
-            say!("sheepr: unknown mode {m}");
-            125
+        Some(m) => return Err(PreRoot::new(Step::Mode, None, format!("unknown mode {m}")).into()),
+    }
+    relay_if_needed(sig)?;
+    // registration (PLAN.md §3.2): with every enclosing supervisor, before the disclaim;
+    // the re-exec'd image (already responsible for itself) does not register again
+    // (the re-exec'd image is known by the mark, never by responsibility: a process whose
+    // responsible process died also reads as responsible for itself)
+    let me_pid = unsafe { libc::getpid() };
+    let disclaimed = std::env::var(REEXEC_MARK).ok().as_deref() == Some(me_pid.to_string().as_str());
+    if !disclaimed && !crate::seam_flag("SHEEPR_TEST_PHASE1") {
+        let chain = crate::register::inherited(true);
+        if !chain.is_empty() {
+            crate::register::register_all(&chain);
         }
     }
+    // --inherit-terminal-permissions: no disclaim (the job keeps the terminal's privacy
+    // permissions; tracking falls back to parent ids, R stays {this supervisor})
+    let ok = if a.inherit { false } else { become_responsible(&a.argv, &sig.caller_mask) };
+    std::env::remove_var(REEXEC_MARK);
+    let relay = my_relay();
+    std::env::remove_var(RELAY_PID);
+    // a relay that is already gone means the job must not start, whatever the caller did
+    // with TERM (S2 review rounds 3-4)
+    if relay.is_some_and(relay_exited) {
+        return Err(Before::Ended(crate::die_by_term(143)));
+    }
+    crate::status::cloexec(); // after the SETEXEC, which the fd had to survive
+    crate::status::set_tracking(if ok { "responsibility" } else { "puniq" });
+    if a.inherit {
+        // a phase-2 source (PHASE2.md D1): the job is tracked by `puniq` and ever-seen
+        // facts only, so the test wall's latch comes on (a no-op in a release build);
+        // under the phase-1 opt-out the source is disabled outright: nothing starts
+        if crate::wall::gate().is_none() {
+            crate::fail!("sheepr: --inherit-terminal-permissions is disabled in this test environment (SHEEPR_TEST_PHASE1). Nothing was run.");
+            return Err(PreRoot::said(Step::Inherit, None, "inherit mode disabled").into());
+        }
+        if !a.quiet {
+            say!("sheepr: --inherit-terminal-permissions: this job keeps your terminal's privacy permissions, so tracking falls back to parent ids (fast-escaping processes can be missed).");
+        }
+        crate::trace("degraded".into());
+        crate::status::set_degraded("--inherit-terminal-permissions: tracking by parent ids only");
+    } else if !ok {
+        say!("sheepr: the macOS responsibility API is not available here, so tracking falls back to parent ids (fast-escaping processes can be missed). Details: sheepr doctor.");
+        crate::trace("degraded".into());
+        crate::status::set_degraded("the macOS responsibility API is not available");
+    }
+    // only a disclaimed job loses the terminal's permissions: this is the disclaimed
+    // re-exec (whether or not the read-back confirms it); without the re-exec the job
+    // keeps them, as it would without sheepr, and the warning's advice would be wrong
+    if disclaimed && !a.inherit {
+        tcc_warning(&a.cmd);
+    }
+    let me = uniq(unsafe { libc::getpid() }).map(|u| u.0).unwrap_or(0);
+    // the auto-sweep: once, after the re-exec, before the pre-spawn TERM check
+    if !a.no_sweep {
+        crate::sweep::auto(&a.owner, a.quiet);
+    }
+    crate::caps::start();
+    if let Some(code) = crate::term_before_spawn(sig) {
+        return Err(Before::Ended(code));
+    }
+    // after the SETEXEC (the lock is CLOEXEC and would not survive it), before the root
+    let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv));
+    // the listener for nested runs, and the chain the root inherits (a phase-2 source:
+    // none under the phase-1 opt-out)
+    let listener = if crate::seam_flag("SHEEPR_TEST_PHASE1") {
+        None
+    } else {
+        let mut chain = crate::register::inherited(false);
+        if chain.len() >= sheepr::regwire::MAX {
+            crate::note("chain full".into());
+            say!("sheepr: {} enclosing sheeprs already: jobs nested in this one are found by the scan only", sheepr::regwire::MAX);
+            None
+        } else {
+            let l = crate::register::Listener::open();
+            if let Some(l) = &l {
+                chain.push(l.entry());
+                std::env::set_var(sheepr::regwire::VAR, sheepr::regwire::format(&chain));
+            }
+            l
+        }
+    };
+    let tracker = std::cell::RefCell::new(crate::Tracker::default());
+    tracker.borrow_mut().r.insert(me);
+    // the supervisor's ancestors are never members (their uniqueids; an unreadable chain
+    // leaves the set short, never wider)
+    let mut p = unsafe { libc::getppid() };
+    let mut n = 0;
+    while p > 1 && n < 4096 {
+        match uniq(p) {
+            Some((u, _)) => {
+                tracker.borrow_mut().never.insert(u);
+            }
+            None => break,
+        }
+        p = match crate::kill::parent(p) {
+            Some(q) => q,
+            None => break,
+        };
+        n += 1;
+    }
+    tracker.borrow_mut().ever.insert(me);
+    // the root's identity is known from its birth: a child it starts with the disclaim
+    // has only `puniq` = the root as its fact, even if the root exits before any scan
+    // Suspended, unless the caller blocks SIGCONT: then the resuming CONT would stay
+    // pending in the root, a signal its caller never sent. That case keeps the race of
+    // a root that exits before its identity is read (PLAN.md §3.2).
+    let cont_blocked = unsafe { libc::sigismember(&sig.caller_mask, libc::SIGCONT) } == 1;
+    // Every signal is held from the spawn until the root's identity is read, so nothing
+    // can end or stop sheepr in between (a stop and the job's CONT would resume the
+    // root before sheepr knows it). Then the stop signals are let through: a ctrl-Z stops
+    // sheepr before the CONT, and the job's CONT resumes both. Signals that end sheepr
+    // stay held until the CONT, so the root is never left stopped; they act after it.
+    let mut held: libc::sigset_t = unsafe { zeroed() };
+    let mut stops: libc::sigset_t = unsafe { zeroed() };
+    unsafe {
+        let mut all: libc::sigset_t = zeroed();
+        libc::sigfillset(&mut all);
+        libc::sigprocmask(libc::SIG_BLOCK, &all, &mut held);
+        libc::sigemptyset(&mut stops);
+        // the caller's mask decides (sheepr itself blocks the stop signals it watches
+        // for the event loop, so `held` has them all)
+        for s in [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
+            if libc::sigismember(&sig.caller_mask, s) != 1 {
+                libc::sigaddset(&mut stops, s);
+            }
+        }
+    }
+    let root = match spawn(&a.cmd, false, !cont_blocked, &sig.caller_mask) {
+        Ok(r) => r,
+        Err(p) => {
+            unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
+            journal.into_inner().finish(true);
+            return Err(p.into());
+        }
+    };
+    crate::status::set_root_pid(root);
+    Ok(Pre::Responsible(Started { relay, journal, listener, tracker, cont_blocked, held, stops, root }))
+}
+
+/// The responsible mode after its root is spawned.
+fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
+    let Started { relay, journal, mut listener, tracker, cont_blocked, held, stops, root } = s;
+    crate::status::set_root("signaled"); // until the root's own end is known
+    crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
+    if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
+        unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
+    }
+    if let Some((u, _)) = uniq(root) {
+        tracker.borrow_mut().ever.insert(u);
+        // before the resuming CONT below: the root is journaled before it runs
+        journal.borrow_mut().record_root(root, u, &a.cmd);
+    }
+    unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &stops, std::ptr::null_mut()) };
+    crate::seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS");
+    let mut ended = false;
+    if !cont_blocked {
+        // The job may have ended while the root was suspended (its relay died, or TERM
+        // came): the root is killed and never resumed by sheepr. A stop and the job's
+        // CONT may still have run it meanwhile, so the kill below is the whole tree's
+        // (S2 review rounds 4-5).
+        if relay.is_some_and(relay_exited) || (sig.watch_term && crate::term_pending()) {
+            unsafe {
+                libc::kill(root, libc::SIGKILL); // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
+                let mut st = 0;
+                libc::waitpid(root, &mut st, 0);
+            }
+            crate::status::set_root("not-started");
+            ended = true;
+        } else {
+            if cfg!(debug_assertions) {
+                // debug seam: mark the moment the root is resumed, so a test can prove
+                // its action came before it
+                if let Ok(f) = std::env::var("SHEEPR_TEST_CONT_FILE") {
+                    let _ = std::fs::File::create(f);
+                }
+            }
+            unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
+        }
+    }
+    // On an early end the signals that end sheepr stay held through the kill and the
+    // death by TERM (the stop signals were let through before the check, and a ctrl-Z can
+    // still stop it): releasing them now would let another deadly one (INT, HUP, QUIT)
+    // end sheepr before the tree is killed (S2 review round 6).
+    if !ended {
+        unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
+    }
+    let mut current = || {
+        let mut t = tracker.borrow_mut();
+        let found = members(&mut t);
+        journal.borrow_mut().record(&found);
+        t.refresh(found);
+        t.known.iter().map(|(&p, &id)| (p, id)).collect()
+    };
+    // a registration: the peer joins R only if it is a member now, by the scan's own
+    // function (PLAN.md §3.2 step 3)
+    let mut admit = |u: u64, commit: bool| -> bool {
+        let mut t = tracker.borrow_mut();
+        if !commit {
+            let found = members(&mut t);
+            journal.borrow_mut().record(&found);
+            return t.ever.contains(&u);
+        }
+        // the first fact of this source enters R only after the gate (PHASE2.md §0.1)
+        if crate::wall::gate().is_none() {
+            return false;
+        }
+        t.r.insert(u);
+        true
+    };
+    let mut ints = crate::Interrupts::new(a, relay);
+    let mut ours = |pg: i32| crate::only_ours(&group_pids(pg), relay, &tracker.borrow().known);
+    let reg = listener.as_mut().map(|l| (l, &mut admit as &mut crate::register::Admit));
+    // `taken`: the root's end is already taken (the loop reaped it, or lost its wait, or the
+    // early end above reaped it)
+    let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg) };
+    // no registration is served during the kill: an inner run then fails fast (no socket)
+    drop(listener);
+    if a.leave_strays && status.is_some() {
+        let mut j = journal.into_inner();
+        let marked = j.mark_leave_strays();
+        j.finish(!marked);
+        crate::release_relay(relay, stopped);
+        return crate::finish(status, Ok(()), &mut ints, sig);
+    }
+    let initial = tracker.borrow().known.clone();
+    crate::JOB_KILL.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = kill_tree(
+        &crate::KillOpts::from_env().with_grace(a.grace).with_deadline(a.kill_deadline),
+        || {
+            let mut t = tracker.borrow_mut();
+            let found = members(&mut t);
+            journal.borrow_mut().record(&found);
+            found
+        },
+        || {},
+        || None,
+        crate::signal,
+        initial,
+    );
+    // only a root whose end nothing took yet: a TERM or a cap ended the job before the root
+    // ended (the root reaped by the early end above, killed while suspended, records nothing)
+    if !taken {
+        reap_after_kill(root);
+    }
+    journal.into_inner().finish(result.is_ok());
+    crate::release_relay(relay, stopped);
+    crate::finish(status, result, &mut ints, sig)
+}
+
+/// `--mode root-disclaim` after its root is spawned.
+fn root_disclaim(sig: &crate::Signals, root: pid_t) -> i32 {
+    // the recorder keys on the root's pid (#17); its TERM path does not reap the root
+    // (stated), so its end then stays unobserved: "signaled", both fields null
+    crate::status::set_root_pid(root);
+    crate::status::set_root("signaled");
+    let r = uniq(root).map(|u| u.0).unwrap_or(0);
+    let mut ints = crate::Interrupts::none();
+    let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);
+    let result = kill_tree(&crate::KillOpts::from_env(), || responsible_to(r), || {}, || None, crate::signal, Default::default());
+    crate::finish(status, result, &mut ints, sig)
 }
 
 #[cfg(test)]

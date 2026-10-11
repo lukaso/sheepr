@@ -60,10 +60,16 @@ struct Run {
 /// `sheepr run ARGS` with `--status-fd 3` pointed at a file (through a shell, `exec`), within
 /// 30 s; `pre` runs with the child (e.g. to send it TERM).
 fn run(d: &Path, name: &str, args: &str, env: &[(&str, &str)], pre: impl FnOnce(&mut std::process::Child)) -> Run {
+    run_after(d, name, "", args, env, pre)
+}
+
+/// `run`, with shell text `prefix` run before the `exec` (e.g. a background child, so sheepr
+/// starts with children and forks its relay).
+fn run_after(d: &Path, name: &str, prefix: &str, args: &str, env: &[(&str, &str)], pre: impl FnOnce(&mut std::process::Child)) -> Run {
     let out = d.join(format!("{name}.status"));
     let err = d.join(format!("{name}.err"));
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 {args} 3>"{}" 2>"{}""#, out.display(), err.display())])
+    cmd.args(["-c", &format!(r#"{prefix} exec "$SD" run --status-fd 3 {args} 3>"{}" 2>"{}""#, out.display(), err.display())])
         .env("SD", sheepr())
         .env("FX", fixture());
     for (k, v) in env {
@@ -1498,5 +1504,104 @@ fn leave_strays_with_a_missing_command_is_not_started() {
     assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{:?}", x.status);
     assert!(both_null(&x), "{:?}", x.status);
     assert!(field(&x, "error").and_then(Json::str).is_some(), "{:?}", x.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---- #21, #23: every end before the command says why ----
+
+/// One pre-root step of the table (plan §2), how a cell provokes it, and what the line must say.
+struct StepRow {
+    /// the step's word (src/steps.rs)
+    step: &'static str,
+    os: &'static str,
+    /// the seam's value (SHEEPR_TEST_FAIL_STEP), or "" when `args` provoke it
+    seam: &'static str,
+    /// run's arguments before `--` ("" for none), and whether the command is missing
+    args: &'static str,
+    missing: bool,
+    /// a background child before sheepr starts (so it forks its relay)
+    child: bool,
+    env: &'static [(&'static str, &'static str)],
+    code: i32,
+    error_code: Option<&'static str>,
+    source: &'static str,
+}
+
+/// The step table's rows: each pre-root step at least once, on its OS.
+const STEP_ROWS: &[StepRow] = &[
+    StepRow { step: "relay-fork", os: "any", seam: "relay-fork:EAGAIN", args: "", missing: false, child: true, env: &[], code: 125, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "mode", os: "any", seam: "", args: "--mode bogus", missing: false, child: false, env: &[], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "usage", os: "any", seam: "", args: "--no-such-flag", missing: false, child: false, env: &[], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "spawn", os: "macos", seam: "", args: "", missing: true, child: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EAGAIN", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EPERM", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
+    StepRow { step: "inherit", os: "macos", seam: "", args: "--inherit-terminal-permissions", missing: false, child: false, env: &[("SHEEPR_TEST_PHASE1", "1")], code: 125, error_code: None, source: "usage" },
+    StepRow { step: "exec", os: "linux", seam: "", args: "", missing: true, child: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
+    StepRow { step: "exec", os: "linux", seam: "exec:EPERM", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
+    StepRow { step: "proc", os: "linux", seam: "proc:ENOENT", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
+    StepRow { step: "self-exe", os: "linux", seam: "self-exe:EACCES", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EACCES"), source: "sheepr" },
+    StepRow { step: "pipe", os: "linux", seam: "pipe:EMFILE", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EMFILE"), source: "resources" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:EAGAIN", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:E2BIG", args: "", missing: false, child: false, env: &[], code: 126, error_code: Some("E2BIG"), source: "command" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:ENOENT", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
+    StepRow { step: "handshake", os: "linux", seam: "handshake", args: "", missing: false, child: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "shim-prctl", os: "linux", seam: "shim-prctl:EPERM", args: "", missing: false, child: false, env: &[], code: 125, error_code: Some("EPERM"), source: "sheepr" },
+    StepRow { step: "shim-parent", os: "linux", seam: "shim-parent", args: "", missing: false, child: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+];
+
+/// Plan §2 (#21, #23): every way `run` ends before its command, one row per step of the table on
+/// this OS, through SHEEPR_TEST_FAIL_STEP (the step's syscall runs and its result is replaced;
+/// a process-creating step is skipped) or the arguments that cause it: the exit code (v0.1.3's),
+/// `root` "not-started" with both root fields null, `trigger` null, an `error`, its `error_code`
+/// (the injected errno's name) and its `error_source`; and the command never ran (its marker file
+/// is absent; a seam row's command is a `touch`).
+#[test]
+fn every_pre_root_step_says_why() {
+    let d = scratch("steps");
+    let os = std::env::consts::OS;
+    let mut ran = 0;
+    for (i, r) in STEP_ROWS.iter().enumerate().filter(|(_, r)| r.os == "any" || r.os == os) {
+        ran += 1;
+        let mark = d.join(format!("ran{i}"));
+        let m = marker();
+        let cmd = if r.missing { "/nonexistent/sr-missing".to_string() } else { format!(r#"/bin/sh -c 'touch "{}"'"#, mark.display()) };
+        let mut env: Vec<(&str, &str)> = r.env.to_vec();
+        if !r.seam.is_empty() {
+            env.push(("SHEEPR_TEST_FAIL_STEP", r.seam));
+        }
+        let prefix = if r.child { format!("/bin/sleep {m} &") } else { String::new() };
+        let x = run_after(&d, &format!("s{i}"), &prefix, &format!("{} -- {cmd}", r.args), &env, |_| {});
+        kill_marked(&m);
+        let what = format!("{} ({}): {:?}\nstderr: {}", r.step, r.seam, x.status, x.stderr);
+        assert_eq!(x.code, Some(r.code), "{what}");
+        assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{what}");
+        assert!(both_null(&x), "{what}");
+        assert_eq!(field(&x, "trigger"), Some(&Json::Null), "{what}");
+        assert!(field(&x, "error").and_then(Json::str).is_some(), "{what}");
+        assert_eq!(field(&x, "error_code").and_then(Json::str), r.error_code, "{what}");
+        assert_eq!(field(&x, "error_source").and_then(Json::str), Some(r.source), "{what}");
+        assert!(!mark.exists(), "the command ran: {what}");
+    }
+    assert!(ran >= 6, "control: {ran} rows ran on {os}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §2: a step that creates a process is skipped by its seam, so no root exists: under the
+/// macOS posix_spawnp seam the command, a sleep with this cell's marker, is not running afterwards
+/// (and its marker file is absent); the control, the same command without the seam, runs.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_spawn_seam_starts_no_root() {
+    let d = scratch("spawnseam");
+    let (m, mark, ctl) = (marker(), d.join("ran"), d.join("ctl"));
+    let x = run(&d, "seam", &format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}'"#, mark.display()), &[("SHEEPR_TEST_FAIL_STEP", "spawn:EAGAIN")], |_| {});
+    let left = common::scan(&m, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    kill_marked(&m);
+    let c = run(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, ctl.display()), &[], |_| {});
+    assert_eq!(c.code, Some(0), "control");
+    assert!(ctl.exists(), "control: the command did not run");
+    assert_eq!(x.code, Some(126), "{:?}", x.status);
+    assert_eq!(left, Ok(0), "a root exists under the spawn seam");
+    assert!(!mark.exists(), "the command ran under the spawn seam");
     let _ = std::fs::remove_dir_all(&d);
 }

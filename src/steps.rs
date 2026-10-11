@@ -19,6 +19,8 @@
 //! branch runs; a step that creates a process (a fork, a spawn, the command's exec) skips the
 //! call instead, so no second supervisor or stray root exists.
 
+use std::io::Write;
+
 /// Every step that can fail (`name` is the seam's word).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -124,6 +126,79 @@ impl Step {
     }
 }
 
+/// A run that ends at `step` before its command can run: its errno, its exit code (the step's,
+/// from the table) and its text (`error`, and the stderr line unless `said` already).
+pub struct PreRoot {
+    pub step: Step,
+    pub errno: Option<i32>,
+    pub code: i32,
+    pub text: String,
+    /// the stderr line was already written (by the shim, by the usage check)
+    said: bool,
+}
+
+impl PreRoot {
+    pub fn new(step: Step, errno: Option<i32>, text: impl Into<String>) -> PreRoot {
+        PreRoot { step, errno, code: step.code(errno), text: text.into(), said: false }
+    }
+
+    /// The same, for a failure whose stderr line is already written.
+    pub fn said(step: Step, errno: Option<i32>, text: impl Into<String>) -> PreRoot {
+        PreRoot { said: true, ..PreRoot::new(step, errno, text) }
+    }
+
+    /// The status half of the one conversion: the stderr line, the error triple, and root
+    /// "not-started" for certain (no later end changes it).
+    pub fn record(&self) {
+        if !self.said {
+            crate::say!("sheepr: {}", self.text);
+        }
+        crate::status::set_error(self.step, self.errno, &self.text);
+        crate::status::set_root_final("not-started");
+    }
+}
+
+/// How a pre-root segment ends early: a step failed (`Failed`), or the process ended its own way
+/// (`Ended`: a death by TERM, which says so in `trigger`, or a relay's own end, which writes no
+/// status line). A bare exit code cannot be returned from that segment.
+pub enum Before {
+    Failed(PreRoot),
+    Ended(i32),
+}
+
+impl From<PreRoot> for Before {
+    fn from(p: PreRoot) -> Before {
+        Before::Failed(p)
+    }
+}
+
+impl Before {
+    /// THE one conversion of an early end into the status and the exit code.
+    pub fn end(self) -> i32 {
+        match self {
+            Before::Ended(code) => code,
+            Before::Failed(p) => {
+                p.record();
+                p.code
+            }
+        }
+    }
+}
+
+/// Debug seam SHEEPR_TEST_FAIL_STEP: the errno to inject at `step`, if the seam names it.
+pub fn injected(step: Step) -> Option<i32> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    seam_errno(&std::env::var("SHEEPR_TEST_FAIL_STEP").ok()?, step)
+}
+
+/// `<step>[:<errno>]` names `step`: its errno (a name or a number; EIO when left out).
+fn seam_errno(v: &str, step: Step) -> Option<i32> {
+    let (name, e) = v.split_once(':').map_or((v, None), |(n, e)| (n, Some(e)));
+    (name == step.name()).then(|| e.and_then(errno_of).unwrap_or(libc::EIO))
+}
+
 /// The errnos `error_code` names on this OS, each with its canonical spelling (EAGAIN, never
 /// EWOULDBLOCK; EDEADLK; EOPNOTSUPP, and on macOS also ENOTSUP, a value of its own there). The
 /// names are libc's constants (the macro writes each name and its constant from one word).
@@ -197,6 +272,19 @@ mod tests {
         assert_eq!(errno_name(0), None);
         assert_eq!(errno_of("42"), Some(42));
         assert_eq!(errno_of("ENOPE"), None);
+    }
+
+    /// The seam's word: `<step>[:<errno>]`, an errno by name or number, EIO when left out; another
+    /// step's word, or an unknown errno name, injects nothing there (EIO for the unknown name).
+    #[test]
+    fn the_seam_names_a_step_and_an_errno() {
+        assert_eq!(seam_errno("pipe:EMFILE", Step::Pipe), Some(libc::EMFILE));
+        assert_eq!(seam_errno("pipe:24", Step::Pipe), Some(24));
+        assert_eq!(seam_errno("pipe", Step::Pipe), Some(libc::EIO));
+        assert_eq!(seam_errno("pipe:ENOPE", Step::Pipe), Some(libc::EIO));
+        assert_eq!(seam_errno("pipe:EMFILE", Step::Spawn), None);
+        assert_eq!(seam_errno("shim-spawn:EAGAIN", Step::ShimSpawn), Some(libc::EAGAIN));
+        assert_eq!(seam_errno("", Step::Pipe), None);
     }
 
     /// The one source table: a resource errno is "resources" on any step; the command's exec is
