@@ -226,7 +226,10 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   TERM, a limit or the command's own end (those end the job as usual), or when sheepr marks the
   journal for `--leave-strays`; then one stderr line names the failure. Without the option, a
   journal that cannot be kept only costs the cleanup after a killed sheepr, and the job runs.
-  Not with `--mode root-disclaim`; on macOS, not when the caller blocks SIGCONT.
+  Not with `--mode root-disclaim`; on macOS, not when the caller blocks SIGCONT. A limit on
+  macOS: sheepr starts the command paused and resumes it only after its journal line, but a
+  SIGCONT from outside (for example from `timeout`) in that short moment can run it before
+  sheepr kills it, so a refusal there never says the command did not run.
 - After an internal error (a panic) once the command may have run, sheepr does not end the
   process tree; the job's journal is kept, and `sheepr sweep` (or your next `sheepr run`) ends it.
   No status line is written when sheepr ends before it can: before it has read `--status-fd`,

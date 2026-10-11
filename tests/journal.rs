@@ -729,6 +729,9 @@ fn require_journal_runs_the_root_only_after_its_line() {
     let (c, st, _) = run_st(&d, "ident", &format!("--require-journal {}", cmd(&m2)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
     let left2 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
     refused_as(c, &st, &m2, spawned, "the command's identity cannot be read", None, "sheepr");
+    // Linux holds the root before its exec, so there it did not run; macOS cannot say so (P3-A)
+    let claims = get(&st, "error").and_then(Json::str).is_some_and(|e| e.ends_with("; it did not run"));
+    assert_eq!(claims, cfg!(target_os = "linux"), "{st:?}");
     assert_eq!((left1, left2), (Ok(0), Ok(0)), "an abandoned root was left");
     assert!(journals(&s).is_empty(), "a refusal left a journal: {:?}", journals(&s));
     let (c, st, _) = run_st(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, m3.display()), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
@@ -839,14 +842,14 @@ fn children_of(pid: i32) -> Vec<(i32, u64)> {
 /// line fails (seam), held after the spawn (seam): the cell sends the suspended root an outside
 /// CONT, waits for MARK (the root ran), then releases the hold. `at_freeze`, when given, runs
 /// with REG while the refusal's kill holds after its freeze (seam). (exit code, status, the root
-/// ran)
+/// ran, stderr)
 #[cfg(target_os = "macos")]
-fn resumed(d: &Path, name: &str, flags: &str, root: &Path, env: &[(&str, &str)], at_freeze: Option<&dyn Fn(&Path)>) -> (Option<i32>, Option<Json>, bool) {
+fn resumed(d: &Path, name: &str, flags: &str, root: &Path, env: &[(&str, &str)], at_freeze: Option<&dyn Fn(&Path)>) -> (Option<i32>, Option<Json>, bool, String) {
     let s = state(&d.join(name));
     let (mark, reg) = (d.join(format!("{name}.ran")), d.join(format!("{name}.reg")));
-    let (ready, rel1, rel2, out) = (d.join(format!("{name}.ready")), d.join(format!("{name}.rel1")), d.join(format!("{name}.rel2")), d.join(format!("{name}.status")));
+    let (ready, rel1, rel2, out, err) = (d.join(format!("{name}.ready")), d.join(format!("{name}.rel1")), d.join(format!("{name}.rel2")), d.join(format!("{name}.status")), d.join(format!("{name}.err")));
     let c = Command::new("/bin/sh")
-        .args(["-c", &format!(r#"exec "$SD" run --require-journal --status-fd 3 {flags} -- /bin/sh "{}" "{}" "{}" 3>"{}" 2>/dev/null"#, root.display(), mark.display(), reg.display(), out.display())])
+        .args(["-c", &format!(r#"exec "$SD" run --require-journal --status-fd 3 {flags} -- /bin/sh "{}" "{}" "{}" 3>"{}" 2>"{}""#, root.display(), mark.display(), reg.display(), out.display(), err.display())])
         .env("SD", sheepr())
         .env("SHEEPR_TEST_STATE", &s)
         .env("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")
@@ -872,7 +875,7 @@ fn resumed(d: &Path, name: &str, flags: &str, root: &Path, env: &[(&str, &str)],
     let code = finish(c);
     assert_eq!(roots.len(), 1, "{name}: expected the one suspended root: {roots:?}");
     assert!(journals(&s).is_empty(), "{name}: a refusal left a journal: {:?}", journals(&s));
-    (code, json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok(), ran)
+    (code, json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok(), ran, std::fs::read_to_string(&err).unwrap_or_default())
 }
 
 /// Plan §3 (macOS): a root that cannot be journaled is killed with its tree, since an outside CONT
@@ -897,7 +900,7 @@ fn require_journal_kills_a_resumed_root_and_its_tree() {
         let own = chain.lines().filter(|l| !l.is_empty()).last().and_then(|l| l.split_once(' ')).map(|(_, p)| PathBuf::from(p));
         socket_left.set(Some(own.as_ref().map(|p| p.exists())));
     };
-    let (code, st, ran) = resumed(&d, "tree", "--grace 0.2 --timeout 0.05s", &root, &[], Some(&at_freeze));
+    let (code, st, ran, _) = resumed(&d, "tree", "--grace 0.2 --timeout 0.05s", &root, &[], Some(&at_freeze));
     std::thread::sleep(Duration::from_millis(200));
     let left = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
     common::kill_marked(&[&mk]);
@@ -910,11 +913,33 @@ fn require_journal_kills_a_resumed_root_and_its_tree() {
     assert_eq!(get(&st, "trigger"), Some(&Json::Null), "a limit set the trigger during the refusal's kill: {st:?}");
     assert!(!notes.iter().any(|n| n.contains("timeout")), "{notes:?}");
     // a kill that misses its deadline: the journal is not kept either (`resumed` asserts it)
-    let (code, st, ran) = resumed(&d, "deadline", "--grace 0.2", &root, &[("SHEEPR_TEST_DEADLINE_MS", "0")], None);
+    let (code, st, ran, _) = resumed(&d, "deadline", "--grace 0.2", &root, &[("SHEEPR_TEST_DEADLINE_MS", "0")], None);
     common::kill_marked(&[&mk]);
     assert!(ran, "deadline: control: the root ran");
     assert_eq!(code, Some(125), "deadline: {st:?}");
     assert_eq!(get(&st, "deadline_missed"), Some(&Json::Bool(true)), "deadline: the kill must miss its deadline, or this proves nothing: {st:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 2's fixes, P3-A (macOS): when the root's identity cannot be read (seam), the
+/// refusal must not claim the command did not run: an outside CONT can run the suspended root
+/// first (here the cell sends it while sheepr holds after the spawn). Neither `error` nor stderr
+/// says "did not run"; the control: the command did run (its mark). (Linux, where the root is
+/// held before its exec, keeps "it did not run": `require_journal_runs_the_root_only_after_its_line`.)
+#[cfg(target_os = "macos")]
+#[test]
+fn require_journal_never_claims_a_resumed_root_did_not_run() {
+    let d = scratch("reqidentcont");
+    let mk = marker();
+    let root = d.join("root.sh");
+    std::fs::write(&root, format!("/bin/sleep {mk} &\ntouch \"$1\"\nwait\n")).unwrap();
+    let (code, st, ran, err) = resumed(&d, "ident", "", &root, &[("SHEEPR_TEST_FAIL_STEP", "root-identity")], None);
+    common::kill_marked(&[&mk]);
+    let error = get(&st, "error").and_then(Json::str).unwrap_or_default().to_string();
+    assert!(ran, "control: the outside CONT did not run the root, so this proves nothing");
+    assert_eq!(code, Some(125), "{st:?}");
+    assert!(error.starts_with("the command's identity cannot be read"), "{st:?}");
+    assert!(!error.contains("did not run") && !err.contains("did not run"), "error: {error}\nstderr:\n{err}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

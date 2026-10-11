@@ -59,7 +59,8 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   job runs (a write fails, or its file is removed or replaced), sheepr ends the job: exit 125 and `trigger` `"journal"`, a value only this option
   gives; a failure while the job is already ending (during the kill, with a TERM, a limit or the
   command's own end, at the `--leave-strays` mark) does not, and is one stderr line. It cannot be used with `--mode root-disclaim`, and on macOS it refuses a caller that
-  blocks SIGCONT. Without the option nothing changes
+  blocks SIGCONT. On macOS a SIGCONT from outside in the moment before the journal line can run
+  the command before sheepr kills it (stated). Without the option nothing changes
   ([#16](https://github.com/lukaso/sheepr/issues/16)).
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps

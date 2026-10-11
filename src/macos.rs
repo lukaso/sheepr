@@ -1345,7 +1345,8 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
     // may have run it), and the run ends there
     if a.require_journal && !journal.borrow().kept() {
         let p = match u {
-            None => PreRoot::new(Step::RootIdentity, None, "the command's identity cannot be read, so it cannot be journaled before it runs; it did not run"),
+            // never "it did not run": an outside CONT can run the suspended root first (P3-A)
+            None => PreRoot::new(Step::RootIdentity, None, "the command's identity cannot be read, so it cannot be journaled before it runs; sheepr killed it with its processes and never resumed it"),
             Some(_) => {
                 let (what, e) = journal.borrow().why();
                 PreRoot::new(Step::Journal, e, format!("the job journal cannot be kept: {what}"))
