@@ -11,7 +11,9 @@
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
-# AppleScript; measured). Dry mode (the cells: SR_NOTIFY_OSASCRIPT set, even to nothing): it must
+# AppleScript; measured). With it, the text is item 1 of argv whatever it holds (measured
+# 2026-10-11: `/usr/bin/osascript -e 'on run argv' -e 'return item 1 of argv' -e 'end run' -- -e`
+# prints `-e`). Dry mode (the cells: SR_NOTIFY_OSASCRIPT set, even to nothing): it must
 # name a stand-in, checked as release.sh's `standins` checks one (a script, not a symlink, whose
 # real directory is a /private/tmp/sr-p3-fixtures.* directory), else nothing is run; the stand-in
 # gets the same arguments as osascript; no bell.

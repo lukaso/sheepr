@@ -25,8 +25,9 @@
 #     mode's call pinned by text (the tag tree's notify.sh, through the named environment).
 # Every dry sign.sh run here (the ones that reach a notification point) is inside lib.sh's
 # no-osascript wall, so no row can show a real notification. The real-mode rows (the guard's parent
-# checks, section 4) run outside it: inside the sandbox `ps` cannot read the parent's arguments
-# (measured: an empty answer), and each of them stops at the guard, before any notification point.
+# checks, section 4) run outside it: /bin/ps is setuid and cannot run inside the sandbox, and
+# sign.sh's `2>/dev/null` turns that into the same empty answer as a parent it cannot read; each of
+# them stops at the guard, before any notification point. The text pin of section 5 holds that.
 set -u
 . "$(dirname "$0")/lib.sh"
 [ "$(uname -s)" = Darwin ] || { echo "SKIP (macOS only)"; exit 0; }
@@ -222,4 +223,15 @@ printf '%s\n' "$code" | grep -qxF '  if [ $real = yes ]; then tool sh "$lib/noti
   && [ "$(printf '%s\n' "$code" | grep -c 'notify\.sh')" = 1 ] && pass "the real mode runs the tag tree's notify.sh, through tool, with the key and the tag (its one call)" || fail "the real notify call: $(printf '%s\n' "$code" | grep 'notify\.sh' | tr '\n' ';')"
 [ "$(printf '%s\n' "$code" | grep -c '^ *notify password$')" = 1 ] && [ "$(printf '%s\n' "$code" | grep -c '{ notify password-again; unlock ')" = 1 ] \
   && pass "notify password and notify password-again: one call each" || fail "the notify calls: $(printf '%s\n' "$code" | grep -n 'notify pass' | tr '\n' ';')"
+# every notify call lies below the guard's end (`# --- the work`): no notification before the guard
+# has decided the mode. A call is `notify WORD` outside a comment (the definition is `notify() {`)
+calls_at() { # file -> "above N" / "below N": the notify calls above and below the guard's end
+  awk '/^# --- the work/ { w = 1 }
+    !/^[[:space:]]*#/ && /(^|[;{&|][[:space:]]*|^[[:space:]]+)notify [a-z]/ { if (w) b++; else a++ }
+    END { printf "above %d below %d\n", a, b }' "$1"
+}
+[ "$(calls_at "$SIGN")" = "above 0 below 2" ] && pass "every notify call is below the guard's end (two calls, none above)" || fail "the notify calls: $(calls_at "$SIGN")"
+# the control (a copy, never run): a notify right after `real=yes` is seen above the guard's end
+awk '{ print } /^  real=yes$/ && !d { print "  notify password"; d = 1 }' "$SIGN" > "$FX/sign-notify-early.sh"
+[ "$(calls_at "$FX/sign-notify-early.sh")" = "above 1 below 2" ] && pass "control: a copy with notify right after real=yes is caught (the copy is never run)" || fail "control: $(calls_at "$FX/sign-notify-early.sh")"
 finish

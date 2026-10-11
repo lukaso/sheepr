@@ -47,6 +47,9 @@ for kv in \
   nt "$FX/osa" "$k" "$T"
   [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec")" = "$pre[$want]" ] && pass "$k: the table's text, after --" || fail "$k: rc=$r got '$(cat "$FX/rec" 2>/dev/null)'"
 done
+nt "$FX/osa" failed-abcdefghijabcdefghijabcdefghijab "$T"   # a phase of exactly 32 characters
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab. The terminal says what to run next]" ] \
+  && pass "a phase of exactly 32 characters: accepted" || fail "32-character phase: rc=$r $(cat "$FX/err")"
 nt "$FX/osa" password v0.1.4-rc.2
 [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[v0.1.4-rc.2: type the notary keychain password in the terminal]" ] && pass "an rc tag is a tag" || fail "rc tag: rc=$r $(cat "$FX/err")"
 # only table texts: an unknown key, a bad phase, a bad or missing tag run nothing
@@ -81,6 +84,19 @@ for spec in "outside the fixtures|$OUT/osa|fixtures" "a symlink|$FX/osa-link|sym
   [ $r = 0 ] && [ "$(calls)" = 0 ] && [ ! -e "$OUT/ran" ] && grep -q "refused.*$why" "$FX/err" \
     && pass "SR_NOTIFY_OSASCRIPT $l: refused ($why), nothing run, exit 0" || fail "SR_NOTIFY_OSASCRIPT $l: rc=$r calls=$(calls) ran=$(cat "$OUT/ran" 2>/dev/null | tr '\n' ' ') $(cat "$FX/err")"
 done
+
+# notify.sh's stand-in check is release.sh's `standins` check, line for line (two copies; this row
+# keeps them one): the five checks from the control-character one to the `#!` one, the message verb
+# and the variable name normalized; and each builds the run path from the checked one
+checks5() { # file -> its stand-in check lines, normalized
+  awk '/case \$p in \*\[\[:cntrl:\]\]\*\)/ { f = 1 } f { print } f && /head -c 2/ { exit }' "$1" \
+    | sed -e 's/^[[:space:]]*//' -e 's/die "\$v/X "V/' -e 's/refuse "SR_NOTIFY_OSASCRIPT/X "V/'
+}
+a=$(checks5 "$SR_ROOT/scripts/release.sh"); b=$(checks5 "$N")
+[ "$(printf '%s\n' "$a" | grep -c .)" = 5 ] && [ "$a" = "$b" ] && grep -qxF '    eval "$v=\$pd/\$(basename \"\$p\")"' "$SR_ROOT/scripts/release.sh" && grep -qxF '  osa=$pd/$(basename "$p") bell=no' "$N" \
+  && pass "notify.sh's stand-in check is release.sh's standins check (5 lines), and both run the checked path" || fail "the two stand-in checks differ: release.sh: $(printf '%s' "$a" | tr '\n' '|') notify.sh: $(printf '%s' "$b" | tr '\n' '|')"
+sed 's/ \[ ! -L "\$p" \] &&//' "$N" > "$FX/notify-nolink.sh"   # the control: a copy without the symlink check (never run)
+[ "$(checks5 "$FX/notify-nolink.sh")" != "$a" ] && ! cmp -s "$N" "$FX/notify-nolink.sh" && pass "control: a copy without the symlink check differs" || fail "control: the copy without the symlink check compares equal"
 
 # the text of the real mode (never run here): /usr/bin/osascript with the same arguments, the bell on
 # /dev/tty, and the real mode only when SR_NOTIFY_OSASCRIPT is not set at all
