@@ -567,8 +567,9 @@ fn parse(argv: Vec<OsString>) -> Result<Args, i32> {
     if cmd.is_empty() {
         return Err(usage_because("no command after --.".to_string()));
     }
-    // plan §3 (#16): root-disclaim keeps no journal, so it cannot require one
-    if require_journal && mode.as_deref() == Some("root-disclaim") {
+    // plan §3 (#16): root-disclaim keeps no journal, so it cannot require one (macOS: Linux has
+    // no such mode, and refuses it as an unknown mode)
+    if cfg!(target_os = "macos") && require_journal && mode.as_deref() == Some("root-disclaim") {
         return Err(usage_because("--require-journal cannot be used with --mode root-disclaim, which keeps no job journal.".to_string()));
     }
     Ok(Args { argv, mode, cmd, grace, leave_strays, quiet, forward_int_to_root, owner, status_fd, no_sweep, require_journal, inherit, timeout, max_mem, max_procs, kill_deadline })

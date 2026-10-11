@@ -790,7 +790,9 @@ fn require_journal_ends_the_job_when_its_journal_dies() {
 }
 
 /// Plan §3: --require-journal with --mode root-disclaim (which keeps no journal) is refused
-/// before anything runs: 125, source "usage", the command never ran.
+/// before anything runs: 125, source "usage", the command never ran. On macOS the refusal names
+/// the combination; Linux has no root-disclaim mode, so there it is the unknown mode, and never
+/// "cannot be used with" (review of slice 3, P4).
 #[test]
 fn require_journal_with_root_disclaim_is_a_usage_error() {
     let d = scratch("reqdisclaim");
@@ -798,7 +800,8 @@ fn require_journal_with_root_disclaim_is_a_usage_error() {
     let m = d.join("ran");
     let (c, st, err) = run_st(&d, "rd", &format!(r#"--require-journal --mode root-disclaim -- /bin/sh -c 'touch "{}"'"#, m.display()), &[("SHEEPR_TEST_STATE", s.to_str().unwrap())], false);
     assert_eq!(c, Some(125), "{st:?}");
-    assert!(err.contains("root-disclaim"), "the refusal does not name the combination; stderr:\n{err}");
+    let (says, never) = if cfg!(target_os = "macos") { ("--require-journal cannot be used with --mode root-disclaim", "unknown mode") } else { ("unknown mode root-disclaim", "cannot be used with") };
+    assert!(err.contains(says) && !err.contains(never), "stderr:\n{err}");
     assert_eq!(get(&st, "error_source").and_then(Json::str), Some("usage"), "{st:?}");
     assert!(!m.exists(), "the command ran");
     let _ = std::fs::remove_dir_all(&d);
