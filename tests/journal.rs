@@ -1065,3 +1065,37 @@ fn require_journal_ends_the_job_when_its_journal_is_removed() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The Linux run of slice 3 (`abandon_shim` without its wait and SIGKILL survived: the shim exits
+/// by itself when its go pipe closes): a shim that does not (seam: it ignores the EOF and does
+/// not die with sheepr) is still ended by the refused run (its root line fails): SIGKILLed after
+/// 2 s and reaped, and nothing of it is left. The control: a shim that exits by itself ends the
+/// same refusal well within those 2 s.
+#[cfg(target_os = "linux")]
+#[test]
+fn require_journal_ends_a_shim_that_ignores_its_abandon() {
+    let d = scratch("reqshim");
+    let s = state(&d);
+    let ss = s.to_str().unwrap();
+    for (name, seam) in [("stuck", true), ("ctl", false)] {
+        let mk = marker();
+        let mut env = vec![("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")];
+        if seam {
+            env.push(("SHEEPR_TEST_SHIM_IGNORES_ABANDON", "1"));
+        }
+        let t0 = Instant::now();
+        let (c, st, _) = run_st(&d, name, &format!("--require-journal -- /bin/sleep {mk}"), &env, false);
+        let took = t0.elapsed();
+        std::thread::sleep(Duration::from_millis(300));
+        let left = common::scan(&mk, |_| true).map(|v| v.len());
+        common::kill_marked(&[&mk]);
+        assert_eq!(c, Some(125), "{name}: {st:?}");
+        assert_eq!(left, Ok(0), "{name}: the shim was left");
+        if seam {
+            assert!(took >= Duration::from_secs(2), "the seam did not keep the shim, so this proves nothing ({took:?})");
+        } else {
+            assert!(took < Duration::from_millis(1500), "control: the shim did not end by itself ({took:?})");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -660,6 +660,17 @@ pub fn root_shim(a: &[OsString]) -> i32 {
         if n < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
             continue;
         }
+        // debug seam SHEEPR_TEST_SHIM_IGNORES_ABANDON: a shim that neither exits at the EOF nor
+        // dies with sheepr (its PDEATHSIG dropped: it would end it at sheepr's exit and hide a
+        // missing reap), so only `abandon_shim`'s own SIGKILL ends it (or 30 s)
+        if crate::seam_flag("SHEEPR_TEST_SHIM_IGNORES_ABANDON") {
+            unsafe {
+                libc::prctl(libc::PR_SET_PDEATHSIG, 0, 0, 0, 0);
+                for _ in 0..300 {
+                    libc::usleep(100_000);
+                }
+            }
+        }
         unsafe { libc::_exit(125) }; // EOF: the supervisor is gone
     }
     unsafe {
