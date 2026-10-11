@@ -1197,24 +1197,26 @@ fn a_command_whose_exec_fails_during_the_kill_is_not_started() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The forms of a wait that can reap a child (#17's class sweep): `waitpid(`, `wait4(`,
-/// `wait3(`, `libc::wait(`, `.wait()`, `.try_wait()`, `.wait_with_output()`, and `waitid(`
-/// without `WNOWAIT` on its line. A `waitid(` with `WNOWAIT` only looks; it is reported apart.
-#[derive(Debug, PartialEq)]
+/// The forms of a wait that can reap a child (#17's class sweep), on a line of code: an
+/// identifier `waitpid`, `wait3`, `wait4` or `waitid`, or one that starts `SYS_wait` (a call, a
+/// raw syscall, an import under another name, a function pointer); `libc::wait(`, or a `use` line
+/// that names `wait`; std's `.wait()`, `.try_wait()` and `.wait_with_output()`. A `waitid` with
+/// `WNOWAIT` on its line only looks; it is reported apart.
+#[derive(Debug, PartialEq, PartialOrd, Eq, Ord, Clone)]
 enum Wait {
     Reaps,
     Looks,
 }
 
 fn wait_form(line: &str) -> Option<Wait> {
-    const REAPS: [&str; 7] = ["waitpid(", "wait4(", "wait3(", "libc::wait(", ".wait()", ".try_wait()", ".wait_with_output()"];
-    if REAPS.iter().any(|f| line.contains(f)) {
-        return Some(Wait::Reaps);
+    let words: Vec<&str> = line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+    let named = |w: &&str| ["waitpid", "wait3", "wait4", "waitid"].contains(w) || w.starts_with("SYS_wait");
+    let calls = [".wait()", ".try_wait()", ".wait_with_output()", "libc::wait("];
+    let import = line.trim_start().starts_with("use ") && words.contains(&"wait");
+    if words.iter().any(|w| *w == "waitid" || *w == "SYS_waitid") && !words.iter().any(|w| named(w) && !w.ends_with("waitid")) {
+        return Some(if words.contains(&"WNOWAIT") { Wait::Looks } else { Wait::Reaps });
     }
-    if line.contains("waitid(") {
-        return Some(if line.contains("WNOWAIT") { Wait::Looks } else { Wait::Reaps });
-    }
-    None
+    (words.iter().any(named) || import || calls.iter().any(|c| line.contains(c))).then_some(Wait::Reaps)
 }
 
 /// Every wait in `src` outside its test modules and comments: (enclosing fn, form, line). A test
@@ -1248,59 +1250,74 @@ fn waits_in(src: &str) -> Vec<(String, Wait, String)> {
     out
 }
 
+/// Every `.rs` file under `dir`, at any depth, as a path relative to `dir`.
+fn rs_files(dir: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir.join(rel)).unwrap().flatten() {
+        let r = rel.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            rs_files(dir, &r, out);
+        } else if r.extension().is_some_and(|x| x == "rs") {
+            out.push(r);
+        }
+    }
+}
+
 /// #17's class sweep: no wait outside the recorder can reap the root. Every wait in the
-/// supervisor's sources (src/*.rs, test modules and comments left out) is counted per file and
-/// enclosing fn, and the counts must equal this allow-list exactly: the recorders (Linux
-/// `wait_any`, the one `waitpid(-1, ...)`; macOS `reap_root`, the one wait on the root) and the
-/// waits that are not the root's end (round 3's list: a probe child, the relay's wait for its
-/// supervisor, the shim that failed its handshake, the shim reaped when a TERM came before its
-/// go byte (its end is "not-started" for certain), the macOS root killed while suspended, which
-/// records nothing). A `waitid` with WNOWAIT only looks; those are allowed by name (main.rs's
-/// `has_children` and `root_ended`). The controls: one planted line of each form is found in its
-/// fn; a commented one and one in a test module are not; a WNOWAIT one is told apart.
+/// supervisor's sources (every `.rs` file under src/, at any depth; test modules and comments
+/// left out) must be on this allow-list, pinned by file, enclosing fn and its exact line, and
+/// every entry must be found: the recorders (Linux `wait_any`, the one `waitpid(-1, ...)`; macOS
+/// `reap_root`, the one wait on the root) and the waits that are not the root's end (round 3's
+/// list: a probe child, the relay's wait for its supervisor, the shim that failed its
+/// handshake, the shim reaped when a TERM came before its go byte (its end is "not-started" for
+/// certain), the macOS root killed while suspended, which records nothing). A `waitid` with
+/// WNOWAIT only looks: those are pinned the same way (main.rs's `has_children` and
+/// `root_ended`). src/bin/ holds other binaries (the test fixture), never the supervisor: they
+/// are named, and a new file there is a finding. The controls: one planted line of each form is
+/// found in its fn (a raw `SYS_wait4` syscall and an aliased import among them); a commented one
+/// and one in a test module are not; a WNOWAIT one is told apart; the walk reached a nested file.
 #[test]
 fn the_root_is_reaped_only_through_the_recorder() {
-    let planted = "fn planted() {\n    libc::waitpid(-1, &mut st, 0);\n    libc::wait4(root, &mut st, 0, ru);\n    libc::wait3(&mut st, 0, ru);\n    libc::wait(&mut st);\n    child.wait();\n    child.try_wait();\n    child.wait_with_output();\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED);\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED | libc::WNOWAIT);\n    // libc::waitpid(root, &mut st, 0);\n}\n\n#[cfg(test)]\nmod tests {\n    fn t() { libc::waitpid(-1, &mut st, 0); }\n}\n\nfn after() {\n    libc::waitpid(root, &mut st, 0);\n}\n";
+    let planted = "fn planted() {\n    libc::waitpid(-1, &mut st, 0);\n    libc::wait4(root, &mut st, 0, ru);\n    libc::wait3(&mut st, 0, ru);\n    libc::wait(&mut st);\n    child.wait();\n    child.try_wait();\n    child.wait_with_output();\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED);\n    libc::waitid(libc::P_PID, root, &mut info, libc::WEXITED | libc::WNOWAIT);\n    // libc::waitpid(root, &mut st, 0);\n    libc::syscall(libc::SYS_wait4, root, &mut st, 0, 0);\n    use libc::waitpid as reap_it;\n}\n\n#[cfg(test)]\nmod tests {\n    fn t() { libc::waitpid(-1, &mut st, 0); }\n}\n\nfn after() {\n    libc::waitpid(root, &mut st, 0);\n}\n";
     let found = waits_in(planted);
     let forms: Vec<(&str, &Wait)> = found.iter().map(|(f, w, _)| (f.as_str(), w)).collect();
     let mut want: Vec<(&str, &Wait)> = vec![("planted", &Wait::Reaps); 8];
     want.push(("planted", &Wait::Looks));
+    want.extend([("planted", &Wait::Reaps); 2]); // the raw syscall, the aliased import
     want.push(("after", &Wait::Reaps));
     assert_eq!(forms, want, "the planted controls: {found:#?}");
-    let allowed: &[(&str, &str, usize)] = &[
-        ("linux.rs", "wait_any", 1),
-        ("linux.rs", "doctor_mechanisms", 1),
-        ("linux.rs", "spawn", 1),
-        ("linux.rs", "relay_if_needed", 1),
-        ("linux.rs", "run", 2),
-        ("macos.rs", "reap_root", 1),
-        ("macos.rs", "probe_child", 1),
-        ("macos.rs", "relay_loop", 1),
-        ("macos.rs", "run", 1),
+    const OTHER_BINARIES: [&str; 1] = ["bin/sr-fixture.rs"];
+    let allowed: &[(&str, &str, Wait, &str)] = &[
+        ("linux.rs", "wait_any", Wait::Reaps, "let r = unsafe { libc::waitpid(-1, &mut st, flags) };"),
+        ("linux.rs", "doctor_mechanisms", Wait::Reaps, "libc::waitpid(c, &mut st, 0) == c && libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0"),
+        ("linux.rs", "spawn", Wait::Reaps, "libc::waitpid(pid, &mut st, 0);"),
+        ("linux.rs", "relay_if_needed", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
+        ("linux.rs", "run", Wait::Reaps, "while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {"),
+        ("linux.rs", "run", Wait::Reaps, "libc::waitpid(root, std::ptr::null_mut(), 0);"),
+        ("macos.rs", "reap_root", Wait::Reaps, "let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };"),
+        ("macos.rs", "probe_child", Wait::Reaps, "(unsafe { libc::waitpid(pid, &mut st, 0) } == pid && libc::WIFEXITED(st)).then(|| libc::WEXITSTATUS(st))"),
+        ("macos.rs", "relay_loop", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
+        ("macos.rs", "run", Wait::Reaps, "libc::waitpid(root, &mut st, 0);"),
+        ("main.rs", "has_children", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_ALL, 0, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),
+        ("main.rs", "root_ended", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_PID, root as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),
     ];
-    let looks: &[(&str, &str)] = &[("main.rs", "has_children"), ("main.rs", "root_ended")];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut seen: std::collections::BTreeMap<(String, String), usize> = Default::default();
-    let mut bad = Vec::new();
-    let mut files = 0;
-    for e in std::fs::read_dir(&dir).unwrap().flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".rs") {
-            continue;
-        }
-        files += 1;
-        for (f, w, l) in waits_in(&std::fs::read_to_string(e.path()).unwrap()) {
-            match w {
-                Wait::Reaps => *seen.entry((name.clone(), f)).or_default() += 1,
-                Wait::Looks if looks.contains(&(name.as_str(), f.as_str())) => {}
-                Wait::Looks => bad.push(format!("{name}: {f}: {l}")),
-            }
+    let mut files = Vec::new();
+    rs_files(&dir, Path::new(""), &mut files);
+    files.sort();
+    let others: Vec<String> = files.iter().map(|f| f.to_string_lossy().into_owned()).filter(|f| f.starts_with("bin/")).collect();
+    assert_eq!(others, OTHER_BINARIES, "src/bin/ holds another binary: is it the supervisor's code?");
+    assert!(files.len() >= 16, "control: the sweep read {} source files", files.len());
+    let mut seen: Vec<(String, String, Wait, String)> = Vec::new();
+    for f in files.iter().filter(|f| !f.starts_with("bin")) {
+        let name = f.to_string_lossy().into_owned();
+        for (func, w, l) in waits_in(&std::fs::read_to_string(dir.join(f)).unwrap()) {
+            seen.push((name.clone(), func, w, l));
         }
     }
-    assert!(files >= 15, "control: the sweep read {files} source files");
-    let want: std::collections::BTreeMap<(String, String), usize> = allowed.iter().map(|&(n, f, c)| ((n.to_string(), f.to_string()), c)).collect();
-    assert!(bad.is_empty(), "a WNOWAIT wait outside main.rs's has_children and root_ended: {bad:#?}");
-    assert_eq!(seen, want, "the waits that can reap a child, per (file, fn), against the allow-list");
+    seen.sort();
+    let mut want: Vec<(String, String, Wait, String)> = allowed.iter().map(|(n, f, w, l)| (n.to_string(), f.to_string(), w.clone(), l.to_string())).collect();
+    want.sort();
+    assert_eq!(seen, want, "every wait in src/ (file, fn, form, line) against the allow-list");
 }
 
 /// #17 (macOS): a root that sheepr kills while it is still suspended (a TERM came before the
