@@ -2014,6 +2014,35 @@ fn the_handshake_tells_eof_from_a_timeout() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Review of slice 2's fixes, P4 (Linux): a failed poll() in the handshake read is a failure
+/// with its errno, at once, never a wait to the handshake's timeout: with the seam's EINVAL, 125,
+/// "not-started", "its answer could not be read", `error_code` EINVAL, well within the 5000 ms
+/// timeout. The control: the seam's EINTR is retried, so that read runs to its timeout ("no
+/// answer in 300 ms", no errno). Neither ran the command.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_handshake_poll_is_a_failure_not_a_timeout() {
+    let d = scratch("handpoll");
+    let mark = d.join("ran");
+    let cmd = format!(r#"-- /bin/sh -c 'touch "{}"'"#, mark.display());
+    let t0 = std::time::Instant::now();
+    let failed = run(&d, "einval", &cmd, &[("SHEEPR_TEST_HANDSHAKE_POLL_ERRNO", "EINVAL")], |_| {});
+    let took = t0.elapsed();
+    let retried = run(&d, "eintr", &cmd, &[("SHEEPR_TEST_HANDSHAKE_POLL_ERRNO", "EINTR"), ("SHEEPR_TEST_HANDSHAKE_MS", "300")], |_| {});
+    for (n, x) in [("einval", &failed), ("eintr", &retried)] {
+        assert_eq!(x.code, Some(125), "{n}: {:?}", x.status);
+        assert_eq!(field(x, "root").and_then(Json::str), Some("not-started"), "{n}");
+        assert_eq!(field(x, "error_source").and_then(Json::str), Some("sheepr"), "{n}");
+    }
+    assert!(field(&failed, "error").and_then(Json::str).is_some_and(|e| e.contains("its answer could not be read")), "{:?}", failed.status);
+    assert_eq!(field(&failed, "error_code").and_then(Json::str), Some("EINVAL"), "{:?}", failed.status);
+    assert!(took < std::time::Duration::from_millis(2500), "the failed poll waited {took:?}");
+    assert!(field(&retried, "error").and_then(Json::str).is_some_and(|e| e.contains("no answer in 300 ms")), "control: {:?}", retried.status);
+    assert_eq!(field(&retried, "error_code"), Some(&Json::Null), "control");
+    assert!(!mark.exists(), "the command ran");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// Plan §2: two errors in one job: the line's `error_code` and `error_source` belong to its
 /// `error`, and the other error is a note. macOS: a lost wait on the root (seam), then the kill
 /// loop's panic (seam): the internal error takes `error` (never a note behind another, round 3

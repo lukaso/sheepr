@@ -443,8 +443,22 @@ fn read_line(fd: i32, ms: i32) -> Result<String, Unanswered> {
             return Err(Unanswered::Timeout);
         }
         let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        if unsafe { libc::poll(&mut p, 1, left) } <= 0 {
-            continue;
+        // debug seam SHEEPR_TEST_HANDSHAKE_POLL_ERRNO=<errno>: the poll is not made, and fails so
+        let seam = std::env::var("SHEEPR_TEST_HANDSHAKE_POLL_ERRNO").ok().filter(|_| cfg!(debug_assertions)).and_then(|v| crate::steps::errno_of(&v));
+        let (r, e) = match seam {
+            Some(e) => (-1, e),
+            None => (unsafe { libc::poll(&mut p, 1, left) }, std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        };
+        if r < 0 {
+            // a failed poll is a failure with its errno (review of slice 2's fixes, P4), never a
+            // wait to the timeout; only EINTR is tried again
+            if e == libc::EINTR {
+                continue;
+            }
+            return Err(Unanswered::Failed(e));
+        }
+        if r == 0 {
+            continue; // the time is up: the loop's top says so
         }
         let mut b = [0u8; 1];
         let n = unsafe { libc::read(fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
