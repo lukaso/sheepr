@@ -1908,3 +1908,56 @@ fn every_step_has_its_seam_its_site_and_its_row() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// Plan §2 (L11, Linux): the handshake tells its ends apart. A shim that ends before it answers
+/// (seam: it exits 125) is EOF: the error names its end, "exit 125"; a shim that answers too late
+/// (seams: it waits 3 s, the supervisor 300 ms) is a timeout: "no answer in 300 ms". Both: 125,
+/// "not-started", source "sheepr", no errno; the command never ran.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_handshake_tells_eof_from_a_timeout() {
+    let d = scratch("handshake");
+    let mark = d.join("ran");
+    let cmd = format!(r#"-- /bin/sh -c 'touch "{}"'"#, mark.display());
+    let eof = run(&d, "eof", &cmd, &[("SHEEPR_TEST_FAIL_STEP", "handshake")], |_| {});
+    let slow = run(&d, "slow", &cmd, &[("SHEEPR_TEST_SHIM_SILENT_MS", "3000"), ("SHEEPR_TEST_HANDSHAKE_MS", "300")], |_| {});
+    for (n, x, words) in [("eof", &eof, "exit 125"), ("timeout", &slow, "no answer in 300 ms")] {
+        assert_eq!(x.code, Some(125), "{n}: {:?}", x.status);
+        assert_eq!(field(x, "root").and_then(Json::str), Some("not-started"), "{n}");
+        assert!(field(x, "error").and_then(Json::str).is_some_and(|e| e.contains(words)), "{n}: {:?}", x.status);
+        assert_eq!(field(x, "error_source").and_then(Json::str), Some("sheepr"), "{n}");
+        assert_eq!(field(x, "error_code"), Some(&Json::Null), "{n}");
+    }
+    assert!(!mark.exists(), "the command ran");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §2: two errors in one job: the line's `error_code` and `error_source` belong to its
+/// `error`, and the other error is a note. macOS: a lost wait on the root (seam), then the kill
+/// loop's panic (seam): the internal error takes `error` (never a note behind another, round 3
+/// P4), with no code and source "sheepr"; the lost wait is the note `also: ...`; exit 125.
+#[cfg(target_os = "macos")]
+#[test]
+fn two_errors_keep_their_own_code_and_source() {
+    let d = scratch("twoerr");
+    let m = marker();
+    let r = d.join("rec");
+    let x = run(
+        &d,
+        "two",
+        &format!(r#"--grace 0 -- /bin/sh -c '"$FX" escape {m} "{}"; sleep 0.3; exit 3'"#, r.display()),
+        &[("SHEEPR_TEST_ROOT_WAIT_LOST", "1"), ("SHEEPR_TEST_PANIC_AFTER_STOP", "1")],
+        |_| {},
+    );
+    for p in records(&r, 1) {
+        common::send(p.0, p.1, libc::SIGKILL);
+    }
+    kill_marked(&m);
+    let notes: Vec<&str> = field(&x, "notes").and_then(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).collect();
+    assert_eq!(x.code, Some(125), "{:?}", x.status);
+    assert_eq!(field(&x, "error").and_then(Json::str), Some("internal error while killing the tree"), "{:?}", x.status);
+    assert_eq!(field(&x, "error_code"), Some(&Json::Null), "the lost wait's ECHILD is not this error's: {:?}", x.status);
+    assert_eq!(field(&x, "error_source").and_then(Json::str), Some("sheepr"));
+    assert!(notes.iter().any(|n| n.starts_with("also: the command ended, but its exit status was lost")), "{notes:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
