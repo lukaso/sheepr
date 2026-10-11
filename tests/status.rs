@@ -1621,15 +1621,17 @@ fn every_pre_root_step_says_why() {
 }
 
 /// Plan §2: a step that creates a process is skipped by its seam, so no root exists: under the
-/// macOS posix_spawnp seam the command, a sleep with this cell's marker, is not running afterwards
-/// (and its marker file is absent); the control, the same command without the seam, runs.
+/// macOS posix_spawnp seam no live process carries this cell's marker in any argument (a root
+/// spawned and left suspended would be a /bin/sh with it), and the marker file is absent; the
+/// control, the same command without the seam, runs.
 #[cfg(target_os = "macos")]
 #[test]
 fn the_spawn_seam_starts_no_root() {
     let d = scratch("spawnseam");
     let (m, mark, ctl) = (marker(), d.join("ran"), d.join("ctl"));
     let x = run(&d, "seam", &format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}'"#, mark.display()), &[("SHEEPR_TEST_FAIL_STEP", "spawn:EAGAIN")], |_| {});
-    let left = common::scan(&m, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    // any live process with the marker in any argument: a root left suspended is a /bin/sh
+    let left = common::scan(&m, |_| true).map(|v| v.len());
     kill_marked(&m);
     let c = run(&d, "ctl", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, ctl.display()), &[], |_| {});
     assert_eq!(c.code, Some(0), "control");
