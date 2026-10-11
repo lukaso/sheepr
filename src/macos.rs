@@ -690,7 +690,8 @@ fn relay_exited(r: pid_t) -> bool {
 
 /// The relay's loop: a kqueue on the supervisor's exit and on TERM/HUP/INT (all blocked; a
 /// kqueue signal event is only a wake-up, the signal is taken with `consume`).
-fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> c_int {
+fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> crate::steps::SupEnd {
+    use crate::steps::RelayWait;
     unsafe {
         let kq = libc::kqueue();
         if kq >= 0 {
@@ -710,14 +711,12 @@ fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> c_int {
         }
         crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_FORWARD_MS");
         loop {
-            let mut st = 0;
             // mirror the supervisor's stop (it stopped the job and itself): the shell waits on
             // the relay; the relay never stops on its own (its stop signals stay blocked). Seen
-            // at the next pass, within a tick.
-            // (one waitpid: WUNTRACED also reaps an exited supervisor, so a second call would
-            // find nothing and the relay would never see the exit)
-            if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {
-                if libc::WIFSTOPPED(st) {
+            // at the next pass, within a tick. (`relay_wait` is one waitpid: WUNTRACED also reaps
+            // an exited supervisor)
+            match crate::steps::relay_wait(sup) {
+                RelayWait::Stopped(stopsig) => {
                     crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_MIRROR_MS");
                     // a TERM (or HUP as leader) already pending is forwarded first, on the next
                     // pass, instead of stopping with it pending (TERM+CONT from `timeout` in this
@@ -731,7 +730,7 @@ fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> c_int {
                         // debug seam: hold between that check and the raise (the supervisor can be
                         // continued here; the level-triggered continue then frees the relay)
                         crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_RAISE_MS");
-                        crate::self_stop(libc::WSTOPSIG(st));
+                        crate::self_stop(stopsig);
                         // resumed: the supervisor too, if it is still stopped (a CONT to the
                         // relay's pid alone); never a CONT to a running supervisor, which could
                         // call off a new stop
@@ -741,10 +740,13 @@ fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> c_int {
                     }
                     continue;
                 }
-                if kq >= 0 {
-                    libc::close(kq);
+                RelayWait::Ended(end) => {
+                    if kq >= 0 {
+                        libc::close(kq);
+                    }
+                    return end; // the relay dies the way the supervisor did: Before::like
                 }
-                return st; // the relay dies the way the supervisor did: Before::like
+                RelayWait::Running => {}
             }
             // a stopped supervisor must wake to act on it (TERM+CONT to the relay, as `timeout`
             // sends, must end a stopped job)

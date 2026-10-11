@@ -4,7 +4,7 @@
 //! (measured in round 1, also as non-root in a default container), so the tree is exactly
 //! this process's live descendants. The supervisor must reap what it adopts (round 1, F5).
 
-use crate::steps::{Before, PreRoot, Step};
+use crate::steps::{Before, PreRoot, RelayWait, Step};
 use crate::{cstrings, kill_tree, say, Args};
 use std::ffi::OsString;
 use std::io::Write;
@@ -835,9 +835,9 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
                 let fd = signal_fd(&set);
                 crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_FORWARD_MS");
                 loop {
-                    let mut st = 0;
-                    if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {
-                        if libc::WIFSTOPPED(st) {
+                    // `relay_wait` is one waitpid: WUNTRACED also reaps an exited supervisor
+                    match crate::steps::relay_wait(sup) {
+                        RelayWait::Stopped(stopsig) => {
                             crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_MIRROR_MS");
                             // a TERM (or HUP as leader) already pending is forwarded first, on the
                             // next pass, instead of stopping with it pending (TERM+CONT from
@@ -852,7 +852,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
                                 // debug seam: hold between that check and the raise (the supervisor
                                 // can be continued here; the level-triggered continue then frees it)
                                 crate::seam_sleep("SHEEPR_TEST_SLEEP_RELAY_BEFORE_RAISE_MS");
-                                crate::self_stop(libc::WSTOPSIG(st));
+                                crate::self_stop(stopsig);
                                 // resumed: the supervisor too, if it is still stopped (a CONT to
                                 // the relay's pid alone); never a CONT to a running supervisor,
                                 // which could call off a new stop
@@ -862,10 +862,13 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
                             }
                             continue;
                         }
-                        if fd >= 0 {
-                            libc::close(fd);
+                        RelayWait::Ended(end) => {
+                            if fd >= 0 {
+                                libc::close(fd);
+                            }
+                            return Err(Before::like(end));
                         }
-                        return Err(Before::like(st));
+                        RelayWait::Running => {}
                     }
                     let got = if fd >= 0 {
                         poll_fd(fd, 1000);

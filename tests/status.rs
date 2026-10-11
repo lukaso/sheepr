@@ -1307,7 +1307,7 @@ fn rs_files(dir: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
 /// left out) must be on this allow-list, pinned by file, enclosing fn and its exact line, and
 /// every entry must be found: the recorders (Linux `wait_any`, the one `waitpid(-1, ...)`; macOS
 /// `reap_root`, the one wait on the root) and the waits that are not the root's end (round 3's
-/// list: a probe child, the relay's wait for its supervisor, the shim that failed its
+/// list: a probe child, the relay's wait for its supervisor (`steps::relay_wait`, both OSes), the shim that failed its
 /// handshake, the shim reaped when a TERM came before its go byte (its end is "not-started" for
 /// certain), the macOS root killed while suspended, which records nothing). A `waitid` with
 /// WNOWAIT only looks: those are pinned the same way (main.rs's `has_children` and
@@ -1330,12 +1330,11 @@ fn the_root_is_reaped_only_through_the_recorder() {
         ("linux.rs", "wait_any", Wait::Reaps, "let r = unsafe { libc::waitpid(-1, &mut st, flags) };"),
         ("linux.rs", "doctor_mechanisms", Wait::Reaps, "libc::waitpid(c, &mut st, 0) == c && libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0"),
         ("linux.rs", "spawn", Wait::Reaps, "let reaped = unsafe { libc::waitpid(pid, &mut st, 0) } == pid;"),
-        ("linux.rs", "relay_if_needed", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
         ("linux.rs", "abandon_shim", Wait::Reaps, "while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {"),
         ("linux.rs", "abandon_shim", Wait::Reaps, "libc::waitpid(root, std::ptr::null_mut(), 0);"),
         ("macos.rs", "reap_root", Wait::Reaps, "let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };"),
         ("macos.rs", "probe_child", Wait::Reaps, "(unsafe { libc::waitpid(pid, &mut st, 0) } == pid && libc::WIFEXITED(st)).then(|| libc::WEXITSTATUS(st))"),
-        ("macos.rs", "relay_loop", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
+        ("steps.rs", "relay_wait", Wait::Reaps, "if unsafe { libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) } != sup {"),
         ("macos.rs", "kill_suspended_root", Wait::Reaps, "libc::waitpid(root, &mut st, 0);"),
         ("main.rs", "has_children", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_ALL, 0, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),
         ("main.rs", "root_ended", Wait::Looks, "let r = unsafe { libc::waitid(libc::P_PID, root as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };"),

@@ -354,7 +354,7 @@ const CHUNK: usize = 4096;
 /// end) is said in one stderr line, also under `--quiet` (the machine-readable record is gone),
 /// which waits at most NOTICE; the exit code stays the command's.
 pub fn write(code: i32) -> i32 {
-    let Some((fd, line)) = line(code) else { return code };
+    let Some((fd, line, code)) = line(code) else { return code };
     // sheepr's end: only an exit or a raise follows (die_like resets the one signal it raises).
     // A closed reader must be EPIPE, never a SIGPIPE death, also before setup_signals blocked it
     // (a usage error, an early panic)
@@ -510,19 +510,31 @@ fn guard(s: &mut Status, debug: bool, say: &mut dyn FnMut(&str)) {
     s.set_error(crate::steps::Step::Unrecorded, None, NO_REASON);
 }
 
-/// The status line, and the fd it goes to (taken: the line is written once).
-fn line(code: i32) -> Option<(i32, String)> {
+/// `guard`, and the exit code after it: a release run whose guard fired never exits 0 (125:
+/// sheepr failed; review of slice 2's fixes, P3-B).
+fn guarded(s: &mut Status, code: i32, debug: bool, say: &mut dyn FnMut(&str)) -> i32 {
+    let before = s.error.is_some();
+    guard(s, debug, say);
+    if !before && s.error.is_some() && code == 0 {
+        125
+    } else {
+        code
+    }
+}
+
+/// The status line, the fd it goes to (taken: the line is written once), and the exit code.
+fn line(code: i32) -> Option<(i32, String, i32)> {
     with(|s| {
         s.fd?;
         // before the fd is taken: in a debug build the panic's own line is written after it
-        guard(s, cfg!(debug_assertions), &mut |m| crate::say!("sheepr: {}", m.strip_prefix("sheepr ").unwrap_or(m)));
+        let code = guarded(s, code, cfg!(debug_assertions), &mut |m| crate::say!("sheepr: {}", m.strip_prefix("sheepr ").unwrap_or(m)));
         let fd = s.fd.take()?;
         // debug seam: a note of this many bytes, so a test's line is larger than any pipe buffer
         // (a real job reaches that size with a few hundred killed members; seam_ms reads a number)
         if let Some(n) = crate::seam_ms("SHEEPR_TEST_STATUS_PAD") {
             s.notes.push("x".repeat(n as usize));
         }
-        Some((fd, render(s, code)))
+        Some((fd, render(s, code), code))
     })
 }
 
@@ -665,6 +677,17 @@ mod tests {
         guard(&mut r, false, &mut |m| said.push(m.to_string()));
         assert_eq!(r.error, None);
         assert!(said.is_empty(), "control: nothing said when there is a reason: {said:?}");
+    }
+
+    /// Review of slice 2's fixes, P3-B: a release run whose guard fired never exits 0 (its line and
+    /// its exit code say 125); another code stays; the control: a record with a reason keeps 0.
+    #[test]
+    fn a_release_run_whose_guard_fired_never_exits_0() {
+        assert_eq!(guarded(&mut Status::new(), 0, false, &mut |_| {}), 125);
+        assert_eq!(guarded(&mut Status::new(), 3, false, &mut |_| {}), 3);
+        let mut e = Status::new();
+        e.set_error(crate::steps::Step::Usage, None, "usage");
+        assert_eq!(guarded(&mut e, 0, false, &mut |_| {}), 0, "control");
     }
 
     /// The same guard in a debug build panics (a cell sees the bare early return).

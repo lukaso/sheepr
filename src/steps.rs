@@ -13,7 +13,9 @@
 //! turns it into the status (`error`, `error_code`, `error_source`, root "not-started") and the
 //! exit code; each OS's pre-root segment is one function returning `Result<_, Before>`, so an
 //! early return there cannot compile without a step, or without ending the process its own way
-//! (`Before::term`, `Before::like`: `Ended`'s field is private to this module).
+//! (`Before::term`, `Before::like`: `Ended`'s field is private to this module, and `like` takes
+//! only a `SupEnd`, which only the relay's own wait, `relay_wait`, makes: `Before::like(0)` does
+//! not compile; review of slice 2's fixes, P3-B, proved by a planted line in each OS's pre-root).
 //!
 //! Debug seam `SHEEPR_TEST_FAIL_STEP=<step>[:<errno>]` (an errno name or number; EIO when left
 //! out): the step's syscall runs and its result is replaced by that failure, so the real error
@@ -200,6 +202,34 @@ pub enum Before {
 /// The exit code of an end of the process's own (only this module makes one).
 pub struct Ended(i32);
 
+/// The supervisor's end as the relay's own wait saw it (only `relay_wait` makes one).
+pub struct SupEnd(libc::c_int);
+
+/// What the relay's wait on its supervisor saw.
+pub enum RelayWait {
+    /// it ended (exited or was killed)
+    Ended(SupEnd),
+    /// it stopped, with this signal
+    Stopped(libc::c_int),
+    /// nothing yet
+    Running,
+}
+
+/// The relay's one wait on its supervisor `sup`: WNOHANG | WUNTRACED, so one call both reaps an
+/// exited supervisor and sees a stop (a second call would find nothing, and the relay would never
+/// see the exit).
+pub fn relay_wait(sup: libc::pid_t) -> RelayWait {
+    let mut st = 0;
+    if unsafe { libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) } != sup {
+        return RelayWait::Running;
+    }
+    if libc::WIFSTOPPED(st) {
+        RelayWait::Stopped(libc::WSTOPSIG(st))
+    } else {
+        RelayWait::Ended(SupEnd(st))
+    }
+}
+
 impl From<PreRoot> for Before {
     fn from(p: PreRoot) -> Before {
         Before::Failed(p)
@@ -212,9 +242,10 @@ impl Before {
         Before::Ended(Ended(crate::die_by_term(fallback)))
     }
 
-    /// A relay's own end: it dies the way its supervisor did (`crate::die_like`).
-    pub fn like(status: libc::c_int) -> Before {
-        Before::Ended(Ended(crate::die_like(status)))
+    /// A relay's own end: it dies the way its supervisor did (`crate::die_like`), from the end its
+    /// own wait saw (no other value can be given).
+    pub fn like(end: SupEnd) -> Before {
+        Before::Ended(Ended(crate::die_like(end.0)))
     }
 
     /// Debug seam SHEEPR_TEST_PLANT_BARE_RETURN: the bare early return the line's guard must
