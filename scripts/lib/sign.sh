@@ -23,8 +23,8 @@
 # the record `notify password`), then announce the password prompt; lock the notary keychain, then
 # `security unlock-keychain` asks for its password in the terminal (a failure stops before any
 # notarytool call); the profile check; submit (the profile in the notary keychain only; on a
-# rejection that names its submission: a notification (password-again), unlock again, then the log
-# fetch); lock it again at once, before anything of the new build runs (a failed lock is loud and
+# rejection that names its submission: lock, a notification (password-again), unlock again, then the
+# log fetch); lock it again at once, before anything of the new build runs (a failed lock is loud and
 # fails the build; any exit in that span locks it too);
 # staple; spctl and stapler validate. Then --version through the exec door names the commit; the
 # archive. The control mode (--no-notarize) signs and checks only: no keychain, no profile check,
@@ -152,8 +152,10 @@ if [ $notarize = yes ]; then
     *'"status":"Accepted"'*|*'"status": "Accepted"'*) ;;
     *) id=$(printf '%s' "$res" | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p')
        # the keychain may have locked itself during --wait (5 minutes idle), and the operator may
-       # have left: a second notification, then the second unlock
-       [ -n "$id" ] && { notify password-again; unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc"; } \
+       # have left: locked first (notify.sh has no time limit, and nothing may hold the keychain open
+       # while it waits), then a second notification, then the second unlock
+       [ -n "$id" ] && { { tool security lock-keychain "$kc" || die "cannot lock the notary keychain $kc before the second notification; lock it now: security lock-keychain $kc"; }
+         notify password-again; unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc"; } \
          && tool xcrun notarytool log "$id" --keychain-profile sheepr-notary --keychain "$kc" > "$dest/notary-log.json" 2>&1
        die "Apple did not accept it; see $dest/notary-log.json" ;;
   esac

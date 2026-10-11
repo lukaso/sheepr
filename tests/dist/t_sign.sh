@@ -156,11 +156,12 @@ mv "$KC" "$KC.away"; run m; rc=$?; mv "$KC.away" "$KC"
 # 2d. Apple rejects it: unlocked again before the log fetch, locked at the end
 : > "$FX/reject"; run j; rc=$?; rm -f "$FX/reject"
 seq=$(kcl)
-[ $rc = 1 ] && [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|unlock-keychain|log|lock-keychain|" ] && ! grep -q stapler "$S/calls" \
-  && pass "a rejection: unlocked again before the log fetch, locked at the end" || fail "rejection: rc=$rc $seq"
+[ $rc = 1 ] && [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|unlock-keychain|log|lock-keychain|" ] && ! grep -q stapler "$S/calls" \
+  && pass "a rejection: locked, then unlocked again before the log fetch, locked at the end" || fail "rejection: rc=$rc $seq"
 seq=$(nkl)
-[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|notify password-again|unlock-keychain|log|lock-keychain|" ] \
-  && pass "a rejection: notify password-again, right before the second unlock" || fail "rejection, the notifications: $seq"
+[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|notify password-again|unlock-keychain|log|lock-keychain|" ] \
+  && pass "a rejection: the keychain locked before notify password-again (no time limit), then the second unlock" || fail "rejection, the notifications: $seq"
+[ "$(grep -c '^security lock-keychain' "$S/calls")" = 3 ] && pass "a rejection: three locks" || fail "rejection: $(grep -c '^security lock-keychain' "$S/calls") locks"
 # 2h. Apple rejects it with no submission id: no second unlock, so no second notification
 : > "$FX/reject"; : > "$FX/noid"; run jn; rc=$?; rm -f "$FX/reject" "$FX/noid"
 seq=$(nkl)
@@ -221,17 +222,26 @@ rm -f "$S/calls"
 code=$(grep -v '^ *#' "$SIGN")
 printf '%s\n' "$code" | grep -qxF '  if [ $real = yes ]; then tool sh "$lib/notify.sh" "$1" "$tag"; else echo "notify $1" >> "${SR_ASK_RECORD:-/dev/null}"; fi' \
   && [ "$(printf '%s\n' "$code" | grep -c 'notify\.sh')" = 1 ] && pass "the real mode runs the tag tree's notify.sh, through tool, with the key and the tag (its one call)" || fail "the real notify call: $(printf '%s\n' "$code" | grep 'notify\.sh' | tr '\n' ';')"
-[ "$(printf '%s\n' "$code" | grep -c '^ *notify password$')" = 1 ] && [ "$(printf '%s\n' "$code" | grep -c '{ notify password-again; unlock ')" = 1 ] \
+[ "$(printf '%s\n' "$code" | grep -c '^ *notify password$')" = 1 ] && [ "$(printf '%s\n' "$code" | grep -c '^ *notify password-again; unlock ')" = 1 ] \
   && pass "notify password and notify password-again: one call each" || fail "the notify calls: $(printf '%s\n' "$code" | grep -n 'notify pass' | tr '\n' ';')"
 # every notify call lies below the guard's end (`# --- the work`): no notification before the guard
 # has decided the mode. A call is `notify WORD` outside a comment (the definition is `notify() {`)
-calls_at() { # file -> "above N" / "below N": the notify calls above and below the guard's end
+calls_at() { # file -> "above N below M def D": the lines (not comments) with the word notify above
+  # and below the guard's end, in any spelling, and where the notify() definition is
   awk '/^# --- the work/ { w = 1 }
-    !/^[[:space:]]*#/ && /(^|[;{&|][[:space:]]*|^[[:space:]]+)notify [a-z]/ { if (w) b++; else a++ }
-    END { printf "above %d below %d\n", a, b }' "$1"
+    /^[[:space:]]*#/ { next }
+    /(^|[^A-Za-z0-9_])notify([^A-Za-z0-9_]|$)/ { if (w) b++; else a++ }
+    /^notify\(\) \{/ { d = (w ? "below" : "above") }
+    END { printf "above %d below %d def %s\n", a, b, (d == "" ? "none" : d) }' "$1"
 }
-[ "$(calls_at "$SIGN")" = "above 0 below 2" ] && pass "every notify call is below the guard's end (two calls, none above)" || fail "the notify calls: $(calls_at "$SIGN")"
-# the control (a copy, never run): a notify right after `real=yes` is seen above the guard's end
-awk '{ print } /^  real=yes$/ && !d { print "  notify password"; d = 1 }' "$SIGN" > "$FX/sign-notify-early.sh"
-[ "$(calls_at "$FX/sign-notify-early.sh")" = "above 1 below 2" ] && pass "control: a copy with notify right after real=yes is caught (the copy is never run)" || fail "control: $(calls_at "$FX/sign-notify-early.sh")"
+[ "$(calls_at "$SIGN")" = "above 0 below 4 def below" ] && pass "every word notify, and its definition, is below the guard's end (four lines, none above)" || fail "the notify lines: $(calls_at "$SIGN")"
+# the controls (copies, never run): each spelling planted right after `real=yes` is caught
+n_=0
+for plant in '  notify password' '  if notify password; then :; fi' '  if :; then notify password; fi' '  x=$(notify password)' '  ( notify password )' \
+    '  ! notify password' '  notify "password"' '  notify() { :; }'; do
+  n_=$((n_ + 1))
+  awk -v l="$plant" '{ print } /^  real=yes$/ && !d { print l; d = 1 }' "$SIGN" > "$FX/sign-notify-early.$n_.sh"
+  cmp -s "$SIGN" "$FX/sign-notify-early.$n_.sh" && { fail "control: '$plant' was not planted"; continue; }
+  case $(calls_at "$FX/sign-notify-early.$n_.sh") in "above 0 "*) fail "control: '$plant' after real=yes is not caught" ;; *) pass "control: '$plant' after real=yes is caught (the copy is never run)" ;; esac
+done
 finish
