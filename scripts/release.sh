@@ -51,7 +51,8 @@ shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" 
 GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
-die() { echo "release: $*" >&2; exit 1; }
+die() { echo "release: $*" >&2; [ -z "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }
+stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
 sub=$1; shift
@@ -926,6 +927,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
+  shipcause=$st/cause shipcls=$st/class; stopclass fix
   locked=no logged_in=no armed=no phase=preflight oroot=$root wt=""
   trap 'ship_exit $?' EXIT
   trap 'exit 1' INT HUP TERM
@@ -951,7 +953,102 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # A2. the push target; A3. the push, as far as a dry run can tell
   ship_target
   ship_pushcheck
-  die "ship's phases after the push checks are not built yet; nothing was done"
+  ship_nothing_public   # A4
+  ship_tap              # A5
+  ship_npm_ready        # A6
+  ship_build_ready      # A7
+  armed=yes             # A8: from here a stop notifies
+  die "ship's phases after the pre-flight are not built yet; nothing was done"
+}
+# shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
+# the real one (the build needs the terminal, cargo and Docker as the operator has them)
+shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@"; fi; }
+shipdocker() { # the docker class, with SHIP_DOCKER
+  if [ "$dryentry" = yes ]; then tool dry "$SHIP_DOCKER" "$@"
+  else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} "$SHIP_DOCKER" "$@"; fi
+}
+ship_public() { stopclass public; die "something of $tag is public: $*"; }
+ship_unreadable() { stopclass unreadable; die "cannot tell whether anything is public: $*"; }
+ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, npm and npm's time
+  # record), and the version newer than GitHub's latest final release and npm's latest of each name
+  xyz=${tag#v}
+  tool "$NETC" "$GH" api repos/lukaso/sheepr/releases --paginate --jq '.[] | [.tag_name, .draft, .prerelease] | @tsv' > "$st/rels" 2> "$st/rels.err" \
+    || ship_unreadable "gh cannot list the releases ($(head -c 200 "$st/rels.err" | tr '\n' ' '))"
+  [ -z "$(awk -F '\t' -v t="$tag" '$1 == t' "$st/rels")" ] || ship_public "GitHub has a release or a draft $tag"
+  hi=""
+  for v in $(awk -F '\t' '$2 == "false" && $3 == "false" {print $1}' "$st/rels"); do
+    v=${v#v}; sh "$root/scripts/lib/cask-version.sh" "$v" "$v" >/dev/null 2>&1 || continue
+    if [ -z "$hi" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$hi" "$v")" = newer ]; then hi=$v; fi
+  done
+  [ -z "$hi" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$hi" "$xyz")" = newer ] || die "$tag is not newer than GitHub's latest release v$hi: tag a newer version"
+  # the tap's cask (A5 checks it further)
+  if ! tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$st/tap.rb" 2> "$st/tap.err"; then
+    grep -q 'HTTP 404' "$st/tap.err" && die "$TAP has no $CASK (add it by hand once)"
+    ship_unreadable "gh cannot read $TAP's $CASK ($(head -1 "$st/tap.err"))"
+  fi
+  grep -qxF "  version \"$xyz\"" "$st/tap.rb" && ship_public "$TAP's cask is $xyz"
+  # npm, each name: the version not there (E404), never there once ("time"), and newer than its latest
+  . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
+  for p in $SR_NPM_PKGS; do
+    vout=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p@$xyz" dist.integrity 2> "$st/err"); r=$?
+    if [ $r = 0 ] && [ -n "$(printf '%s' "$vout" | tr -d ' "\n\r')" ]; then ship_public "npm has $p@$xyz"
+    elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(head -c 200 "$st/err" | tr '\n' ' ')"; fi
+    tm=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" time 2> "$st/err") || ship_unreadable "npm view $p time: $(head -c 200 "$st/err" | tr '\n' ' ')"
+    if printf '%s\n' "$tm" | grep -q "\"$xyz\":"; then stopclass lost; die "$p@$xyz was published once and is gone: $xyz can never be published on npm again; release a new version"; fi
+    lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(head -c 200 "$st/err" | tr '\n' ' ')"
+    lt=$(printf '%s' "$lt" | tr -d ' "\n\r')
+    [ -z "$lt" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$lt" "$xyz" 2>/dev/null)" = newer ] || die "$tag is not newer than npm's latest $p ($lt): tag a newer version"
+  done
+}
+ship_tap() { # A5: the tap's cask has one version line, below this version; this gh login may write
+             # the tap and lukaso/sheepr
+  [ "$(grep -c '^  version "' "$st/tap.rb")" = 1 ] || die "$TAP's $CASK has not exactly one version line"
+  tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$st/tap.rb")
+  [ "$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz" 2>/dev/null)" = newer ] || die "$TAP's cask is $tv, not below $xyz"
+  for r_ in "$TAP" lukaso/sheepr; do
+    pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push) || { stopclass network; die "gh: cannot read $r_"; }
+    [ "$pp" = true ] || die "this gh login cannot write $r_"
+  done
+}
+tokcount() { # npm's login-token lines in the userconfig npm names (no file: 0); unreadable is not 0
+  uc=$(tool "$NPMC" "$NPM" config get userconfig 2>/dev/null) && [ -n "$uc" ] || { echo unreadable; return; }
+  [ -e "$uc" ] || { echo 0; return; }
+  [ -r "$uc" ] || { echo unreadable; return; }
+  grep -c '^//registry.npmjs.org/:_authToken=' "$uc"
+}
+ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session ship did not make:
+  # the token count 0 and whoami ENEEDAUTH
+  npm_list; npm_owners "$NPMC" "$NPM" "$st"
+  n=$(tokcount)
+  if who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err"); then
+    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server), then run ship again (ship logs in itself, after the build)"
+  fi
+  [ "$n" = 0 ] || die "npm's userconfig holds a login token npm does not accept (count $n; expired?): run npm config delete //registry.npmjs.org/:_authToken, then run ship again"
+  grep -q ENEEDAUTH "$st/who.err" || { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))"; }
+}
+post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
+  # its manifest's, and no control manifest inside it (-mindepth 2: a control build beside it is not)
+  [ -f "$1/MANIFEST.json" ] || die "no $1/MANIFEST.json"
+  pm() { sed -n "s/^ *\"$2\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$1/MANIFEST.json" | head -1; }
+  [ "$(pm "$1" tag)" = "$tag" ] && [ "$(pm "$1" commit)" = "$commit" ] && [ "$(pm "$1" mode)" = signed ] && [ "$(pm "$1" control)" = false ] \
+    || { stopclass content; die "$1 holds no signed build of $tag at $commit (or a control build)"; }
+  files_ok "$1" || { stopclass content; die "a file of $1 is missing or not its manifest hash"; }
+  nested=$(find "$1" -mindepth 2 -name MANIFEST.json -exec grep -l '"control": *true' {} + 2>/dev/null | head -1)
+  [ -z "$nested" ] || { stopclass content; die "a control build's manifest lies inside $1 ($nested)"; }
+}
+ship_build_ready() { # A7: no build yet: the build's preconditions; a finished one: its checks
+  . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
+  if [ -e "$out/$tag" ]; then
+    post_build_check "$out/$tag"
+    echo "release: a finished build of $tag is in $out/$tag: checked; it is not built again"
+    return 0
+  fi
+  shipdocker info >/dev/null 2>&1 || die "Docker does not answer (docker info): start it, then run ship again"
+  shipdocker image inspect "$SR_IMG_ALPINE" >/dev/null 2>&1 || die "no local image $SR_IMG_ALPINE (run ./test-all pull)"
+  a1=sr-amd64-base:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12) a2=sr-amd64-alpine:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
+  shipdocker image inspect "$a1" >/dev/null 2>&1 || shipdocker image inspect "$a2" >/dev/null 2>&1 || die "no local amd64 image of the pinned base (run ./test-all pull, or ./test-all amd64)"
+  shipcall "$SHIP_IDENTITY" find-identity -v -p codesigning 2>/dev/null | grep -q " $SR_SIGN_IDENTITY " || die "the signing identity $SR_SIGN_IDENTITY is not in the keychain"
+  [ -f "$HOME/$SR_NOTARY_KEYCHAIN" ] || die "no notary keychain at $HOME/$SR_NOTARY_KEYCHAIN: do PHASE3.md D2 step 3 first"
 }
 ship_target() { # A2: origin is lukaso/sheepr on github.com (exactly one push URL, and the fetch URL)
   pu=$(tool "$NETC" "$GITCMD" -C "$root" remote get-url --push --all origin) || die "git: cannot read origin's push URL"
@@ -982,7 +1079,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   # worktree: fetched and read with one -C; the refspec keeps the unpushed tag under fetch.prune and
   # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
   # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
-  [ -z "$rtag" ] || die "something of $tag is public: the tag is on origin ($(printf '%s' "$rtag" | head -1))"
+  [ -z "$rtag" ] || ship_public "the tag is on origin ($(printf '%s' "$rtag" | head -1))"
   tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || die "git: cannot fetch origin's main"
   fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
   [ "$fh" = "$amain" ] || die "origin's main moved between its read ($amain) and the fetch ($fh)"
