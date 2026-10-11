@@ -720,8 +720,10 @@ fn require_journal_runs_the_root_only_after_its_line() {
     let mk = marker();
     let (m1, m2, m3) = (d.join("m1"), d.join("m2"), d.join("m3"));
     let cmd = |m: &Path| format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {mk}'"#, m.display());
-    let (c, st, _) = run_st(&d, "line", &format!("--require-journal {}", cmd(&m1)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")], false);
+    let (c, st, err) = run_st(&d, "line", &format!("--require-journal {}", cmd(&m1)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "1")], false);
     let left1 = common::scan(&mk, |w| w.get(1) == Some(&"/bin/sleep")).map(|v| v.len());
+    // the refusal is the one line: the end of the job does not say the failure again (P3-1)
+    assert_eq!(err.lines().filter(|l| l.contains("journal") && l.contains("error")).count(), 1, "stderr:\n{err}");
     let spawned = if cfg!(target_os = "macos") { "signaled" } else { "not-started" };
     refused_as(c, &st, &m1, spawned, "the job journal cannot be kept: ", Some("EIO"), "sheepr");
     let (c, st, _) = run_st(&d, "ident", &format!("--require-journal {}", cmd(&m2)), &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_FAIL_STEP", "root-identity")], false);
@@ -772,6 +774,7 @@ fn require_journal_ends_the_job_when_its_journal_dies() {
     assert!(!notes.iter().any(|n| n.contains("after the trigger")), "{notes:?}");
     assert!(t.lines().any(|l| l == "report-cause journal"), "trace:\n{t}");
     assert!(!err.contains("the job runs"), "stderr:\n{err}");
+    assert_eq!(err.lines().filter(|l| l.contains("No space left")).count(), 1, "one line names the failure:\n{err}");
     let (c, st, _) = run_st(&d, "ctl", "-- /bin/sh -c '/bin/sleep 0.5 & wait'", &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "2:ENOSPC")], false);
     let notes: Vec<&str> = get(&st, "notes").and_then(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).collect();
     assert_eq!((c, get(&st, "trigger"), get(&st, "error")), (Some(0), Some(&Json::Null), Some(&Json::Null)), "control: {st:?}");
@@ -878,5 +881,43 @@ fn require_journal_kills_a_resumed_root_and_its_tree() {
     assert_eq!(code, Some(125), "{st:?}");
     assert!(get(&st, "error").and_then(Json::str).is_some_and(|e| e.starts_with("the job journal cannot be kept: ")), "{st:?}");
     assert_eq!(left, Ok(0), "the root's child was left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 3, P3-1: under --require-journal a journal that dies where it does not end the
+/// job (here during the kill: a TERMed member forks an escapee, whose line is the failing write)
+/// is still said: one stderr line that names the failure, and never "the job runs". The control:
+/// without the option, the warning as before ("the job runs, but ...").
+#[test]
+fn require_journal_says_a_journal_that_dies_as_the_job_ends() {
+    let d = scratch("reqending");
+    let s = state(&d);
+    for (name, opt) in [("req", true), ("ctl", false)] {
+        let (r, err) = (d.join(format!("rec-{name}")), d.join(format!("{name}.err")));
+        let flags: &[&str] = if opt { &["--require-journal"] } else { &[] };
+        let mut c = Command::new(sheepr())
+            .arg("run")
+            .args(flags)
+            .args(["--grace", "0.5", "--", fixture(), "fork-on-term", &marker()])
+            .arg(&r)
+            .env("SHEEPR_TEST_STATE", &s)
+            .env("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "3:ENOSPC")
+            .stderr(std::fs::File::create(&err).unwrap())
+            .spawn()
+            .unwrap();
+        let started = records(&r, 2).len() == 2;
+        common::send_child(&mut c, libc::SIGTERM);
+        let _ = finish(c);
+        let recs = records(&r, 3);
+        for p in recs.iter().filter(|p| common::alive(**p)) {
+            common::send(p.0, p.1, libc::SIGKILL);
+        }
+        let e = std::fs::read_to_string(&err).unwrap_or_default();
+        let said: Vec<&str> = e.lines().filter(|l| l.contains("journal") && l.contains("No space left")).collect();
+        assert!(started, "{name}: the member was ready");
+        assert_eq!(recs.len(), 3, "{name}: the escapee was born during the kill: {recs:?}");
+        assert_eq!(said.len(), 1, "{name}: one line names the failure:\n{e}");
+        assert_eq!(said[0].contains("the job runs"), !opt, "{name}:\n{e}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }

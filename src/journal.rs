@@ -430,6 +430,15 @@ impl Journal {
     /// The end: after a clean kill the journal is unlinked, then the lock released by closing
     /// the fd; otherwise it is kept for `sweep` (debug seam SHEEPR_TEST_KEEP_JOURNAL keeps it).
     pub fn finish(mut self, clean: bool) {
+        // --require-journal: a journal that died after the root's line where it did not end the
+        // job (during the kill, in the pass that a TERM, a cap or the root's end ended it, at the
+        // --leave-strays mark) is said here, once (review of slice 3, P3-1); one that ended the job
+        // was said by `end_by_journal`, one that refused the command by the refusal
+        if self.required && self.root_written && self.dead && crate::status::trigger() != Some("journal") {
+            if let Some((what, _)) = &self.why {
+                crate::say!("sheepr: the job journal failed ({what}) while the job was ending");
+            }
+        }
         if clean && !crate::seam_flag("SHEEPR_TEST_KEEP_JOURNAL") {
             if let Some(p) = &self.path {
                 let _ = std::fs::remove_file(p); // before the lock is released below

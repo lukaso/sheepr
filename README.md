@@ -220,7 +220,10 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   the record that lets `sheepr sweep` (or your next `sheepr run`) end the job if sheepr is killed.
   When the journal cannot be kept (no state directory, a full disk, no permission), the command
   does not run: exit 125, and the `--status-fd` line's `error` says why. When the journal fails
-  while the job runs, sheepr ends the job: exit 125, `trigger` `journal`. Without the option, a
+  while the job runs, sheepr ends the job: exit 125, `trigger` `journal`. It does not end the job
+  when the job is already ending: a journal that fails during the kill, in the same moment as a
+  TERM, a limit or the command's own end (those end the job as usual), or when sheepr marks the
+  journal for `--leave-strays`; then one stderr line names the failure. Without the option, a
   journal that cannot be kept only costs the cleanup after a killed sheepr, and the job runs.
   Not with `--mode root-disclaim`; on macOS, not when the caller blocks SIGCONT.
 - After an internal error (a panic) once the command may have run, sheepr does not end the
