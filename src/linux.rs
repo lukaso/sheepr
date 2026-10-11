@@ -762,7 +762,7 @@ fn poll_fd(fd: i32, ms: i32) {
 /// - dies the way the supervisor died (P2-1).
 /// The supervisor gets PR_SET_PDEATHSIG(SIGTERM): if the relay is killed, the supervisor is
 /// told to end the job instead of running on unseen (review round 4, P3-2).
-/// Returns Err in the relay (`Before::Ended`, its own end), on a failed fork (a `PreRoot`) or a
+/// Returns Err in the relay (`Before::like`, its own end), on a failed fork (a `PreRoot`) or a
 /// TERM before it (death by TERM), Ok(Some(relay pid)) in a supervisor that has a relay,
 /// Ok(None) without one.
 fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
@@ -777,7 +777,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
     // start and is then killed at once, never left running (the same as a TERM arriving just
     // after the pre-spawn check without a relay).
     if sig.watch_term && crate::term_pending() {
-        return Err(Before::Ended(crate::die_by_term(143)));
+        return Err(Before::term(143));
     }
     unsafe {
         let relay = libc::getpid();
@@ -848,7 +848,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
                         if fd >= 0 {
                             libc::close(fd);
                         }
-                        return Err(Before::Ended(crate::die_like(st)));
+                        return Err(Before::like(st));
                     }
                     let got = if fd >= 0 {
                         poll_fd(fd, 1000);
@@ -923,8 +923,11 @@ struct Started {
 /// a bare exit code.
 fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
     // debug seam: a planted bare early return (an end with no reason), for the line's guard
-    if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
-        return Err(Before::Ended(125));
+    #[cfg(debug_assertions)]
+    {
+        if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
+            return Err(Before::planted());
+        }
     }
     if let Some((why, errno)) = proc_check() {
         return Err(PreRoot::new(Step::Proc, errno, format!("{why}, so sheepr cannot tell which processes are this job's. Mount a /proc for this pid namespace (for example unshare --mount-proc). Nothing was started.")).into());
@@ -958,8 +961,8 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
         crate::status::set_degraded("cannot become a subreaper");
     }
     let me = unsafe { libc::getpid() };
-    if let Some(code) = crate::term_before_spawn(sig) {
-        return Err(Before::Ended(code));
+    if crate::term_before_spawn(sig) {
+        return Err(Before::term(143));
     }
     let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv, a.require_journal));
     // plan §3: under --require-journal a journal that cannot be kept refuses the command
@@ -1003,7 +1006,7 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
         abandon_shim(&mut shim);
         crate::status::set_root_final("not-started");
         journal.into_inner().finish(true);
-        return Err(Before::Ended(crate::die_by_term(143)));
+        return Err(Before::term(143));
     }
     if crate::seam_flag("SHEEPR_TEST_PANIC_BEFORE_GO") {
         panic!("test seam: a panic between the shim's spawn and the go byte");

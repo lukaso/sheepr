@@ -627,7 +627,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<(), Before> {
     }
     // a TERM pending now would stay in the relay (pending signals are not inherited across fork)
     if sig.watch_term && crate::term_pending() {
-        return Err(Before::Ended(crate::die_by_term(143)));
+        return Err(Before::term(143));
     }
     unsafe {
         let relay = libc::getpid();
@@ -655,7 +655,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<(), Before> {
             }
             sup => {
                 crate::status::disable(); // the supervisor writes the status line
-                Err(Before::Ended(relay_loop(sup, relay, sig.watch_term)))
+                Err(Before::like(relay_loop(sup, relay, sig.watch_term)))
             }
         }
     }
@@ -690,7 +690,7 @@ fn relay_exited(r: pid_t) -> bool {
 
 /// The relay's loop: a kqueue on the supervisor's exit and on TERM/HUP/INT (all blocked; a
 /// kqueue signal event is only a wake-up, the signal is taken with `consume`).
-fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> i32 {
+fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> c_int {
     unsafe {
         let kq = libc::kqueue();
         if kq >= 0 {
@@ -744,7 +744,7 @@ fn relay_loop(sup: pid_t, relay: pid_t, watch_term: bool) -> i32 {
                 if kq >= 0 {
                     libc::close(kq);
                 }
-                return crate::die_like(st);
+                return st; // the relay dies the way the supervisor did: Before::like
             }
             // a stopped supervisor must wake to act on it (TERM+CONT to the relay, as `timeout`
             // sends, must end a stopped job)
@@ -1155,14 +1155,17 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
 /// of the process's own (death by a TERM, the relay's own end); never a bare exit code.
 fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
     // debug seam: a planted bare early return (an end with no reason), for the line's guard
-    if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
-        return Err(Before::Ended(125));
+    #[cfg(debug_assertions)]
+    {
+        if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
+            return Err(Before::planted());
+        }
     }
     match a.mode.as_deref() {
         None | Some("responsible") => {}
         Some("root-disclaim") => {
-            if let Some(code) = crate::term_before_spawn(sig) {
-                return Err(Before::Ended(code));
+            if crate::term_before_spawn(sig) {
+                return Err(Before::term(143));
             }
             // never suspended: it may run from its spawn (a failed spawn's end is final)
             crate::status::set_root_may_run();
@@ -1197,7 +1200,7 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
     // a relay that is already gone means the job must not start, whatever the caller did
     // with TERM (S2 review rounds 3-4)
     if relay.is_some_and(relay_exited) {
-        return Err(Before::Ended(crate::die_by_term(143)));
+        return Err(Before::term(143));
     }
     crate::status::cloexec(); // after the SETEXEC, which the fd had to survive
     crate::status::set_tracking(if ok { "responsibility" } else { "puniq" });
@@ -1231,8 +1234,8 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
         crate::sweep::auto(&a.owner, a.quiet);
     }
     crate::caps::start();
-    if let Some(code) = crate::term_before_spawn(sig) {
-        return Err(Before::Ended(code));
+    if crate::term_before_spawn(sig) {
+        return Err(Before::term(143));
     }
     // after the SETEXEC (the lock is CLOEXEC and would not survive it), before the root
     let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv, a.require_journal));

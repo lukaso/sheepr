@@ -1814,11 +1814,11 @@ pub fn end_by_journal(what: &str, errno: Option<c_int>) {
 }
 
 /// Before the root is spawned: a TERM that is already pending (the caller blocked TERM and it
-/// arrived) ends sheepr now, so the root never runs (round-7 P3-F2). Returns the exit code
-/// if sheepr must end.
-pub fn term_before_spawn(sig: &Signals) -> Option<i32> {
+/// arrived) must end sheepr now, so the root never runs (round-7 P3-F2): the caller then returns
+/// `steps::Before::term`.
+pub fn term_before_spawn(sig: &Signals) -> bool {
     seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_SPAWN_MS");
-    (sig.watch_term && term_pending()).then(|| die_by_term(143))
+    sig.watch_term && term_pending()
 }
 
 /// Is a TERM pending (blocked, not yet taken by a wait)?

@@ -188,11 +188,16 @@ impl PreRoot {
 
 /// How a pre-root segment ends early: a step failed (`Failed`), or the process ended its own way
 /// (`Ended`: a death by TERM, which says so in `trigger`, or a relay's own end, which writes no
-/// status line). A bare exit code cannot be returned from that segment.
+/// status line). A bare exit code cannot be returned from that segment: `Ended`'s field is private
+/// to this module (review of slice 2, P3-2), so only `Before::term` and `Before::like` make one,
+/// and each ends the process its way first.
 pub enum Before {
     Failed(PreRoot),
-    Ended(i32),
+    Ended(Ended),
 }
+
+/// The exit code of an end of the process's own (only this module makes one).
+pub struct Ended(i32);
 
 impl From<PreRoot> for Before {
     fn from(p: PreRoot) -> Before {
@@ -201,10 +206,27 @@ impl From<PreRoot> for Before {
 }
 
 impl Before {
+    /// A TERM before the command: die of it (`crate::die_by_term`, which sets `trigger` "term").
+    pub fn term(fallback: i32) -> Before {
+        Before::Ended(Ended(crate::die_by_term(fallback)))
+    }
+
+    /// A relay's own end: it dies the way its supervisor did (`crate::die_like`).
+    pub fn like(status: libc::c_int) -> Before {
+        Before::Ended(Ended(crate::die_like(status)))
+    }
+
+    /// Debug seam SHEEPR_TEST_PLANT_BARE_RETURN: the bare early return the line's guard must
+    /// catch (exit 125, nothing recorded). Debug builds only.
+    #[cfg(debug_assertions)]
+    pub fn planted() -> Before {
+        Before::Ended(Ended(125))
+    }
+
     /// THE one conversion of an early end into the status and the exit code.
     pub fn end(self) -> i32 {
         match self {
-            Before::Ended(code) => code,
+            Before::Ended(Ended(code)) => code,
             Before::Failed(p) => {
                 p.record();
                 p.code
