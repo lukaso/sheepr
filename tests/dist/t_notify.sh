@@ -39,7 +39,7 @@ for kv in \
   "npm-login|$T: log in to npm in the browser (npm login)" \
   "npm-approve|$T: approve the npm upload in the browser (tick skip for 5 minutes)" \
   "npm-approve-again|$T: npm may ask again: approve the upload of the main package in the browser" \
-  "npm-approve-next|$T: approve the next npm upload in the browser" \
+  "npm-approve-next|$T: npm may ask again: approve the next npm upload in the browser" \
   "done|$T is public on GitHub, Homebrew and npm" \
   "logout-failed|$T: npm logout failed. Run npm logout in the terminal" \
   "failed-push|$T stopped at push. The terminal says what to run next" \
