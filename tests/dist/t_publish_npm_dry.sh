@@ -103,7 +103,7 @@ chmod +x "$FX/npm"
 printf '#!/bin/sh\necho "notify $*" >> "%s/calls"\necho "${SR_NOTIFY_OSASCRIPT+set}" >> "%s/notifyenv"\n' "$FX" "$FX" > "$FX/notify"
 chmod +x "$FX/notify"
 # (it also records which of the entry's own variables reached it through the environment: names only)
-mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\nfor k in NOTIFY NPM NETC npm_part shipping; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\n' "$FX" "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
+mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\nfor k in shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\n' "$FX" "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
 echo lukasco > "$FX/whoami"
 pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the notifier (default the
        # stand-in; "-": none); PUBX: one more assignment. Set them as plain assignments, clear after
@@ -406,7 +406,15 @@ done
 # the entry's variables are plain assignments: none reached a child through the environment (the
 # sleep stand-in runs during a wait, outside the npm class)
 mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-linux-x64"
-[ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && pass "NOTIFY, NPM, NETC, npm_part and shipping are not exported (a waited run's sleep sees none)" || fail "exported to a child: rc=$r sleeps=$(grep -c . "$FX/sleeps" 2>/dev/null) exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
+[ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && pass "none of release.sh's own variables is exported (a waited run's sleep sees none)" || fail "exported to a child: rc=$r sleeps=$(grep -c . "$FX/sleeps" 2>/dev/null) exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
+# and when the caller exports every one of them, release.sh unsets each before it sets it, so none
+# stays exported (an assignment alone keeps a variable from the environment exported)
+mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x64"
+( export shipping=yes npm_part=platform NOTIFY=/nonexistent SHIP_BUILD=/x SHIP_NPMCHECK=/x SHIP_VERIFY=x CAFFEINATE=/x SHIP_IDENTITY=/x SHIP_DOCKER=/x \
+    GH=/x GITCMD=/x NPM=/x NPMC=x CURL=/x CURLC=x NETC=x DRY=x dryentry=no shipprog=/x shipcause=/x shipcls=/x ship_mh=x; pub v0.1.0 ); r=$?
+rm -f "$FX/processing.sheepr-linux-x64"
+[ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] \
+  && pass "the caller exports all of release.sh's own variables: none reaches a child, and today's order runs (four uploads, 0)" || fail "caller's exports: rc=$r exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ') $(order)"
 # this cell's own dry HOMEs (each run prints the one it made; other sessions may run these cells at
 # the same time, so the whole /private/tmp is not counted): at least ten seen, none left
 nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""
