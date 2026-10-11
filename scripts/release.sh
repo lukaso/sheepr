@@ -423,7 +423,9 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 # and writes nothing public; it does read the network (npm owner ls for the four names; the tap's
 # cask and its write right, through gh). The planned ship runs it before its push (the ship plan,
 # C3). It makes this run's private temp dir ($pt, removed at exit), sets what publish_exec goes on
-# with (MAN, sums_h, cask, cask_put, ...) and returns 0 when every check passed.
+# with (MAN, sums_h, cask, cask_put, ...) and returns 0 when every check passed. It replaces the
+# caller's EXIT, HUP, INT and TERM traps with its own, so a caller with traps of its own (ship's C3)
+# runs it in a subshell.
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"

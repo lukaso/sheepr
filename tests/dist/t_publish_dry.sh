@@ -515,15 +515,26 @@ n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{
 [ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1" || die "the checks before publishing did not pass; nothing is published"' ] \
   && pass "publish_exec calls publish_check first, and stops unless it returns 0" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
 # the text of publish_check and of each function it calls (a fixed list: the text cannot follow a
-# call it does not name): no remote tag read, no planner, no question, no write. It reads the
-# network otherwise (npm's owners, the tap's cask and its write right)
+# call it does not name): only reads, by an allow-list (below). It reads the network otherwise
+# (npm's owners, the tap's cask and its write right)
 fbody() { # name file -> the function's text (a one-line function: its line)
   awk -v n="$1" '$0 ~ "^" n "\\(\\) \\{" { f = 1; print; if ($0 ~ /\}[[:space:]]*(#.*)?$/) exit; next } f { print } f && /^}/ { exit }' "$2"
 }
-pcwrites() { # file -> the lines of publish_check and its callees that read the remote tag, plan, ask or write
+pcwrites() { # file -> the lines of publish_check and its callees that are not a read: an allow-list. A
+  # gh call ("$GH") is `api` with no write flag (-X, --method, -f, -F, --field, --raw-field,
+  # --input); an npm call ("$NPM", or npm_owners' "$2") is `owner ls`, `view` or `whoami`; no push,
+  # remote-tag read, planner or question, and no bare gh or npm write
   for fn in publish_check private_manifest stamp_ok stamp_line files_ok man_hash npm_list npm_owners npy cask_pre blob_id; do
     b=$(fbody "$fn" "$1"); [ -n "$b" ] || { echo "MISSING $fn"; continue; }
-    printf '%s\n' "$b" | grep -v '^ *#' | grep -e 'ls-remote' -e 'GITCMD' -e '-X POST' -e '-X PATCH' -e '-X PUT' -e 'release-plan' -e 'confirm '
+    printf '%s\n' "$b" | grep -v '^ *#' | awk '
+      /git[[:space:]]+push|GITCMD|ls-remote|release-plan|confirm / { print "WRITE: " $0; next }
+      /(^|[[:space:](";])gh[[:space:]]+(api|release|repo)([[:space:]]|$)/ { print "BARE GH: " $0; next }
+      /(^|[[:space:](";])npm[[:space:]]+(publish|unpublish|login|logout|adduser|deprecate|dist-tag|access|owner[[:space:]]+(add|rm))([[:space:]]|$)/ { print "BARE NPM: " $0; next }
+      # a call: the program right after `tool "CLASS"`, at a command start, or after $( (an argument
+      # that only passes "$NPM" on, as to npm_owners, is not one)
+      /(tool "[^"]*" |^[[:space:]]*|[;(|&][[:space:]]*|\$\()"\$GH"/ { if ($0 !~ /"\$GH" api / || $0 ~ /(^|[[:space:]])(-X|--method|-f|-F|--field|--raw-field|--input)([[:space:]=]|$)/ || $0 ~ /[[:space:]]-X[A-Za-z]/) print "GH: " $0; next }
+      /(tool "[^"]*" |^[[:space:]]*|[;(|&][[:space:]]*|\$\()"\$NPM"|tool "\$1" "\$2"/ { if ($0 !~ /("\$NPM"|"\$2") (owner ls|view|whoami)([[:space:]]|$)/) print "NPM: " $0; next }
+    '
   done
 }
 w=$(pcwrites "$SR_ROOT/scripts/release.sh")
@@ -533,6 +544,15 @@ w=$(pcwrites "$SR_ROOT/scripts/release.sh")
 awk '{ print } /^publish_check\(\) \{/ && !d { print "  tool \"$NETC\" \"$GITCMD\" ls-remote \"$UPSTREAM\" x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant1.sh"
 awk '{ print } /^cask_pre\(\) \{/ && !d { print "  tool \"$NETC\" \"$GH\" api -X PUT x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant2.sh"
 [ -n "$(pcwrites "$FX/rel-plant1.sh")" ] && [ -n "$(pcwrites "$FX/rel-plant2.sh")" ] && pass "control: a remote read planted in publish_check, and a write planted in cask_pre, are each caught" || fail "control: plant1 '$(pcwrites "$FX/rel-plant1.sh")' plant2 '$(pcwrites "$FX/rel-plant2.sh")'"
+# one planted control per spelling of a write: each copy (never run) is caught
+n_=0
+for plant in '  tool "$NETC" "$GH" api -f message=x repos/x' '  tool "$NETC" "$GH" api --method PUT repos/x' '  tool "$NETC" "$GH" api -XPOST repos/x' \
+    '  tool "$NETC" "$NPM" publish x.tgz' '  gh release create v9.9.9' '  git push origin main'; do
+  n_=$((n_ + 1))
+  awk -v l="$plant" '{ print } /^publish_check\(\) \{/ && !d { print l; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant-s$n_.sh"
+  cmp -s "$SR_ROOT/scripts/release.sh" "$FX/rel-plant-s$n_.sh" && { fail "control: '$plant' was not planted"; continue; }
+  [ -n "$(pcwrites "$FX/rel-plant-s$n_.sh")" ] && pass "control: '$plant' planted in publish_check is caught" || fail "control: '$plant' planted in publish_check is not caught"
+done
 
 # the entries set their tools with plain assignments: none reaches a child of release.sh through the
 # environment. A shasum on PATH (release.sh runs shasum itself, outside the tool classes) records
