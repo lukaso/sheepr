@@ -67,6 +67,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$tag" ] || usage
+# --out, absolute from here on, for every entry: some steps run in other directories (the planner in
+# the tree's root, npm pack in its own), and one relative spelling must name one directory
+[ -n "$out" ] || usage
+case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
 case $sub in
   check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env) ;;
   *) usage ;;
@@ -918,7 +922,6 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # A1. the tag first (every path below is built from it): a final vX.Y.Z only
   valid "$tag" || die "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
-  case $out in /*) ;; *) out=$(pwd -P)/$out || die "cannot read the working directory" ;; esac
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   locked=no logged_in=no armed=no phase=preflight oroot=$root
@@ -946,9 +949,6 @@ case $sub in
   check) checks ;;
   verify) verify "$out/$tag" ;;
   build)
-    # a relative --out names a directory from where build was started, and some of the build's
-    # helpers run in other directories (npm pack): made absolute before anything else
-    case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
     checks
     if [ $sign = no ]; then build_release unsigned
     elif [ $nonot = yes ]; then build_release control

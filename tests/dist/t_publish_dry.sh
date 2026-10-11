@@ -130,10 +130,11 @@ pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 wh
        # a function call persists in POSIX sh
   rm -rf "$FX/calls" "$FX"/env.* "$FX/up"; printf '%s\n' "$2" > "$FX/ask"
   [ "${TAPKEEP:-}" = 1 ] || tapset "${TAPV:-0.0.9}"
-  (cd "$REPO" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  # PUBCD, PUBOUT: where it runs and the --out it gets (the repo and $FX/out when unset)
+  (cd "${PUBCD:-$REPO}" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     GH_TOKEN="$DECOY" GITHUB_TOKEN="$DECOY" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" NPM_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" \
     SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls" \
-    ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
+    ${PUBX:+"$PUBX"} sh "$REPO/scripts/release.sh" __publish-dry --out "${PUBOUT-$FX/out}" "$1") > "$FX/o" 2>&1; r_=$?; rec
   return $r_
 }
 cask() { # tag -> rc: `__publish-cask-dry` (the cask step alone); the tap as it is; output in $FX/o
@@ -180,6 +181,13 @@ pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/moved"
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "the tag moved during the upload: no PATCH (1)" || fail "moved tag: rc=$r"
 pub v0.1.0 no; r=$?
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "a wrong second answer: no PATCH (1)" || fail "wrong answer: rc=$r"
+# --out is made absolute right after the arguments, for every entry: a relative one, from another
+# directory than the repo's, names the same out dir as its absolute spelling (the planner, which runs
+# in the repo, and the uploads, which do not, read one directory); an empty one is a usage error
+PUBCD=$FX; PUBOUT=out; pub v0.1.0 v0.1.0; r=$?; PUBCD=; unset PUBOUT
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && pass "a relative --out from another directory: the same out dir, published (0)" || fail "relative --out: rc=$r $(tail -1 "$FX/o")"
+PUBOUT=; pub v0.1.0 v0.1.0; r=$?; unset PUBOUT
+[ $r = 2 ] && [ ! -s "$FX/calls" ] && grep -q '^usage' "$FX/o" && pass "an empty --out: a usage error (2), nothing called" || fail "empty --out: rc=$r $(tail -1 "$FX/o")"
 # the remote tag stays publish_exec's check (publish_check does not read it): none, or one at another
 # commit, is refused before any POST
 cp "$FX/remote" "$FX/remote.good"; : > "$FX/remote"; pub v0.1.0 v0.1.0; r=$?
