@@ -1805,3 +1805,106 @@ fn a_panic_after_an_unsuspended_spawn_says_the_command_may_have_run() {
     assert_eq!(get("error").as_ref().and_then(Json::str), Some("internal error (a panic)"), "{j:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Plan §2's class guard, end to end: a planted bare early return (a debug seam makes the
+/// pre-root function end with an exit code and no reason, the defect a new early return would
+/// be) never writes a silent "not-started" line: the debug build's guard panics (its words on
+/// stderr), and the line says the panic, an internal error. The command never ran. (A release
+/// build fills the no-reason error instead: src/status.rs's cells.)
+#[test]
+fn a_bare_early_return_never_writes_a_silent_line() {
+    let d = scratch("bare");
+    let mark = d.join("ran");
+    let x = run(&d, "bare", &format!(r#"-- /bin/sh -c 'touch "{}"'"#, mark.display()), &[("SHEEPR_TEST_PLANT_BARE_RETURN", "1")], |_| {});
+    assert!(x.stderr.contains("recorded no reason"), "the guard did not fire; stderr:\n{}\nline: {:?}", x.stderr, x.status);
+    assert_eq!(x.code, Some(125), "{:?}", x.status);
+    assert_eq!(field(&x, "error").and_then(Json::str), Some("internal error (a panic)"), "{:?}", x.status);
+    assert!(!mark.exists(), "the command ran");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The step table of src/steps.rs: (variant, seam word), read from its `Step::X => ("word", ...)`
+/// rows.
+fn step_table() -> Vec<(String, String)> {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/steps.rs")).unwrap();
+    src.lines()
+        .filter_map(|l| {
+            let l = l.trim().strip_prefix("Step::")?;
+            let (variant, rest) = l.split_once(" => (\"")?;
+            Some((variant.to_string(), rest.split('"').next()?.to_string()))
+        })
+        .collect()
+}
+
+/// The text of `src` without its test modules (`#[cfg(test)]` then `mod NAME {` up to the next
+/// line that is `}` alone, rustfmt's closing brace of a top-level item).
+fn without_tests(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < lines.len() {
+        if lines[i].trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|n| n.starts_with("mod ") && n.trim_end().ends_with('{')) {
+            while i < lines.len() && lines[i] != "}" {
+                i += 1;
+            }
+        } else {
+            out.push(lines[i]);
+        }
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// Plan §2's class cell, both ways: every step of src/steps.rs's table that ends a run before its
+/// command (all but the mid-job steps and the guard's own, named here) has a seam point (`injected(Step::X)`; the
+/// steps the arguments cause are named here instead) and a site that makes it the run's end
+/// (`PreRoot::new(Step::X` or `PreRoot::said(Step::X`; the shim's own steps: `fail(Step::X`, read
+/// back through its `F` line), and a row in this file's step table; and every row of this file's
+/// step table names a step of that table. The others each have a site too. Test modules are left
+/// out. The controls: the table read holds a known step, a step name planted in no site is
+/// reported missing, and the stripping drops a test module's site.
+#[test]
+fn every_step_has_its_seam_its_site_and_its_row() {
+    const MID_JOB: [&str; 4] = ["Panic", "KillInternal", "LostWait", "Unrecorded"];
+    const BY_ARGS: [&str; 3] = ["Mode", "Usage", "Inherit"];
+    let table = step_table();
+    assert!(table.iter().any(|(v, w)| v == "Pipe" && w == "pipe"), "control: the table read: {table:?}");
+    let mut files = Vec::new();
+    rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), Path::new(""), &mut files);
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code: String = files
+        .iter()
+        .filter(|f| !f.starts_with("bin") && f.to_str() != Some("steps.rs"))
+        .map(|f| without_tests(&std::fs::read_to_string(dir.join(f)).unwrap()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let missing = |variant: &str| -> Vec<String> {
+        let mut m = Vec::new();
+        if MID_JOB.contains(&variant) {
+            if !code.contains(&format!("Step::{variant},")) {
+                m.push(format!("{variant}: no site"));
+            }
+            return m;
+        }
+        if !BY_ARGS.contains(&variant) && !code.contains(&format!("injected(Step::{variant})")) {
+            m.push(format!("{variant}: no seam point"));
+        }
+        if !["PreRoot::new(Step::", "PreRoot::said(Step::", "fail(Step::"].iter().any(|p| code.contains(&format!("{p}{variant},"))) {
+            m.push(format!("{variant}: no site that ends the run"));
+        }
+        m
+    };
+    assert_eq!(missing("Planted"), ["Planted: no seam point", "Planted: no site that ends the run"], "control: a step with no site is reported");
+    assert!(!without_tests("fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { f(Step::X, 1) }\n}\nfn b() {}").contains("Step::X"), "control: a test module is stripped");
+    let mut bad: Vec<String> = table.iter().flat_map(|(v, _)| missing(v)).collect();
+    for (v, w) in &table {
+        if !MID_JOB.contains(&v.as_str()) && !STEP_ROWS.iter().any(|r| r.step == w) {
+            bad.push(format!("{v}: no row in STEP_ROWS"));
+        }
+    }
+    for r in STEP_ROWS {
+        if !table.iter().any(|(_, w)| w == r.step) {
+            bad.push(format!("row {}: not a step of src/steps.rs", r.step));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}

@@ -902,6 +902,10 @@ struct Started {
 /// `Before::end`), or an end of the process's own (death by a TERM, the relay's own end); never
 /// a bare exit code.
 fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
+    // debug seam: a planted bare early return (an end with no reason), for the line's guard
+    if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
+        return Err(Before::Ended(125));
+    }
     if let Some((why, errno)) = proc_check() {
         return Err(PreRoot::new(Step::Proc, errno, format!("{why}, so sheepr cannot tell which processes are this job's. Mount a /proc for this pid namespace (for example unshare --mount-proc). Nothing was started.")).into());
     }

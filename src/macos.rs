@@ -1148,6 +1148,10 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
 /// `Before`: a step's failure (`PreRoot`, made the status in one place, `Before::end`), or an end
 /// of the process's own (death by a TERM, the relay's own end); never a bare exit code.
 fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
+    // debug seam: a planted bare early return (an end with no reason), for the line's guard
+    if crate::seam_flag("SHEEPR_TEST_PLANT_BARE_RETURN") {
+        return Err(Before::Ended(125));
+    }
     match a.mode.as_deref() {
         None | Some("responsible") => {}
         Some("root-disclaim") => {

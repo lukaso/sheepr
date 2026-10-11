@@ -59,6 +59,8 @@ pub enum Step {
     KillInternal,
     /// macOS: the root's end was seen but its wait failed
     LostWait,
+    /// a release build's line guard: sheepr ended before the command and recorded no reason
+    Unrecorded,
 }
 
 /// What a step's failure is when its errno is not a resource one.
@@ -90,6 +92,7 @@ impl Step {
             Step::Panic => ("panic", Kind::Sheepr, true),
             Step::KillInternal => ("kill-internal", Kind::Sheepr, true),
             Step::LostWait => ("lost-wait", Kind::Sheepr, false),
+            Step::Unrecorded => ("unrecorded", Kind::Sheepr, false),
         }
     }
 
