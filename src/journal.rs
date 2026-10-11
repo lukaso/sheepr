@@ -119,21 +119,38 @@ fn joined(args: &[OsString]) -> Vec<u8> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn boot_id() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+fn read_boot_id() -> Result<String, i32> {
+    let s = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    Some(s.trim().to_string()).filter(|s| !s.is_empty()).ok_or(libc::EINVAL)
 }
 
 #[cfg(target_os = "macos")]
-pub fn boot_id() -> Option<String> {
-    let name = std::ffi::CString::new("kern.bootsessionuuid").ok()?;
+fn read_boot_id() -> Result<String, i32> {
+    let name = std::ffi::CString::new("kern.bootsessionuuid").map_err(|_| libc::EINVAL)?;
     let mut buf = [0u8; 64];
     let mut len = buf.len();
     let r = unsafe { libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr() as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) };
     if r != 0 {
-        return None;
+        return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
     }
     let s = String::from_utf8_lossy(&buf[..len]).trim_end_matches('\0').trim().to_string();
-    (!s.is_empty()).then_some(s)
+    (!s.is_empty()).then_some(s).ok_or(libc::EINVAL)
+}
+
+/// This boot's id, or the errno that kept it (EINVAL for an empty one). Debug seam
+/// SHEEPR_TEST_BOOT_ID_ERRNO=<errno> (a name or a number): there is none, with that errno.
+pub fn boot_id_or() -> Result<String, i32> {
+    if cfg!(debug_assertions) {
+        if let Some(e) = std::env::var("SHEEPR_TEST_BOOT_ID_ERRNO").ok().and_then(|v| crate::steps::errno_of(&v)) {
+            return Err(e);
+        }
+    }
+    read_boot_id()
+}
+
+/// This boot's id (`boot_id_or`), if it can be read.
+pub fn boot_id() -> Option<String> {
+    boot_id_or().ok()
 }
 
 /// The pid namespace: Linux `<dev>.<ino>` of /proc/self/ns/pid; macOS `0`.

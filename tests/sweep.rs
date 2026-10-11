@@ -182,10 +182,27 @@ fn sweep_said(s: &Path, args: &[&str]) -> (Option<i32>, String) {
 
 /// `sweep_said` with these variables set.
 fn sweep_said_with(s: &Path, args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut all = vec!["sweep"];
+    all.extend_from_slice(args);
+    let (code, text, _) = sheepr_within(s, &all, env, 30);
+    (code, text)
+}
+
+/// `sheepr ARGS` with this state and these variables, SIGKILLed after `secs` (code None);
+/// (exit code, stderr, how long it ran).
+fn sheepr_within(s: &Path, args: &[&str], env: &[(&str, &str)], secs: u64) -> (Option<i32>, String, Duration) {
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let err = std::env::temp_dir().join(format!("sr-sw-said-{}-{n}.err", std::process::id()));
-    let mut c = Command::new(sheepr()).arg("sweep").args(args).env("SHEEPR_TEST_STATE", s).envs(env.iter().copied()).stderr(std::fs::File::create(&err).unwrap()).spawn().unwrap();
-    let end = Instant::now() + Duration::from_secs(30);
+    let t0 = Instant::now();
+    let mut c = Command::new(sheepr())
+        .args(args)
+        .env("SHEEPR_TEST_STATE", s)
+        .envs(env.iter().copied())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&err).unwrap())
+        .spawn()
+        .unwrap();
+    let end = t0 + Duration::from_secs(secs);
     let code = loop {
         if let Some(st) = c.try_wait().unwrap() {
             break st.code();
@@ -197,9 +214,42 @@ fn sweep_said_with(s: &Path, args: &[&str], env: &[(&str, &str)]) -> (Option<i32
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    let took = t0.elapsed();
     let text = std::fs::read_to_string(&err).unwrap_or_default();
     let _ = std::fs::remove_file(&err);
+    (code, text, took)
+}
+
+/// `sheepr sweep --strict` with this state and these variables, within 10 s (then KILL, code
+/// None); (exit code, stderr).
+fn strict(s: &Path, env: &[(&str, &str)]) -> (Option<i32>, String) {
+    let (code, text, _) = sheepr_within(s, &["sweep", "--strict"], env, 10);
     (code, text)
+}
+
+/// The lines of `err` that name `file`.
+fn naming<'a>(err: &'a str, file: &str) -> Vec<&'a str> {
+    err.lines().filter(|l| l.contains(file)).collect()
+}
+
+/// A file `name` with `text` in this boot's journal folder `here` of state `s` (0600; the
+/// folders 0700).
+fn plant(s: &Path, here: &str, name: &str, text: &str) -> PathBuf {
+    let dir = s.join("jobs").join(here);
+    std::fs::create_dir_all(&dir).unwrap();
+    mode(&s.join("jobs"), 0o700);
+    mode(&dir, 0o700);
+    let p = dir.join(name);
+    std::fs::write(&p, text).unwrap();
+    mode(&p, 0o600);
+    p
+}
+
+/// A FIFO at `p`.
+fn mkfifo(p: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", p.display());
 }
 
 fn mode(p: &Path, m: u32) {
@@ -772,6 +822,9 @@ fn a_reused_journaled_pid_is_gone_not_withheld() {
 /// Review P2-9 (other-user leg only): a journal the leg planted as root, owned by another user,
 /// naming this user's decoy with its correct identity, is not swept; the same journal owned by
 /// this user is (the control). The leg passes the directories and the decoy in SR_PLANTED.
+/// Issue #15 (`--strict`): another user's file is counted (3), and its line says sheepr will not
+/// read it and to check how it got there, never "remove"; the action (checked, and removed: its
+/// folder is this user's), the next strict sweep exits 0.
 #[test]
 fn another_users_journal_is_never_swept() {
     let Ok(planted) = std::env::var("SR_PLANTED") else {
@@ -783,7 +836,17 @@ fn another_users_journal_is_never_swept() {
     let (foreign, own, p, rec) = (PathBuf::from(v[0]), PathBuf::from(v[1]), (v[2].parse::<i32>().unwrap(), v[3].parse::<u64>().unwrap()), PathBuf::from(v[4]));
     let d = scratch("planted");
     let (code, err) = sweep_said(&foreign, &[]);
+    let (code3, err3) = strict(&foreign, &[]);
     let (alive, n) = (common::alive(p), counted(&rec));
+    let planted_journal = journals(&foreign).into_iter().find(|j| j.ends_with("j-0badf00d.journal")).expect("the planted journal");
+    let removed = std::fs::remove_file(&planted_journal).is_ok();
+    let (code4, err4) = strict(&foreign, &[]);
+    assert_eq!(code3, Some(3), "--strict: {err3}");
+    let l = naming(&err3, "j-0badf00d.journal");
+    assert!(l.len() == 1 && l[0].contains("not this user's file; sheepr will not read it; check how it got there"), "--strict: {err3}");
+    assert!(!err3.contains("remove"), "--strict: {err3}");
+    assert!(removed, "the planted journal could not be removed from this user's folder");
+    assert_eq!((code4, err4.as_str()), (Some(0), ""), "--strict, after the action");
     let (code2, err2) = sweep_said(&own, &[]);
     let gone = !common::alive(p);
     assert_eq!(code, Some(0));
@@ -1655,5 +1718,387 @@ fn a_debug_sweep_reaps_only_a_folder_its_cell_marked() {
     assert!(whole(&in_linked), "a debug sweep took a symlink for the mark");
     assert_eq!(code, Some(0), "{said}");
     assert!(!ctl.exists() && said.contains("removed 1 registration folder"), "control: the marked folder's dead folder is removed: {said}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Issue #15, step 2: `sweep --strict` exits 3 when a cause it cannot clear by itself remains. Each
+// counted cause is one stderr line that names the file and what clears it; each row applies that
+// action, and the next strict sweep exits 0. What a sweep leaves on purpose is never counted.
+
+/// A file in the journal folder that holds no job (opened, locked, read whole: no header line) is
+/// counted: `sweep --strict` exits 3, and its one line says to remove it; without `--strict` the
+/// same line, exit 0 (nothing changes). Removed, the next strict sweep exits 0 and says nothing.
+#[test]
+fn strict_counts_a_file_that_holds_no_job_until_it_is_removed() {
+    let d = scratch("nojob");
+    let (here, _, _) = folder(&d);
+    let s = state(&d);
+    let bad = plant(&s, &here, "j-b4d.journal", "not a journal\n");
+    let (code, err) = strict(&s, &[]);
+    assert_eq!(code, Some(3), "{err}");
+    let l = naming(&err, "j-b4d.journal");
+    assert!(l.len() == 1 && l[0].contains("it holds no job; remove it"), "{err}");
+    let (code, err) = sweep_said(&s, &[]);
+    assert_eq!(code, Some(0), "without --strict: {err}");
+    assert_eq!(naming(&err, "j-b4d.journal").len(), 1, "without --strict, the same line: {err}");
+    std::fs::remove_file(&bad).unwrap();
+    let (code, err) = strict(&s, &[]);
+    assert_eq!((code, err.as_str()), (Some(0), ""), "removed");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N5, N6: what is not a regular file is not a journal: a FIFO, a folder, a symlink (to a valid
+/// journal elsewhere: never followed), each named `*.journal` in this boot's folder. `sweep
+/// --strict` returns at once (before, a FIFO hung it: its open waited for a writer), exits 3, and
+/// its one line says to remove it. Removed, the next strict sweep exits 0.
+#[test]
+fn strict_counts_what_is_not_a_journal_until_it_is_removed() {
+    let d = scratch("notj");
+    let (here, boot, pidns) = folder(&d);
+    for kind in ["fifo", "folder", "symlink"] {
+        let s = state(&d.join(kind));
+        let dir = s.join("jobs").join(&here);
+        std::fs::create_dir_all(&dir).unwrap();
+        mode(&s.join("jobs"), 0o700);
+        mode(&dir, 0o700);
+        let p = dir.join("j-n0tj.journal");
+        match kind {
+            "fifo" => mkfifo(&p),
+            "folder" => {
+                std::fs::create_dir(&p).unwrap();
+                mode(&p, 0o700);
+            }
+            _ => {
+                let real = forge(&state(&d.join("elsewhere")), &here, "j-n0tj", "default", &boot, &pidns, &[], false);
+                std::os::unix::fs::symlink(&real, &p).unwrap();
+            }
+        }
+        let (code, err) = strict(&s, &[]);
+        assert!(code.is_some(), "{kind}: the sweep did not return in 10 s");
+        assert_eq!(code, Some(3), "{kind}: {err}");
+        let l = naming(&err, "j-n0tj.journal");
+        assert!(l.len() == 1 && l[0].contains("not a journal; remove it"), "{kind}: {err}");
+        if kind == "folder" {
+            std::fs::remove_dir(&p).unwrap();
+        } else {
+            std::fs::remove_file(&p).unwrap();
+        }
+        let (code, err) = strict(&s, &[]);
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{kind}: removed");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N5: a journal sweep may not open (EPERM from the seam, as any user; EACCES from a real mode
+/// 000, not as root) is counted with "check its mode", never "remove": the journal and its
+/// member are left. The action (its mode put right; for the seam, the seam left out): the next
+/// strict sweep exits 0 and sweeps the job.
+#[test]
+fn strict_counts_a_journal_it_may_not_open_until_its_mode_is_fixed() {
+    let d = scratch("mode");
+    let (here, boot, pidns) = folder(&d);
+    for (name, real) in [("EPERM", false), ("EACCES", true)] {
+        if real && unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped {name}: root opens a file of any mode");
+            continue;
+        }
+        let s = state(&d.join(name));
+        let (mut c, p, _r) = decoy(&d, &format!("decoy-{name}"));
+        let j = forge(&s, &here, "j-m0de", "default", &boot, &pidns, &[p], false);
+        let _restore = Modes(vec![j.clone()]);
+        if real {
+            mode(&j, 0o000);
+        }
+        let env: Vec<(&str, &str)> = if real { vec![] } else { vec![("SHEEPR_TEST_JOURNAL_ERRNO", "open:EPERM:j-m0de.journal")] };
+        let (code, err) = strict(&s, &env);
+        let alive = common::alive(p);
+        assert_eq!(code, Some(3), "{name}: {err}");
+        let l = naming(&err, "j-m0de.journal");
+        assert!(l.len() == 1 && l[0].contains(&format!("({name}); check its mode")), "{name}: {err}");
+        assert!(!err.contains("remove"), "{name}: {err}");
+        assert!(j.exists() && alive, "{name}: the journal and its member are left");
+        if real {
+            mode(&j, 0o600);
+        }
+        let (code, err) = strict(&s, &[]);
+        let gone = wait_until(5, || !common::alive(p));
+        end_decoy(&mut c);
+        assert_eq!((code, err.contains(".journal")), (Some(0), false), "{name}: after the action: {err}");
+        assert!(gone && !j.exists(), "{name}: the action applied, the job is swept");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N5, round 2's P2-1: an error that a retry may clear (EMFILE, ENFILE, ENOMEM at the open;
+/// ENOLCK at the lock, as on a network mount; EIO at the read, from the seam) is counted with "try
+/// again", never "remove": it may be a live job's journal, and the open, lock and lock rows are on
+/// one, which is left in place. Tried again (the seam left out), the strict sweep exits 0: the
+/// live job is not counted, and the dead job of the read row is swept.
+#[test]
+fn strict_counts_an_error_a_retry_may_clear_and_never_says_remove() {
+    let d = scratch("retry");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let go = d.join("go");
+    let script = format!(r#"while [ ! -e "{}" ]; do sleep 0.05; done"#, go.display());
+    let mut live = Command::new(sheepr()).args(["run", "--no-sweep", "--", "/bin/sh", "-c", &script]).env("SHEEPR_TEST_STATE", &s).env("SHEEPR_TEST_JOB_ID", "11ve0000").spawn().unwrap();
+    let _go = GoOnDrop(go.clone());
+    let lj = s.join("jobs").join(&here).join("j-11ve0000.journal");
+    assert!(wait_until(15, || lj.exists()), "the live job's journal");
+    for (stage, errno) in [("open", "EMFILE"), ("open", "ENFILE"), ("open", "ENOMEM"), ("lock", "ENOLCK")] {
+        let seam = format!("{stage}:{errno}:j-11ve0000.journal");
+        let (code, err) = strict(&s, &[("SHEEPR_TEST_JOURNAL_ERRNO", &seam)]);
+        assert_eq!(code, Some(3), "{seam}: {err}");
+        let l = naming(&err, "j-11ve0000.journal");
+        assert!(l.len() == 1 && l[0].contains(&format!("({errno}); try again")), "{seam}: {err}");
+        assert!(!err.contains("remove"), "{seam}: {err}");
+        assert!(lj.exists(), "{seam}: the live job's journal is left");
+        let (code, err) = strict(&s, &[]);
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{seam}: tried again");
+    }
+    // the read comes after the lock, which a live job holds: a dead job's journal
+    let (mut c, p, _r) = decoy(&d, "decoy");
+    let dj = forge(&s, &here, "j-dead0000", "default", &boot, &pidns, &[p], false);
+    let (code, err) = strict(&s, &[("SHEEPR_TEST_JOURNAL_ERRNO", "read:EIO:j-dead0000.journal")]);
+    let alive = common::alive(p);
+    let (code2, err2) = strict(&s, &[]);
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    std::fs::write(&go, b"").unwrap();
+    let _ = live.wait();
+    assert_eq!(code, Some(3), "read: {err}");
+    let l = naming(&err, "j-dead0000.journal");
+    assert!(l.len() == 1 && l[0].contains("(EIO); try again"), "read: {err}");
+    assert!(!err.contains("remove") && alive, "read: {err}");
+    assert_eq!((code2, err2.contains(".journal")), (Some(0), false), "read, tried again: {err2}");
+    assert!(gone && !dj.exists(), "read, tried again: the dead job is swept");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N4: a journal that vanishes between the listing and the open, or after the lock (the name no
+/// longer the file the lock is on), is a job that just ended: no line, not counted. The seam
+/// unlinks a file that holds no job at that point; the control, the same file left in place, is
+/// counted.
+#[test]
+fn strict_does_not_count_a_journal_that_vanished() {
+    let d = scratch("vanish");
+    let (here, _, _) = folder(&d);
+    for stage in ["open", "lock"] {
+        let s = state(&d.join(stage));
+        let f = plant(&s, &here, "j-g0ne0000.journal", "not a journal\n");
+        let (code, err) = strict(&s, &[]);
+        assert_eq!(code, Some(3), "{stage}: control: {err}");
+        let seam = format!("{stage}:j-g0ne0000.journal");
+        let (code, err) = strict(&s, &[("SHEEPR_TEST_JOURNAL_VANISH", &seam)]);
+        assert!(!f.exists(), "{stage}: the seam did not unlink it (the row proves nothing)");
+        assert_eq!((code, naming(&err, "j-g0ne0000").len()), (Some(0), 0), "{stage}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// What a sweep leaves on purpose is never counted (exit 0 under `--strict`), each alone in a
+/// state of its own: another owner's journal, also of another boot and also one whose lock fails
+/// (its header is read first, whatever else is wrong with it), with no line; a header of another
+/// boot or pid namespace in this folder (with its line, as before); a journal kept on purpose
+/// (`--leave-strays`); a job swept clean; nothing to sweep. Each row's control: a file that holds
+/// no job added to the same state gives 3, so the row's sweep did read that state.
+#[test]
+fn strict_does_not_count_what_a_sweep_leaves_on_purpose() {
+    let d = scratch("onpurpose");
+    let (here, boot, pidns) = folder(&d);
+    let zero = "00000000-0000-0000-0000-000000000000";
+    let (bt, pn) = (boot.as_str(), pidns.as_str());
+    // (row, owner, boot, pidns, leave-strays, the sweep's arguments, the seam, lines naming it)
+    let rows: Vec<(&str, &str, &str, &str, bool, Vec<&str>, Option<&str>, usize)> = vec![
+        ("another owner, another boot", "liveapp", zero, pn, false, vec![], None, 0),
+        ("another owner, a lock error", "liveapp", bt, pn, false, vec![], Some("lock:ENOLCK:j-0badf00d.journal"), 0),
+        ("its owner's sweep: another boot", "liveapp", zero, pn, false, vec!["--owner", "liveapp"], None, 1),
+        ("another boot", "default", zero, pn, false, vec![], None, 1),
+        ("another pid namespace", "default", bt, "12345.678", false, vec![], None, 1),
+        ("kept on purpose", "default", bt, pn, true, vec![], None, 0),
+        ("swept clean", "default", bt, pn, false, vec![], None, 0),
+    ];
+    for (i, (row, owner, hb, hp, strays, args, seam, lines)) in rows.into_iter().enumerate() {
+        let s = state(&d.join(format!("r{i}")));
+        let j = forge(&s, &here, "j-0badf00d", owner, hb, hp, &[], strays);
+        let mut all = vec!["sweep", "--strict"];
+        all.extend(args.iter().copied());
+        let env: Vec<(&str, &str)> = seam.map(|v| vec![("SHEEPR_TEST_JOURNAL_ERRNO", v)]).unwrap_or_default();
+        let (code, err, _) = sheepr_within(&s, &all, &env, 10);
+        assert_eq!(code, Some(0), "{row}: {err}");
+        assert_eq!(naming(&err, "j-0badf00d.journal").len(), lines, "{row}: {err}");
+        assert!(!err.contains("remove") && !err.contains("try again"), "{row}: {err}");
+        assert_eq!(j.exists(), row != "swept clean", "{row}: the journal");
+        plant(&s, &here, "j-b4d.journal", "not a journal\n");
+        let (code, err, _) = sheepr_within(&s, &all, &env, 10);
+        assert_eq!(code, Some(3), "{row}: control: {err}");
+    }
+    let fresh = state(&d.join("fresh"));
+    let (code, err) = strict(&fresh, &[]);
+    assert_eq!((code, err.as_str()), (Some(0), ""), "nothing to sweep");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A job whose sweep is skipped because it holds the sweeper's own ancestor is counted: run from
+/// inside a dead job (its member W runs `sheepr sweep --strict`), the strict sweep exits 3 and its
+/// line says the job clears when that process ends. The action (W ends): the next strict sweep
+/// exits 0 and ends the job's other members. (W then execs the fixture: the wall reads no
+/// environment of a platform binary such as `/bin/sleep`, so a debug sweep could not end one.)
+#[test]
+fn strict_counts_a_job_that_holds_its_ancestor_until_that_process_ends() {
+    let d = scratch("strictanc");
+    let s = state(&d);
+    let (go, rc, me, said, wr) = (d.join("go"), d.join("rc"), d.join("me"), d.join("said"), d.join("w"));
+    let w = format!(r#"echo $$ > "{}"; while [ ! -e "{}" ]; do sleep 0.02; done; sheepr sweep --strict 2> "{}"; echo $? > "{}"; exec "$FX" sigcount "{}""#, me.display(), go.display(), said.display(), rc.display(), wr.display());
+    let (wit, rr) = (d.join("witness"), d.join("root"));
+    let script = format!(r#"/bin/sh -c '{}' & "$FX" sigcount "{}" & exec "$FX" sigcount "{}""#, w.replace('\'', r#"'\''"#), wit.display(), rr.display());
+    let mut c = Command::new(sheepr()).args(["run", "--", "/bin/sh", "-c", &script]).env("FX", fixture()).env("SHEEPR_TEST_STATE", &s).spawn().unwrap();
+    let wpid: Option<i32> = wait_until(15, || std::fs::read_to_string(&me).is_ok_and(|t| !t.trim().is_empty())).then(|| std::fs::read_to_string(&me).unwrap().trim().parse().unwrap());
+    let wid = wpid.and_then(sheepr::ident::identity);
+    let journaled_w = wpid.is_some_and(|p| wait_until(10, || journaled(&s).contains(&p)));
+    let witness = wait_until(10, || !records(&wit).is_empty()).then(|| records(&wit)[0]);
+    let journaled_wit = witness.is_some_and(|p| wait_until(10, || journaled(&s).contains(&p.0)));
+    common::send_child(&mut c, libc::SIGKILL);
+    let _ = c.wait();
+    std::fs::write(&go, b"").unwrap();
+    let finished = wait_until(20, || std::fs::read_to_string(&rc).is_ok_and(|t| t.ends_with('\n')));
+    let code: Option<i32> = std::fs::read_to_string(&rc).ok().and_then(|t| t.trim().parse().ok());
+    let err = std::fs::read_to_string(&said).unwrap_or_default();
+    let wit_alive = witness.is_some_and(common::alive);
+    // the action: that process (W) ends
+    if let Some(p) = wpid.zip(wid) {
+        common::send(p.0, p.1, libc::SIGKILL);
+    }
+    let w_gone = wpid.zip(wid).is_some_and(|p| wait_until(5, || !common::alive(p)));
+    let (code2, err2) = strict(&s, &[]);
+    let wit_gone = witness.is_some_and(|p| wait_until(5, || !common::alive(p)));
+    for p in records(&rr).into_iter().chain(witness) {
+        common::send(p.0, p.1, libc::SIGKILL);
+    }
+    assert!(journaled_w && journaled_wit, "W and the witness were journaled as members");
+    assert!(finished, "the inner sweep did not end");
+    assert_eq!(code, Some(3), "{err}");
+    assert!(err.lines().any(|l| l.contains("skipped job j-") && l.contains("it clears when that process ends")), "{err}");
+    assert!(wit_alive, "the job that holds the sweep's ancestor was swept");
+    assert!(w_gone, "W did not end");
+    assert_eq!(code2, Some(0), "after the action: {err2}");
+    assert!(wit_gone && journals(&s).is_empty(), "after the action, the job is swept: {err2}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// No boot id (a seam gives its errno): with ENOENT, nothing to sweep when no `jobs/` folder holds
+/// a journal (0, silent: a fresh state, an empty folder); when one does (an old boot's, here), it
+/// is counted: 3, one line that names the cause and says to try again, and the folder is left.
+/// Another errno is counted with nothing in `jobs/` too. Without `--strict`: the line, exit 0.
+/// The action (tried again, the boot id read): 0.
+#[test]
+fn strict_without_a_boot_id_counts_only_when_a_journal_may_be_missed() {
+    let d = scratch("nobootid");
+    let seam = |e: &'static str| [("SHEEPR_TEST_BOOT_ID_ERRNO", e)];
+    let fresh = state(&d.join("fresh"));
+    let empty = state(&d.join("empty"));
+    let zero = "00000000-0000-0000-0000-000000000000-0";
+    std::fs::create_dir_all(empty.join("jobs").join(zero)).unwrap();
+    mode(&empty.join("jobs"), 0o700);
+    mode(&empty.join("jobs").join(zero), 0o700);
+    for (n, s) in [("fresh", &fresh), ("empty", &empty)] {
+        let (code, err) = strict(s, &seam("ENOENT"));
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{n}");
+    }
+    let old = state(&d.join("old"));
+    let oj = plant(&old, zero, "j-0ldb00t0.journal", "not read\n");
+    let (code, err) = strict(&old, &seam("ENOENT"));
+    let line = "cannot read the boot id (ENOENT); nothing was swept; try again";
+    assert_eq!(code, Some(3), "{err}");
+    assert_eq!(err.lines().filter(|l| l.contains(line)).count(), 1, "{err}");
+    assert!(oj.exists(), "the old boot's folder is left");
+    let (code, err) = sweep_said_with(&old, &[], &seam("ENOENT"));
+    assert_eq!((code, err.lines().filter(|l| l.contains(line)).count()), (Some(0), 1), "without --strict: {err}");
+    let (code, err) = strict(&fresh, &seam("EACCES"));
+    assert_eq!(code, Some(3), "EACCES: {err}");
+    assert!(err.contains("cannot read the boot id (EACCES); nothing was swept; try again"), "EACCES: {err}");
+    for (n, s) in [("old", &old), ("fresh", &fresh)] {
+        let (code, err) = strict(s, &[]);
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{n}: tried again");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A missed kill deadline (125) wins over a counted cause (3): a dead job whose member a seam
+/// makes unkillable, with a file that holds no job beside it. The control, the same state
+/// without the seam: the job is swept and the file still counts, 3.
+#[test]
+fn a_missed_deadline_wins_over_strict() {
+    let d = scratch("deadline3");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let (mut c, p, _r) = decoy(&d, "decoy");
+    forge(&s, &here, "j-0badf00d", "default", &boot, &pidns, &[p], false);
+    plant(&s, &here, "j-b4d.journal", "not a journal\n");
+    let unkillable = p.0.to_string();
+    let (code, err) = strict(&s, &[("SHEEPR_TEST_UNKILLABLE", &unkillable), ("SHEEPR_TEST_DEADLINE_MS", "500")]);
+    let (code2, err2) = strict(&s, &[]);
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    assert_eq!(code, Some(125), "{err}");
+    assert_eq!(naming(&err, "j-b4d.journal").len(), 1, "the counted cause is still said: {err}");
+    assert_eq!(code2, Some(3), "control: {err2}");
+    assert!(gone, "control: the job was swept");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N6, the class: no reader of the journal folder hangs on a FIFO named `*.journal` (before, each
+/// open waited for a writer): `strays`, `doctor`, `kill` of a job id that names it, and `kill` of
+/// a pid (it reads every journal for the pid's journaled subtree) each return within 10 s. The
+/// pid is a decoy, so `kill <pid>` ends it (exit 0).
+#[test]
+fn a_fifo_named_like_a_journal_hangs_no_reader() {
+    let d = scratch("fifo");
+    let (here, _, _) = folder(&d);
+    let s = state(&d);
+    let dir = s.join("jobs").join(&here);
+    std::fs::create_dir_all(&dir).unwrap();
+    mode(&s.join("jobs"), 0o700);
+    mode(&dir, 0o700);
+    mkfifo(&dir.join("j-f1f0f1f0.journal"));
+    let (mut c, p, _r) = decoy(&d, "decoy");
+    let pid = p.0.to_string();
+    let mut got = Vec::new();
+    for args in [vec!["strays"], vec!["doctor"], vec!["kill", "j-f1f0"], vec!["kill", pid.as_str()]] {
+        let (code, err, took) = sheepr_within(&s, &args, &[("SHEEPR_TEST_DEADLINE_MS", "2000")], 10);
+        got.push((args.join(" "), code, took, err));
+    }
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    for (what, code, took, err) in &got {
+        assert!(code.is_some(), "{what} did not return in 10 s ({took:?}): {err}");
+    }
+    assert_eq!(got[2].1, Some(1), "kill of the FIFO's job id refuses: {}", got[2].3);
+    assert_eq!(got[3].1, Some(0), "kill of the decoy: {}", got[3].3);
+    assert!(gone, "kill of the decoy ended it");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N7: `kill` of a dead job's id still takes a lock error (a seam: ENOLCK, as on a network mount)
+/// for a live job's: it refuses as busy (exit 1) and signals nothing. The control, without the
+/// seam: the job is swept, exit 0.
+#[test]
+fn kill_job_takes_a_lock_error_for_a_live_job() {
+    let d = scratch("killlock");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let (mut c, p, r) = decoy(&d, "decoy");
+    let j = forge(&s, &here, "j-0badf00d", "default", &boot, &pidns, &[p], false);
+    let env = [("SHEEPR_TEST_JOURNAL_ERRNO", "lock:ENOLCK:j-0badf00d.journal"), ("SHEEPR_TEST_DEADLINE_MS", "2000")];
+    let (code, err, _) = sheepr_within(&s, &["kill", "j-0badf00d"], &env, 10);
+    let (alive, n) = (common::alive(p), counted(&r));
+    let (code2, err2, _) = sheepr_within(&s, &["kill", "j-0badf00d"], &env[1..], 10);
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("busy"), "{err}");
+    assert!(alive && n == 0, "the job's member got {n} signal(s)");
+    assert_eq!(code2, Some(0), "control: {err2}");
+    assert!(gone && !j.exists(), "control: the job is swept");
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -724,12 +724,13 @@ fn job_target(prefix: &str, dry_run: bool, ps: bool) -> Result<JobTarget, i32> {
     };
     let j = match crate::sweep::open_fenced(&path) {
         Ok(j) => j,
-        Err(crate::sweep::Skip::Live) => {
+        // every lock error too (round 3's N7: `sweep --strict` counts it; here it is a live job's)
+        Err(s) if s.live() => {
             crate::fail!("sheepr: job {prefix} is busy (another sweep, or its supervisor is just ending). Nothing was signalled.");
             return Err(1);
         }
-        Err(crate::sweep::Skip::Unsafe(why)) | Err(crate::sweep::Skip::Unreadable(why)) | Err(crate::sweep::Skip::Kept(why)) => {
-            crate::fail!("sheepr: refusing to sweep job {prefix}: {why}. Nothing was signalled.");
+        Err(s) => {
+            crate::fail!("sheepr: refusing to sweep job {prefix}: {}. Nothing was signalled.", s.why());
             return Err(1);
         }
     };

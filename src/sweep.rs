@@ -66,14 +66,159 @@ pub struct Journal {
     torn: bool,
 }
 
+/// Which step on a journal failed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Stage {
+    Open,
+    Lock,
+    Read,
+}
+
+impl Stage {
+    fn verb(self) -> &'static str {
+        match self {
+            Stage::Open => "open",
+            Stage::Lock => "lock",
+            Stage::Read => "read",
+        }
+    }
+}
+
+/// A cause `sweep --strict` counts (exit 3, issue #15): its stderr line names the file and what
+/// clears it.
+#[derive(Debug)]
+pub enum Cause {
+    /// opened, locked and read whole, and no header line (a journal is linked into place only
+    /// once its header is written, so this is no job's file)
+    NoJob,
+    /// not a regular file: a FIFO, a folder, a symlink, a device
+    NotAJournal,
+    /// another user's file: never read
+    OtherUser,
+    /// an open, lock or read error, with its errno
+    Error(Stage, i32),
+}
+
 /// Why a journal was not swept.
 pub enum Skip {
+    /// its lock is held (EWOULDBLOCK): a live job
     Live,
-    Unsafe(String),
-    Unreadable(String),
+    /// gone between the listing and the open, or no longer the file the lock is on (a job that
+    /// ends cleanly unlinks its journal before it unlocks it): never said, never counted
+    Gone,
+    /// its header names another boot or pid namespace: its processes cannot be this boot's
+    /// (said, never counted)
+    Foreign,
     /// its job chose to keep its strays (`--leave-strays`): not a problem, so `sweep` and the
     /// auto-sweep never say it (`kill <job>` still names it in its refusal)
-    Kept(String),
+    Kept,
+    /// a cause `sweep --strict` counts
+    Counted(Cause),
+}
+
+impl Skip {
+    /// What an errno at `stage` means: ENOENT at the open is a job that just ended, ELOOP there
+    /// a symlink (O_NOFOLLOW), EWOULDBLOCK at the lock a live job; any other is counted.
+    pub fn of(stage: Stage, errno: i32) -> Skip {
+        match (stage, errno) {
+            (Stage::Open, libc::ENOENT) => Skip::Gone,
+            (Stage::Open, libc::ELOOP) => Skip::Counted(Cause::NotAJournal),
+            (Stage::Lock, e) if e == libc::EWOULDBLOCK => Skip::Live,
+            (s, e) => Skip::Counted(Cause::Error(s, e)),
+        }
+    }
+
+    /// A live job's journal, for the auto-sweep and `kill`: its lock is held, it went, or any
+    /// other lock error (fail safe, PLAN.md §3.5: the class `sweep --strict` counts a lock error
+    /// in is for its exit code and its line only, round 3's N7).
+    pub fn live(&self) -> bool {
+        matches!(self, Skip::Live | Skip::Gone | Skip::Counted(Cause::Error(Stage::Lock, _)))
+    }
+
+    /// The cause and what clears it, for a skip `sweep --strict` counts; None for one it does not
+    /// count. Only a file that holds no job and what is not a journal say "remove": a read error
+    /// can be a live job's journal's.
+    pub fn counted(&self) -> Option<String> {
+        let Skip::Counted(c) = self else { return None };
+        Some(match c {
+            Cause::NoJob => "it holds no job; remove it".into(),
+            Cause::NotAJournal => "not a journal; remove it".into(),
+            Cause::OtherUser => "not this user's file; sheepr will not read it; check how it got there".into(),
+            Cause::Error(s, e) => {
+                let name = crate::steps::errno_name(*e).map_or_else(|| format!("errno {e}"), String::from);
+                let action = if matches!(*e, libc::EACCES | libc::EPERM) { "check its mode" } else { "try again" };
+                format!("could not {} it ({name}); {action}", s.verb())
+            }
+        })
+    }
+
+    /// Why, in words, for every skip: `kill <job>`'s refusal, the auto-sweep's note, `sweep`'s line.
+    pub fn why(&self) -> String {
+        match self {
+            Skip::Live => "it is busy (a live job, or another sweep)".into(),
+            Skip::Gone => "it is gone (its job just ended)".into(),
+            Skip::Foreign => "another boot or pid namespace".into(),
+            Skip::Kept => "its job left its strays on purpose (--leave-strays)".into(),
+            Skip::Counted(_) => self.counted().unwrap_or_default(),
+        }
+    }
+}
+
+/// Debug seam SHEEPR_TEST_JOURNAL_ERRNO=<open|lock|read>:<errno>:<file name>: that step on that
+/// journal fails with that errno (a name or a number), and the call is not made. It is traced
+/// (`seam: <step> <errno> <file name>`) when it fires.
+fn seam_errno(stage: Stage, path: &Path) -> Option<i32> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let v = std::env::var("SHEEPR_TEST_JOURNAL_ERRNO").ok()?;
+    let mut it = v.splitn(3, ':');
+    let (s, e, name) = (it.next()?, it.next()?, it.next()?);
+    if s != stage.verb() || path.file_name()? != std::ffi::OsStr::new(name) {
+        return None;
+    }
+    let errno = crate::steps::errno_of(e)?;
+    crate::note(format!("seam: {s} {e} {name}"));
+    Some(errno)
+}
+
+/// Debug seam SHEEPR_TEST_JOURNAL_VANISH=<open|lock>:<file name>: that journal is unlinked just
+/// before its open, or just after its lock, as when its job ends meanwhile.
+fn seam_vanish(at: &str, path: &Path) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(v) = std::env::var("SHEEPR_TEST_JOURNAL_VANISH") else { return };
+    if v.split_once(':').is_some_and(|(a, n)| a == at && path.file_name().is_some_and(|f| f == n)) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Open the journal at `path` to read (`append`: to append), never through a symlink and never
+/// waiting (O_NONBLOCK: the open of a FIFO named like a journal would wait for a writer, round 3's
+/// N6), and check it before any read: this user's file, and a regular file.
+fn open_checked(path: &Path, append: bool) -> Result<(std::fs::File, std::fs::Metadata), Skip> {
+    if !append {
+        if let Some(e) = seam_errno(Stage::Open, path) {
+            return Err(Skip::of(Stage::Open, e));
+        }
+    }
+    let mut o = std::fs::OpenOptions::new();
+    if append {
+        o.append(true);
+    } else {
+        o.read(true);
+    }
+    let errno = |e: std::io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    let file = o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).map_err(|e| Skip::of(Stage::Open, errno(e)))?;
+    let meta = file.metadata().map_err(|e| Skip::Counted(Cause::Error(Stage::Open, errno(e))))?;
+    if meta.uid() != unsafe { libc::geteuid() } {
+        return Err(Skip::Counted(Cause::OtherUser));
+    }
+    if !meta.file_type().is_file() {
+        return Err(Skip::Counted(Cause::NotAJournal));
+    }
+    Ok((file, meta))
 }
 
 /// A folder is safe to act on: a real directory (not a symlink), this user's, and nobody else
@@ -99,31 +244,33 @@ fn num(j: &Json, k: &str) -> Option<f64> {
 /// Open, check and lock the journal at `path`. Only complete (newline-terminated) lines that
 /// parse count; the first must be the header.
 pub fn open(path: &Path) -> Result<Journal, Skip> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        // gone between the listing and this open: a job that ended cleanly (or another sweep's),
-        // as a name that no longer matches the lock below
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { Skip::Live } else { Skip::Unreadable(format!("{e}")) })?;
-    let meta = file.metadata().map_err(|e| Skip::Unreadable(format!("{e}")))?;
-    if meta.uid() != unsafe { libc::geteuid() } {
-        return Err(Skip::Unsafe("the journal belongs to another user".into()));
-    }
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(Skip::Live); // held: a live job (any other lock error counts as live too)
-    }
+    // gone between the listing and this open (ENOENT): a job that ended cleanly (or another
+    // sweep's), as a name that no longer matches the lock below
+    seam_vanish("open", path);
+    let (file, meta) = open_checked(path, false)?;
+    // held (EWOULDBLOCK): a live job; any other lock error is counted by `sweep --strict`, and is
+    // a live job's for the auto-sweep and `kill` (`Skip::live`)
+    let lock = match seam_errno(Stage::Lock, path) {
+        Some(e) => Err(e),
+        None if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 => Ok(()),
+        None => Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)),
+    };
+    lock.map_err(|e| Skip::of(Stage::Lock, e))?;
+    seam_vanish("lock", path);
     // the name must still be the file this lock is on (a clean end unlinks before it unlocks)
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.ino() == meta.ino() && m.dev() == meta.dev() => {}
-        _ => return Err(Skip::Live),
+        _ => return Err(Skip::Gone),
     }
     let mut text = Vec::new();
-    std::io::Read::read_to_end(&mut &file, &mut text).map_err(|e| Skip::Unreadable(format!("{e}")))?;
+    match seam_errno(Stage::Read, path) {
+        Some(e) => return Err(Skip::of(Stage::Read, e)),
+        None => std::io::Read::read_to_end(&mut &file, &mut text).map_err(|e| Skip::of(Stage::Read, e.raw_os_error().unwrap_or(libc::EIO)))?,
+    };
     let torn = !text.is_empty() && text.last() != Some(&b'\n');
     let body = &text[..text.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1)];
     let mut lines = String::from_utf8_lossy(body).lines().filter_map(|l| json::parse(l).ok()).collect::<Vec<_>>().into_iter();
-    let h = lines.next().filter(|h| h.get("kind").and_then(Json::str) == Some("header")).ok_or_else(|| Skip::Unreadable("no header".into()))?;
+    let h = lines.next().filter(|h| h.get("kind").and_then(Json::str) == Some("header")).ok_or(Skip::Counted(Cause::NoJob))?;
     let mut j = Journal {
         path: path.to_path_buf(),
         file,
@@ -157,32 +304,53 @@ pub fn open(path: &Path) -> Result<Journal, Skip> {
 pub fn open_fenced(path: &Path) -> Result<Journal, Skip> {
     let j = open(path)?;
     if Some(j.boot.as_str()) != crate::journal::boot_id().as_deref() || j.pidns != crate::journal::pidns() {
-        return Err(Skip::Unsafe("another boot or pid namespace".into()));
+        return Err(Skip::Foreign);
     }
     if j.leave_strays {
-        return Err(Skip::Kept("its job left its strays on purpose (--leave-strays)".into()));
+        return Err(Skip::Kept);
     }
     Ok(j)
 }
 
-/// A journal's header (job, owner, supervisor), read without its lock: never through a symlink,
-/// only this user's file, and only with this boot's and pid namespace's header.
-pub fn read_header(path: &Path) -> Option<(String, (i32, u64))> {
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).ok()?;
-    if f.metadata().ok()?.uid() != unsafe { libc::geteuid() } {
-        return None;
-    }
+/// A journal's header line, as written.
+pub struct Header {
+    pub job: Option<String>,
+    /// `default` when the header names none (as `open` reads it)
+    pub owner: String,
+    pub boot: Option<String>,
+    pub pidns: Option<String>,
+    pub sup: Option<(i32, u64)>,
+}
+
+/// A journal's header, read without its lock, whatever its boot and pid namespace (a reader
+/// that keeps to this boot's filters them: `read_header`): never through a symlink, only this
+/// user's regular file (`open_checked`).
+pub fn header(path: &Path) -> Option<Header> {
+    let (f, _) = open_checked(path, false).ok()?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut &f, &mut text).ok()?;
     let h = json::parse(text.lines().next()?).ok()?;
-    if h.get("kind").and_then(Json::str) != Some("header")
-        || h.get("boot").and_then(Json::str) != crate::journal::boot_id().as_deref()
-        || h.get("pidns").and_then(Json::str) != Some(crate::journal::pidns().as_str())
-    {
+    if h.get("kind").and_then(Json::str) != Some("header") {
         return None;
     }
-    let s = h.get("sup")?;
-    Some((h.get("job").and_then(Json::str)?.to_string(), (num(s, "pid")? as i32, num(s, "id")? as u64)))
+    let s = |k: &str| h.get(k).and_then(Json::str).map(String::from);
+    Some(Header {
+        job: s("job"),
+        owner: s("owner").unwrap_or_else(|| "default".into()),
+        boot: s("boot"),
+        pidns: s("pidns"),
+        sup: h.get("sup").and_then(|s| Some((num(s, "pid")? as i32, num(s, "id")? as u64))),
+    })
+}
+
+/// A journal's header (job, supervisor), read without its lock: `header`, only with this boot's
+/// and pid namespace's header.
+pub fn read_header(path: &Path) -> Option<(String, (i32, u64))> {
+    let h = header(path)?;
+    if h.boot.as_deref() != crate::journal::boot_id().as_deref() || h.pidns.as_deref() != Some(crate::journal::pidns().as_str()) {
+        return None;
+    }
+    Some((h.job?, h.sup?))
 }
 
 /// Which ids a journal gives as `puniq` links (macOS; Linux has no `puniq`, so none there), read
@@ -268,8 +436,8 @@ impl Journal {
             out.push_str(&format!("{{\"v\":1,\"pid\":{p},\"id\":{id},\"ppid\":null,\"pid_id\":null,\"puniq\":null,\"cmd\":\"\",\"closure\":true}}\n"));
         }
         // the append goes to the file this lock is on (checked by inode)
-        let ok = std::fs::OpenOptions::new().append(true).custom_flags(libc::O_NOFOLLOW).open(&self.path).and_then(|mut f| {
-            let (a, b) = (f.metadata()?, self.file.metadata()?);
+        let ok = open_checked(&self.path, true).map_err(|s| std::io::Error::other(s.why())).and_then(|(mut f, a)| {
+            let b = self.file.metadata()?;
             if a.ino() != b.ino() || a.dev() != b.dev() {
                 return Err(std::io::Error::other("the journal was replaced"));
             }
@@ -297,12 +465,9 @@ pub enum Outcome {
 }
 
 /// The members named by a journal, read without its lock (a live job's: the auto-sweep leaves
-/// them alone). Only this user's file, never through a symlink.
+/// them alone). Only this user's regular file, never through a symlink (`open_checked`).
 pub(crate) fn peek(path: &Path) -> Vec<(i32, u64)> {
-    let Ok(f) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path) else { return Vec::new() };
-    if f.metadata().map_or(true, |m| m.uid() != unsafe { libc::geteuid() }) {
-        return Vec::new();
-    }
+    let Ok((f, _)) = open_checked(path, false) else { return Vec::new() };
     let mut text = String::new();
     let _ = std::io::Read::read_to_string(&mut &f, &mut text);
     text.lines().filter_map(|l| json::parse(l).ok()).filter_map(|l| Some((num(&l, "pid")? as i32, num(&l, "id")? as u64))).collect()
@@ -573,9 +738,10 @@ pub fn auto(owner: &str, quiet: bool) {
     for f in files {
         match open_fenced(&f) {
             Ok(j) => opened.push(j),
-            Err(Skip::Live) => live_named.extend(peek(&f)),
-            Err(Skip::Unsafe(why)) | Err(Skip::Unreadable(why)) => crate::status::add_note(&format!("auto-sweep skipped {}: {why}", f.display())),
-            Err(Skip::Kept(_)) => {}
+            // every lock error too (N7): what its journal names is left alone
+            Err(s) if s.live() => live_named.extend(peek(&f)),
+            Err(Skip::Kept) => {}
+            Err(s) => crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why())),
         }
     }
     let (mut swept, mut killed) = (0usize, 0usize);
@@ -607,7 +773,45 @@ pub fn folder(state: &Path) -> Option<PathBuf> {
     Some(state.join("jobs").join(format!("{}-{}", crate::journal::boot_id()?, crate::journal::pidns())))
 }
 
-pub(crate) const USAGE: &str = "sheepr sweep [--owner NAME]";
+pub(crate) const USAGE: &str = "sheepr sweep [--owner NAME] [--strict]";
+
+/// `sweep` without a boot id (`errno`): it cannot tell which folder is this boot's, so it sweeps
+/// nothing, and leaves the old boot folders as they are. That is nothing to sweep when the boot id
+/// is not there (ENOENT) and no folder of `jobs/` holds a journal; otherwise a journal may be
+/// missed: one line, counted by `--strict` (issue #15).
+fn no_boot_id(state: &Path, errno: i32, strict: bool) -> i32 {
+    if errno == libc::ENOENT && !any_journal(&state.join("jobs")) {
+        return 0;
+    }
+    let name = crate::steps::errno_name(errno).map_or_else(|| format!("errno {errno}"), String::from);
+    say!("sheepr: cannot read the boot id ({name}); nothing was swept; try again.");
+    if strict {
+        3
+    } else {
+        0
+    }
+}
+
+/// Whether a folder of `jobs` (not through a symlink) holds a journal, or cannot be read to rule
+/// it out; a `jobs` that is not there holds none.
+fn any_journal(jobs: &Path) -> bool {
+    let rd = match std::fs::read_dir(jobs) {
+        Ok(rd) => rd,
+        Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+    };
+    for e in rd {
+        let Ok(e) = e else { return true };
+        let p = e.path();
+        if !std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(&p) else { return true };
+        if files.into_iter().any(|f| f.map_or(true, |f| f.path().extension().is_some_and(|x| x == "journal"))) {
+            return true;
+        }
+    }
+    false
+}
 
 pub fn main(args: &[OsString]) -> i32 {
     unsafe {
@@ -619,12 +823,18 @@ pub fn main(args: &[OsString]) -> i32 {
         libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
     }
     let mut owner = "default".to_string();
+    // issue #15: exit 3 when a cause it counts remains (one stderr line each)
+    let mut strict = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_bytes() {
             b"--owner" if i + 1 < args.len() => {
                 owner = args[i + 1].to_string_lossy().into_owned();
                 i += 2;
+            }
+            b"--strict" => {
+                strict = true;
+                i += 1;
             }
             a => {
                 let w = crate::shown(&args[i]);
@@ -656,7 +866,10 @@ pub fn main(args: &[OsString]) -> i32 {
         crate::note("state-unset".into());
         return 0;
     };
-    let Some(dir) = folder(&state) else { return 0 };
+    let dir = match crate::journal::boot_id_or() {
+        Ok(boot) => state.join("jobs").join(format!("{boot}-{}", crate::journal::pidns())),
+        Err(errno) => return no_boot_id(&state, errno, strict),
+    };
     if absent(&dir) {
         return 0;
     }
@@ -681,19 +894,34 @@ pub fn main(args: &[OsString]) -> i32 {
             return 1;
         }
     };
-    let (mut swept, mut killed, mut code) = (0usize, 0usize, 0);
+    // `counted`: the causes `--strict` counts (issue #15), each said on one line
+    let (mut swept, mut killed, mut code, mut counted) = (0usize, 0usize, 0, 0usize);
     for f in files {
+        // another owner's journal is never this sweep's, whatever else is wrong with it: its
+        // header is read first, whatever its boot (an unreadable file has no owner to compare)
+        if header(&f).is_some_and(|h| h.owner != owner) {
+            continue;
+        }
         let j = match open_fenced(&f) {
             Ok(j) => j,
-            Err(Skip::Live) => continue,
-            Err(Skip::Unsafe(why)) | Err(Skip::Unreadable(why)) => {
-                // said, not only noted: the trace exists only in a debug build (issue #15)
-                say!("sheepr: could not sweep {}: {why}. Its processes, if any, were not ended.", crate::kill::clean(&f.display().to_string()));
-                crate::note(format!("sweep skipped {}: {why}", f.display()));
+            // a live job, a job that just ended: never said, never counted
+            Err(Skip::Live) | Err(Skip::Gone) => continue,
+            Err(s @ Skip::Kept) => {
+                crate::note(format!("sweep skipped {}: {}", f.display(), s.why()));
                 continue;
             }
-            Err(Skip::Kept(why)) => {
-                crate::note(format!("sweep skipped {}: {why}", f.display()));
+            Err(s) => {
+                // said, not only noted: the trace exists only in a debug build (issue #15)
+                let shown = crate::kill::clean(&f.display().to_string());
+                match s.counted() {
+                    Some(why) => {
+                        counted += 1;
+                        let tail = if matches!(s, Skip::Counted(Cause::NoJob | Cause::NotAJournal)) { "" } else { " Its processes, if any, were not ended." };
+                        say!("sheepr: could not sweep {shown}: {why}.{tail}");
+                    }
+                    None => say!("sheepr: could not sweep {shown}: {}. Its processes, if any, were not ended.", s.why()),
+                }
+                crate::note(format!("sweep skipped {}: {}", f.display(), s.why()));
                 continue;
             }
         };
@@ -707,7 +935,9 @@ pub fn main(args: &[OsString]) -> i32 {
                 killed += n;
             }
             Outcome::Skipped(why) => {
-                say!("sheepr: skipped job {job}: {why}.");
+                // it holds or started this sweep's process or an ancestor (`skip_reason`)
+                counted += 1;
+                say!("sheepr: skipped job {job}: {why}; it clears when that process ends.");
                 crate::note(format!("sweep skipped {job}: {why}"));
             }
             Outcome::Deadline(c) => code = code.max(c),
@@ -715,6 +945,10 @@ pub fn main(args: &[OsString]) -> i32 {
     }
     if swept > 0 {
         say!("sheepr: swept {swept} dead job{} ({killed} process{} ended).", if swept == 1 { "" } else { "s" }, if killed == 1 { "" } else { "es" });
+    }
+    // a missed deadline (125) wins over a counted cause
+    if strict && counted > 0 && code == 0 {
+        code = 3;
     }
     code
 }
@@ -764,5 +998,50 @@ mod tests {
         let user = held_of(list(), 501);
         assert!(user.contains(&(500, 1500)), "this user's process");
         assert!(!user.contains(&(600, 1600)) && !user.contains(&(1, 1001)), "root's processes, for a user");
+    }
+}
+
+#[cfg(test)]
+mod cause_tests {
+    use super::*;
+
+    /// N5, N7: the action follows the cause. An error a retry may clear says "try again", a
+    /// permission error "check its mode", neither "remove" (a live job's journal can give them);
+    /// a symlink (ELOOP under O_NOFOLLOW) is not a journal; ENOENT at the open is a job that just
+    /// ended, and EWOULDBLOCK at the lock a live one. Only a file that holds no job and what is
+    /// not a journal say "remove". Every lock error is a live job's for the auto-sweep and `kill`;
+    /// no open or read error is.
+    #[test]
+    fn the_action_follows_the_cause() {
+        let text = |s: &Skip| s.counted().unwrap_or_default();
+        for e in [libc::EMFILE, libc::ENFILE, libc::ENOMEM, libc::EIO] {
+            assert_eq!(text(&Skip::of(Stage::Open, e)), format!("could not open it ({}); try again", crate::steps::errno_name(e).unwrap()));
+            assert_eq!(text(&Skip::of(Stage::Read, e)), format!("could not read it ({}); try again", crate::steps::errno_name(e).unwrap()));
+        }
+        assert_eq!(text(&Skip::of(Stage::Lock, libc::ENOLCK)), "could not lock it (ENOLCK); try again");
+        for (e, n) in [(libc::EACCES, "EACCES"), (libc::EPERM, "EPERM")] {
+            assert_eq!(text(&Skip::of(Stage::Open, e)), format!("could not open it ({n}); check its mode"));
+            assert_eq!(text(&Skip::of(Stage::Read, e)), format!("could not read it ({n}); check its mode"));
+        }
+        assert!(matches!(Skip::of(Stage::Open, libc::ENOENT), Skip::Gone));
+        assert_eq!(text(&Skip::of(Stage::Open, libc::ELOOP)), "not a journal; remove it");
+        assert!(matches!(Skip::of(Stage::Lock, libc::EWOULDBLOCK), Skip::Live));
+        for e in [libc::ENOLCK, libc::EIO, libc::EACCES, libc::EBADF] {
+            assert!(Skip::of(Stage::Lock, e).live(), "a lock error {e} is a live job's");
+        }
+        for e in [libc::EMFILE, libc::EIO, libc::EACCES] {
+            assert!(!Skip::of(Stage::Open, e).live() && !Skip::of(Stage::Read, e).live(), "{e}");
+        }
+        let all = [Cause::NoJob, Cause::NotAJournal, Cause::OtherUser, Cause::Error(Stage::Open, libc::EMFILE), Cause::Error(Stage::Read, libc::EACCES), Cause::Error(Stage::Lock, libc::ENOLCK)];
+        for c in all {
+            let says = matches!(c, Cause::NoJob | Cause::NotAJournal);
+            let t = text(&Skip::Counted(c));
+            assert_eq!(t.contains("remove"), says, "{t}");
+        }
+        assert_eq!(text(&Skip::Counted(Cause::NoJob)), "it holds no job; remove it");
+        assert_eq!(text(&Skip::Counted(Cause::OtherUser)), "not this user's file; sheepr will not read it; check how it got there");
+        for s in [Skip::Live, Skip::Gone, Skip::Foreign, Skip::Kept] {
+            assert_eq!(s.counted(), None);
+        }
     }
 }

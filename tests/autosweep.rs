@@ -511,3 +511,93 @@ fn the_auto_sweep_skips_a_job_that_holds_the_run() {
     assert!(noted, "notes {:?}", notes(&st));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// N6: a FIFO named `*.journal` in this boot's folder does not stop a run: the auto-sweep opens
+/// no journal in a way that waits for a writer (before, the run hung there and its command never
+/// started), the command runs, exit 0, and a note names the FIFO as not a journal.
+#[test]
+fn a_fifo_named_like_a_journal_does_not_stop_the_run() {
+    let d = scratch("fifo");
+    let s = state(&d);
+    // a short job makes this boot's journal folder (its own journal is gone at its end)
+    let (code, _) = run(&d, &s, "first", "", "/bin/sh -c 'exit 0'", &[]);
+    assert_eq!(code, Some(0));
+    let dir = std::fs::read_dir(s.join("jobs")).unwrap().flatten().map(|e| e.path()).next().expect("this boot's folder");
+    let fifo = dir.join("j-f1f0f1f0.journal");
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+    let (ran, out) = (d.join("ran"), d.join("fifo.status"));
+    let mut c = Command::new("/bin/sh")
+        .args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- /bin/sh -c 'touch "{}"' 3>"{}""#, ran.display(), out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_STATE", &s)
+        .spawn()
+        .unwrap();
+    let ended = wait_until(10, || c.try_wait().ok().flatten().is_some());
+    if !ended {
+        common::send_child(&mut c, libc::SIGKILL);
+    }
+    let code = c.wait().unwrap().code();
+    let st = std::fs::read_to_string(&out).ok().and_then(|t| json::parse(t.trim_end()).ok());
+    assert!(ended, "the run did not end in 10 s");
+    assert_eq!(code, Some(0));
+    assert!(ran.exists(), "the command did not run");
+    assert!(notes(&st).iter().any(|n| n.contains("j-f1f0f1f0.journal") && n.contains("not a journal")), "notes {:?}", notes(&st));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// N7: the auto-sweep still takes every lock error for a live job's journal. A live job whose
+/// journal's lock fails (a seam: ENOLCK, as on a network mount) keeps its escapee out of a dead
+/// job's pass, though the dead job's journal names it: the escapee gets no signal, and a note says
+/// the job was deferred. The controls: the dead job's other member is ended (the pass ran), and
+/// the trace shows the seam's lock error reached the live job's journal.
+#[test]
+fn a_lock_error_on_a_live_journal_keeps_its_member_from_the_auto_sweep() {
+    let d = scratch("lockerr");
+    let s = state(&d);
+    let (r, m2r) = (d.join("live"), d.join("m2"));
+    let _left = Leftovers(vec![r.clone(), m2r.clone()], vec![]);
+    let mut live = Outer(Command::new(sheepr()).args(["run", "--no-sweep", "--", fixture(), "escapee-and-wait"]).arg(&r).env("SHEEPR_TEST_STATE", &s).env("SHEEPR_TEST_JOB_ID", "11ve0000").spawn().unwrap());
+    assert!(wait_until(15, || !records(&r).is_empty()), "the live job's escapee started");
+    let g = records(&r)[0];
+    assert!(wait_until(10, || journaled(&s).contains(&g.0)), "the escapee was journaled");
+    let lj = journals(&s).into_iter().find(|p| p.ends_with("j-11ve0000.journal")).expect("the live job's journal");
+    let header = json::parse(std::fs::read_to_string(&lj).unwrap().lines().next().unwrap()).unwrap();
+    let field = |k: &str| header.get(k).and_then(Json::str).unwrap().to_string();
+    // the dead job's other member: a decoy that counts its signals
+    let mut m2c = Command::new(fixture()).arg("sigcount").arg(&m2r).spawn().unwrap();
+    assert!(wait_until(10, || !records(&m2r).is_empty()), "the decoy started");
+    let m2 = records(&m2r)[0];
+    let uid = unsafe { libc::getuid() };
+    let mut text = format!(
+        "{{\"v\":1,\"kind\":\"header\",\"job\":\"j-dead0000\",\"boot\":\"{}\",\"pidns\":\"{}\",\"owner\":\"default\",\"uid\":{uid},\"sup\":{{\"pid\":999999,\"id\":{}}},\"argv\":\"sheepr run\"}}\n",
+        field("boot"),
+        field("pidns"),
+        1u64 << 40
+    );
+    for (p, id) in [g, m2] {
+        text.push_str(&format!("{{\"v\":1,\"pid\":{p},\"id\":{id},\"ppid\":1,\"pid_id\":null,\"puniq\":null,\"cmd\":\"decoy\"}}\n"));
+    }
+    let dj = lj.parent().unwrap().join("j-dead0000.journal");
+    std::fs::write(&dj, text).unwrap();
+    std::fs::set_permissions(&dj, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let trace = d.join("trace");
+    let (code, st) = run(&d, &s, "auto", "", "/bin/sh -c 'exit 0'", &[("SHEEPR_TEST_JOURNAL_ERRNO", "lock:ENOLCK:j-11ve0000.journal"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())]);
+    let gr = PathBuf::from(format!("{}.g", r.display()));
+    let (alive, n) = (common::alive(g), counted(&gr));
+    let m2_gone = wait_until(5, || !common::alive(m2));
+    let fired = std::fs::read_to_string(&trace).unwrap_or_default().lines().any(|l| l == "seam: lock ENOLCK j-11ve0000.journal");
+    common::send_child(&mut live.0, libc::SIGTERM); // its own supervisor ends its job
+    let _ = live.0.wait();
+    common::send_child(&mut m2c, libc::SIGKILL);
+    let _ = m2c.wait();
+    assert_eq!(code, Some(0));
+    assert!(fired, "the seam did not reach the live job's journal (the row proves nothing)");
+    assert!(m2_gone, "control: the dead job's pass did not end its other member");
+    assert!(alive && n == 0, "the live job's escapee got {n} signal(s), alive {alive}");
+    assert!(notes(&st).iter().any(|n| n.starts_with("deferred: job j-dead0000")), "notes {:?}", notes(&st));
+    let _ = std::fs::remove_dir_all(&d);
+}
