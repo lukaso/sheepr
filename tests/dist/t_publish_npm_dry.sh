@@ -227,6 +227,7 @@ mkout "$D" v0.1.0; : > "$FX/pubexists.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f
 mkout "$D" v0.1.0; : > "$FX/pubfail.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"
 [ $r = 1 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64," ] && grep -q 'E401' "$FX/o" && grep -q 'or its login step failed' "$FX/o" && grep -q 'A browser login or 2FA approval that failed or timed out' "$FX/o" \
   && pass "a publish refused for another reason (E401): stopped at once, the reason shown" || fail "publish E401: rc=$r $(order) $(tail -1 "$FX/o")"
+grep -q 'of the batch' "$FX/o" && fail "today's order's refusal speaks of a batch: $(tail -1 "$FX/o")" || pass "  (today's order: its refusal names no batch)"
 # views after an upload that fail, or answer nothing, are waited through; the last error is named
 mkout "$D" v0.1.0; : > "$FX/viewfailafter.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewfailafter.sheepr-linux-arm64"
 nva=$(grep -c '^npm view .* sheepr-linux-arm64@0.1.0 ' "$FX/calls"); sl=$(awk '{s += $1} END {print s + 0}' "$FX/sleeps" 2>/dev/null)
@@ -343,6 +344,7 @@ grep -q 'four npm packages' "$FX/o" && fail "platform says the four packages are
 mkout "$D" v0.1.0; : > "$FX/pubfail.sheepr-linux-x64"; PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX/pubfail.sheepr-linux-x64"
 [ $r = 1 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64," ] \
   && pass "platform: a refused second upload stops it, nothing after it (1)" || fail "platform, refused upload: rc=$r $(order)"
+grep -q 'may also refuse an upload while it still scans an earlier package of the batch' "$FX/o" && pass "  and its message names npm's possible refusal while it scans an earlier package of the batch" || fail "  the refusal: $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; integrity "$D/sheepr-linux-arm64-0.1.0.tgz" > "$FX/view.sheepr-linux-arm64"; PART=platform; pub v0.1.0; r=$?; PART=
 nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal," ] && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
@@ -362,6 +364,9 @@ nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' 
 echo 2 > "$FX/scan.sheepr-linux-x64"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX/scan.sheepr-linux-x64"
 [ $r = 0 ] && [ "$(grep -c '^npm view .* sheepr-linux-x64@0.1.0 ' "$FX/calls")" = 3 ] && [ "$(grep -c . "$FX/sleeps" 2>/dev/null)" = 2 ] && ! grep -q '^npm publish .*/sheepr-linux' "$FX/calls" \
   && pass "main: a platform package npm still scans is waited for (three views, two waits), never uploaded (0)" || fail "main, scanning: rc=$r $(order) sleeps=$(cat "$FX/sleeps" 2>/dev/null | tr '\n' ' ')"
+echo "sha512-WRONG" > "$FX/view.sheepr-linux-x64"; PART=main; pub v0.1.0; r=$?; PART=; integrity "$D/sheepr-linux-x64-0.1.0.tgz" > "$FX/view.sheepr-linux-x64"
+[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q "sheepr-linux-x64@0.1.0 is on npm with another file (sha512-WRONG) than this build's (uploaded earlier, by the batch)" "$FX/o" && ! grep -q 'just published' "$FX/o" \
+  && pass "main: a platform package shown with another file: refused, naming it as this build's earlier upload, nothing uploaded (1)" || fail "main, another file: rc=$r $(tail -1 "$FX/o")"
 echo 100000 > "$FX/scan.sheepr-darwin-universal"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX/scan.sheepr-darwin-universal"
 [ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'held the version for review or blocked it' "$FX/o" \
   && pass "main: a platform package that never shows: refused naming review and blocking, nothing uploaded (1)" || fail "main, never shows: rc=$r $(order) $(tail -1 "$FX/o")"
