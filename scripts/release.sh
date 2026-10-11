@@ -726,7 +726,7 @@ publish_npm_exec() { # dir
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
-  asked=no
+  asked=no waited=no
   for p in $SR_NPM_PKGS; do
     [ "$p" = "$mainp" ] && [ "$npm_part" = platform ] && continue
     f=$p-$nv.tgz
@@ -737,7 +737,7 @@ publish_npm_exec() { # dir
       || die "$f does not match its manifest hash (changed after npm-check?); nothing after it is published"
     want=$(npy integrity "$pc/$f") || die "cannot hash $f"
     if [ "$p" != "$mainp" ] && [ "$npm_part" = main ]; then
-      npm_visible "$p" "$nv" "$want"
+      npm_visible "$p" "$nv" "$want"; waited=yes
       echo "release: $p@$nv: npm shows this file"
       continue
     fi
@@ -752,10 +752,12 @@ publish_npm_exec() { # dir
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$pc/err" | grep -q 'E404'; }; then
       die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' ')); nothing after it is published"
     fi
-    # the operator may have left during the waits: the main upload (npm may ask again), and the
-    # first upload of the batch
-    if [ "$p" = "$mainp" ]; then notify npm-approve-again
-    elif [ "$npm_part" = platform ] && [ $asked = no ]; then notify npm-approve; asked=yes; fi
+    # the operator may have left during a wait: a notification before each upload that follows one
+    # (npm-approve-again for the main package, npm-approve-next for another), none before the first;
+    # the batch (platform, no waits) gets one before its first upload
+    if [ "$npm_part" = platform ]; then [ $asked = yes ] || { notify npm-approve; asked=yes; }
+    elif [ $waited = yes ] && [ "$p" = "$mainp" ]; then notify npm-approve-again
+    elif [ $waited = yes ]; then notify npm-approve-next; fi
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
@@ -764,7 +766,7 @@ publish_npm_exec() { # dir
       echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"
       continue
     fi
-    npm_visible "$p" "$nv" "$want"
+    npm_visible "$p" "$nv" "$want"; waited=yes
     echo "release: $p@$nv published, and npm shows this file"
   done
   if [ "$npm_part" = platform ]; then echo "release: the platform packages of $tag are uploaded; npm shows each one after its scan"

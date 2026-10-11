@@ -138,10 +138,13 @@ done
 [ "$(sed -n 1,5p "$FX/calls" | tr '\n' ',')" = "npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
   && pass "before any view or upload: npm whoami, then the owners of all four names, the registry pinned" || fail "the first calls: $(sed -n 1,5p "$FX/calls" | tr '\n' ',')"
 grep -q 'unsigned' "$FX/calls" && fail "a call names the -unsigned sibling" || pass "the -unsigned sibling's packages are never named"
-# the notification: npm-approve-again once, right before the main package's upload (after its view)
-nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish .*/sheepr-0.1.0.tgz$' "$FX/calls" | cut -d: -f1)
-[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve-again v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
-  && pass "today's order: notify npm-approve-again once, right before the main package's upload" || fail "the notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
+# the notifications in today's order: one right before each upload that follows a wait (the operator
+# may have left during it), none before the first: npm-approve-next before a platform package's,
+# npm-approve-again before the main one's. befores: for each upload, the call line just before it
+befores() { awk '/^npm publish/ { split($NF, a, "/"); n = a[length(a)]; sub(/-[0-9][0-9.a-z-]*\.tgz$/, "", n); printf "%s<%s>,", n, prev } { prev = $0 }' "$FX/calls" 2>/dev/null; }
+case "$(befores)" in "sheepr-linux-arm64<npm view"*">,sheepr-linux-x64<notify npm-approve-next v0.1.0>,sheepr-darwin-universal<notify npm-approve-next v0.1.0>,sheepr<notify npm-approve-again v0.1.0>,") ok_=yes ;; *) ok_=no ;; esac
+[ $ok_ = yes ] && [ "$(grep -c '^notify ' "$FX/calls")" = 3 ] \
+  && pass "today's order: npm-approve-next before uploads 2 and 3, npm-approve-again before the main one, none before the first" || fail "the notifications: $(befores)"
 [ "$(sort -u "$FX/notifyenv" 2>/dev/null)" = set ] && pass "the dry notifier runs with SR_NOTIFY_OSASCRIPT set (no dry run can show a real notification)" || fail "the dry notifier's SR_NOTIFY_OSASCRIPT: '$(cat "$FX/notifyenv" 2>/dev/null)'"
 pd=$(awk 'NR == 1 {print $3}' "$FX/pubsha"); pd=${pd%/*}
 case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private copy dir is gone" || fail "$pd is left" ;; *) fail "no private copy dir recorded: '$pd'" ;; esac
@@ -296,6 +299,12 @@ mkout "$D" v0.1.0; integrity "$D/sheepr-linux-arm64-0.1.0.tgz" > "$FX/view.sheep
 pub v0.1.0; r=$?
 [ $r = 0 ] && ! grep -q '^npm publish .*linux-arm64' "$FX/calls" && [ "$(grep -c '^npm publish' "$FX/calls")" = 3 ] && grep -q 'already on npm (the same file)' "$FX/o" \
   && pass "a version already on npm with this file: skipped, the rest published" || fail "resume same: rc=$r $(order)"
+case "$(befores)" in "sheepr-linux-x64<npm view"*">,sheepr-darwin-universal<notify npm-approve-next v0.1.0>,sheepr<notify npm-approve-again v0.1.0>,") \
+  pass "  its first upload (x64) has no notification, the next two do" ;; *) fail "  the notifications: $(befores)" ;; esac
+mkout "$D" v0.1.0; for p_ in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p_-0.1.0.tgz" > "$FX/view.$p_"; done
+pub v0.1.0; r=$?; rm -f "$FX/view.sheepr-linux-x64" "$FX/view.sheepr-darwin-universal"   # (arm64's view stays, as the next row expects)
+[ $r = 0 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 1 ] && ! grep -q '^notify ' "$FX/calls" \
+  && pass "the three platform packages already on npm: the main upload is the first, no notification (0)" || fail "main first: rc=$r $(befores)"
 echo "sha512-AAAA" > "$FX/view.sheepr-linux-x64"
 pub v0.1.0; r=$?; rm -f "$FX"/view.*
 [ $r = 1 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64," ] && grep -q 'another file' "$FX/o" \

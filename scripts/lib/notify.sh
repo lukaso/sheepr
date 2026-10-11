@@ -7,7 +7,7 @@
 # KEY picks the text from the fixed table below; TAG (vX.Y.Z or vX.Y.Z-rc.N, one line) is the only
 # thing put into it, and the phase of failed-PHASE (a letter, then letters, digits and -, at most 32
 # in all). Never a tool's output. The keys: password, password-again, npm-login, npm-approve,
-# npm-approve-again, done, logout-failed, failed-PHASE.
+# npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE.
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
@@ -36,6 +36,7 @@ case $key in
   password-again) text="$tag: Apple did not accept the submission. Type the notary keychain password again in the terminal, to fetch Apple's log" ;;
   npm-login) text="$tag: log in to npm in the browser (npm login)" ;;
   npm-approve) text="$tag: approve the npm upload in the browser (tick skip for 5 minutes)" ;;
+  npm-approve-next) text="$tag: approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
   logout-failed) text="$tag: npm logout failed. Run npm logout in the terminal" ;;
