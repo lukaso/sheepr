@@ -1025,6 +1025,19 @@ fn a_lost_wait_on_the_root_makes_up_no_status() {
     let d = scratch("lost");
     let lost = run(&d, "lost", r#"-- /bin/sh -c 'exit 3'"#, &[("SHEEPR_TEST_ROOT_WAIT_LOST", "1")], |_| {});
     let ctl = run(&d, "ctl", r#"-- /bin/sh -c 'exit 3'"#, &[], |_| {});
+    // polling mode (the exit's kqueue watch refused): the seam acts only on the blocking wait,
+    // so it never takes a poll's reap (that hung sheepr: its status gone, every later poll
+    // ECHILD). Polling mode has no blocking wait, so its poll takes the root's own end there
+    let log = d.join("polled.log");
+    let t0 = Instant::now();
+    let polled = run(&d, "polled", r#"-- /bin/sh -c 'exit 3'"#, &[("SHEEPR_TEST_ROOT_WAIT_LOST", "1"), ("SHEEPR_TEST_KQ_EINVAL", "1"), ("SHEEPR_TEST_SIGNAL_LOG", log.to_str().unwrap())], |_| {});
+    let polled_took = t0.elapsed();
+    let l = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(l.lines().any(|x| x == "polling exit"), "control: polling mode was not on; signal log:\n{l}");
+    assert!(polled_took < Duration::from_secs(10), "polling mode with the lost-wait seam took {polled_took:?}: {:?}", polled.status);
+    assert_eq!(polled.code, Some(3), "{:?}", polled.status);
+    assert_eq!(root_end(&polled), (Some("exited".into()), Some(3), None), "{:?}", polled.status);
+    assert_eq!(field(&polled, "error"), Some(&Json::Null), "{:?}", polled.status);
     assert_eq!(ctl.code, Some(3));
     assert_eq!(root_end(&ctl), (Some("exited".into()), Some(3), None), "control: {:?}", ctl.status);
     assert_eq!(field(&ctl, "error"), Some(&Json::Null));

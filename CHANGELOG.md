@@ -20,8 +20,8 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
     TERM from outside or a limit, during the grace), is `"exited"`, not `"signaled"`;
   - on Linux, a command that cannot be run (not found, not executable) is `"not-started"` also
     when a TERM reaches sheepr at the same moment, or when it fails while the job is being ended;
-    before, that was `"signaled"`. When it fails while the job is being ended, `error` now says
-    `cannot run …`; before, it was null;
+    before, that was `"signaled"`. In both cases `error` now says `cannot run …`; before, it was
+    null;
   - with `--mode root-disclaim` (macOS, not a stable flag), a job ended by a TERM from outside
     is `"signaled"` with both new fields null, not `"not-started"`;
   - on macOS, when sheepr has seen the command end but its wait for it fails, `root` is

@@ -794,9 +794,10 @@ fn reap_root(pid: pid_t, block: bool) -> Option<crate::Reaped> {
     let mut st = 0;
     let mut r = unsafe { libc::waitpid(pid, &mut st, if block { 0 } else { libc::WNOHANG }) };
     let mut e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // debug seam: the wait's result is replaced by a failure (the real wait has run: the root is
-    // reaped and its status is not taken)
-    if r == pid && crate::seam_flag("SHEEPR_TEST_ROOT_WAIT_LOST") {
+    // debug seam: the blocking wait's result is replaced by a failure (the real wait has run: the
+    // root is reaped and its status is not taken). Never a poll's: a poll's reap replaced so would
+    // leave every later poll ECHILD, and in polling mode no blocking wait would ever come
+    if block && r == pid && crate::seam_flag("SHEEPR_TEST_ROOT_WAIT_LOST") {
         (r, e) = (-1, libc::ECHILD);
     }
     // debug seam: a poll of a root that still runs fails with ECHILD (the real poll has run and
