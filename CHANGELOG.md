@@ -62,6 +62,15 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   blocks SIGCONT. On macOS a SIGCONT from outside in the moment before the journal line can run
   the command before sheepr kills it (stated). Without the option nothing changes
   ([#16](https://github.com/lukaso/sheepr/issues/16)).
+- `sweep --strict`: exits 3 when something it could not sweep is left (a missed kill deadline,
+  125, still wins); without the option nothing changes. Each such thing is one stderr line that
+  names the file and what to do: remove a file that holds no job or is not a journal, check the
+  mode of a journal it may not open, try again after an error that may pass, check how another
+  user's file got there, wait for the process that holds a job to end. A running job, a job that
+  ended meanwhile, a kept job, another owner's job and another boot's journal never count
+  ([#15](https://github.com/lukaso/sheepr/issues/15)).
+- `sweep`, `run`, `strays`, `doctor`, `kill`: a FIFO (or another file that is not a regular one)
+  named like a journal no longer makes them wait for ever; `sweep` says "not a journal; remove it".
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.

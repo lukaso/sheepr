@@ -1,5 +1,5 @@
-//! `sheepr sweep [--owner X]` (PLAN.md §3.5; PHASE2.md §3): end what dead jobs left behind,
-//! from their journals.
+//! `sheepr sweep [--owner X] [--strict]` (PLAN.md §3.5; PHASE2.md §3): end what dead jobs left
+//! behind, from their journals.
 //!
 //! Only this boot's and this pid namespace's folder is read, after its ownership checks (the state
 //! directory, `jobs/` and the folder are this user's, and nobody else may write them); a journal
@@ -25,7 +25,10 @@
 //! 1 refused: the state directory or its journal folder is not safe, cannot be reached or cannot
 //! be listed, sheepr cannot follow its own chain of parent processes, or (Linux, checked first)
 //! no /proc of its own pid namespace is mounted; 2 usage error; 125 a job's kill deadline passed
-//! with members alive, or sheepr failed inside (the kill, or a panic).
+//! with members alive, or sheepr failed inside (the kill, or a panic); with `--strict` (issue #15),
+//! 3 when a cause it counts remains (`Skip::counted`, a job that holds this sweep's process or an
+//! ancestor, no boot id while a journal may be missed), each said on one line with what clears
+//! it; 125 wins over 3.
 
 use crate::kill::{end_supervisors, is_sheepr, parent, protected, Proved};
 use crate::{kill_failed, kill_tree, say, signal, trace, KillOpts};

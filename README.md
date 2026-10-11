@@ -240,10 +240,24 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   signals nothing (the state directory or its journal folder is not safe, cannot be reached or
   cannot be listed; sheepr cannot follow its own chain of parent processes; on Linux, no /proc of
   its own pid namespace is mounted, which it checks first, so then also when there is nothing to
-  sweep); 125 when a job's kill deadline passed with members alive, or sheepr failed inside. A
-  journal it cannot read, or will not act on (another user's file, a header of another boot or
-  pid namespace), is one stderr line and does not change the exit code; a journal whose lock it
-  cannot take counts as a live job's, with no line.
+  sweep); 125 when a job's kill deadline passed with members alive, or sheepr failed inside.
+  Something it could not sweep is one stderr line that names the file and what clears it, and
+  does not change the exit code, unless you pass `--strict`: then `sweep` exits 3 when one of
+  these is left (125 still wins over 3):
+  - a file that holds no job, or that is not a journal at all (a folder, a FIFO, a link): remove it;
+  - a journal it may not open: check its mode;
+  - a journal it could not open, lock or read for another reason (for example too many open
+    files, or a lock a network disk refuses): try again;
+  - another user's file: sheepr will not read it; check how it got there;
+  - a job that holds the process that ran `sweep`, or one of its parents: it clears when that
+    process ends;
+  - no boot id, while a journal may be there: try again.
+
+  Never counted, and never a reason for 3: a running job (its journal is locked), a job that
+  ended while `sweep` looked, a job kept with `--leave-strays`, another owner's job, and a
+  journal of another boot or pid namespace (that one is still said). A journal whose lock fails
+  for another reason is never swept: it may be a running job's, and the sweep before each `run`
+  and `kill` take it for one, as before.
 - Every command but `run` exits 2 for a usage error.
 - Stable interfaces: the subcommands and the flags `sheepr help <command>` shows, the exit codes,
   the `--status-fd` and `--json` schemas (`"v": 1`), and the `sheepr:` at the start of the first

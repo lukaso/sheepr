@@ -1,7 +1,8 @@
 #!/bin/sh
 # Issue #15 (first step), as its comment asks: a RELEASE build of `sweep` says a journal it cannot
 # read: one stderr line that names the file, exit 0 (before, only a debug build's test trace ever
-# saw it). The controls: a dead job's readable journal is read and swept, and a live job's is
+# saw it); with --strict (step 2) the same file is exit 3 until it is removed, and a FIFO named
+# like a journal hangs neither `sweep` nor `run` (round 3's N6). The controls: a dead job's readable journal is read and swept, and a live job's is
 # left, and no line names either. Release-binary rules, as t_smoke.sh: the build through the exec
 # door, a cleared environment, a temp HOME and state.
 set -u
@@ -28,7 +29,25 @@ printf 'not a journal\n' > "${dir}j-b4d.journal" && chmod 600 "${dir}j-b4d.journ
 sr sweep; r=$?
 n=$(grep -c 'j-b4d\.journal' "$FX/err")
 [ "$r" = 0 ] && [ "$n" = 1 ] && pass "a release sweep says the unreadable journal once, exit 0" || fail "rc=$r, $n line(s): $(tr '\n' ' ' < "$FX/err")"
+# issue #15, --strict: the same file is counted (exit 3, its line says to remove it); removed,
+# the next strict sweep exits 0 and names nothing
+sr sweep --strict; r=$?
+n=$(grep 'j-b4d\.journal' "$FX/err" | grep -c 'it holds no job; remove it')
+[ "$r" = 3 ] && [ "$n" = 1 ] && pass "a release sweep --strict counts a file that holds no job: exit 3, one line that says remove it" || fail "--strict: rc=$r, $n line(s): $(tr '\n' ' ' < "$FX/err")"
 rm -f "${dir}j-b4d.journal"
+sr sweep --strict; r=$?
+[ "$r" = 0 ] && ! grep -q '\.journal' "$FX/err" && pass "removed, the next release sweep --strict exits 0" || fail "--strict after the removal: rc=$r $(tr '\n' ' ' < "$FX/err")"
+# round 3's N6: a FIFO named like a journal hangs neither `sweep` nor `run` (its open waited
+# for a writer); `sweep --strict` counts it (not a journal), and `run` starts its command
+# (-k: a run blocks TERM while it starts, so a hung one needs the KILL after it)
+rto() { timeout -k 5 10 env -i PATH=/usr/bin:/bin HOME="$FX/h" XDG_STATE_HOME="$FX/h/x" SHEEPR_STATE="$FX/h/s" TMPDIR="$FX/h" "$B" "$@" < /dev/null > /dev/null 2> "$FX/err"; }
+mkfifo "${dir}j-f1f0f1f0.journal" || { fail "mkfifo"; finish; }
+rto sweep --strict; r=$?
+n=$(grep 'j-f1f0f1f0\.journal' "$FX/err" | grep -c 'not a journal; remove it')
+[ "$r" = 3 ] && [ "$n" = 1 ] && pass "a release sweep --strict returns on a FIFO named like a journal: exit 3, not a journal" || fail "FIFO sweep: rc=$r (124: it hung), $n line(s): $(tr '\n' ' ' < "$FX/err")"
+rto run -- /bin/sh -c "touch '$FX/ranf'"; r=$?
+[ "$r" = 0 ] && [ -e "$FX/ranf" ] && pass "a release run with a FIFO named like a journal starts its command, exit 0" || fail "FIFO run: rc=$r (124: it hung), ran=$( [ -e "$FX/ranf" ] && echo yes || echo no) $(tr '\n' ' ' < "$FX/err")"
+rm -f "${dir}j-f1f0f1f0.journal"
 # issue #20: a release sweep removes a dead registration folder where its own listener would put
 # it (this TMPDIR), and never one in /private/tmp (the listener's place only when TMPDIR is unset
 # or too long): the host's /tmp is not this cell's. The verdict is the sweep's own count (one
@@ -85,6 +104,7 @@ renv run --no-sweep -- /bin/sh -c "$wait_go" < /dev/null > /dev/null 2> "$FX/err
 i=0; while [ "$(journals)" -lt 1 ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 nj=$(journals)
 sr sweep; r=$?
+sr sweep --strict; rs=$?
 touch "$FX/go"; wait
-[ "$nj" -ge 1 ] && [ "$r" = 0 ] && ! grep -q '\.journal' "$FX/err" && pass "control: a live job's readable journal ($nj) is named by no line, exit 0" || fail "control (live): $nj journal(s), rc=$r $(tr '\n' ' ' < "$FX/err")"
+[ "$nj" -ge 1 ] && [ "$r" = 0 ] && [ "$rs" = 0 ] && ! grep -q '\.journal' "$FX/err" && pass "control: a live job's readable journal ($nj) is named by no line, exit 0, also --strict" || fail "control (live): $nj journal(s), rc=$r, --strict rc=$rs $(tr '\n' ' ' < "$FX/err")"
 finish
