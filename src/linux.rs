@@ -237,9 +237,11 @@ pub fn proc_problem() -> Option<&'static str> {
 /// names someone else's process, and a signal sent by that pid reaches whoever has it here.
 /// Debug seam SHEEPR_TEST_FAIL_STEP=proc: the read's result is replaced by the error.
 fn proc_check() -> Option<(&'static str, Option<i32>)> {
+    // the read runs; the seam replaces its result
+    let link = std::fs::read_link("/proc/self");
     let link = match crate::steps::injected(Step::Proc) {
         Some(e) => Err(std::io::Error::from_raw_os_error(e)),
-        None => std::fs::read_link("/proc/self"),
+        None => link,
     };
     match link {
         Err(e) => Some(("no /proc is mounted", e.raw_os_error())),
@@ -386,9 +388,11 @@ fn exec_failure(shim: &mut Root, cmd: &OsString) {
 /// Its error keeps the io error (plan §2, L8). Debug seam SHEEPR_TEST_FAIL_STEP=self-exe: the
 /// read of the link has its result replaced by the error.
 fn self_exe() -> Result<CString, std::io::Error> {
+    // the read runs; the seam replaces its result
+    let link = std::fs::read_link("/proc/self/exe");
     let link = match crate::steps::injected(Step::SelfExe) {
         Some(e) => Err(std::io::Error::from_raw_os_error(e)),
-        None => std::fs::read_link("/proc/self/exe"),
+        None => link,
     }?;
     let nul = || std::io::Error::new(std::io::ErrorKind::InvalidData, "its path holds a NUL");
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -421,10 +425,12 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// How a handshake read ended without a line: the shim closed its end (it ended), or `ms` passed.
+/// How a handshake read ended without a line: the shim closed its end (it ended), `ms` passed,
+/// or the read failed (its errno; never taken for an EOF).
 enum Unanswered {
     Eof,
     Timeout,
+    Failed(i32),
 }
 
 /// Read one handshake line from `fd` within `ms` (a part before EOF counts as the line).
@@ -442,7 +448,14 @@ fn read_line(fd: i32, ms: i32) -> Result<String, Unanswered> {
         }
         let mut b = [0u8; 1];
         let n = unsafe { libc::read(fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
-        if n <= 0 {
+        if n < 0 {
+            let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if e == libc::EINTR {
+                continue;
+            }
+            return Err(Unanswered::Failed(e));
+        }
+        if n == 0 {
             return if out.is_empty() { Err(Unanswered::Eof) } else { Ok(String::from_utf8_lossy(&out).into_owned()) };
         }
         if b[0] == b'\n' {
@@ -535,17 +548,16 @@ fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, PreRoot
     let ms = crate::seam_ms("SHEEPR_TEST_HANDSHAKE_MS").map_or(5000, |m| m as i32);
     let line = read_line(er[0], ms);
     if line.as_deref().ok() != Some(format!("H{nonce} 1").as_str()) {
-        // a shim that closed its end has ended: its own end is waited for, never a SIGKILL that
-        // could take its place; any other is killed first
+        // the go pipe first: a shim still waiting for its go byte then exits (EOF), so the wait
+        // below cannot hang on it. A shim that closed its end has ended: its own end is waited
+        // for, never a SIGKILL that could take its place; any other is killed first
+        unsafe { libc::close(go[1]) };
         if !matches!(line, Err(Unanswered::Eof)) {
             unsafe { libc::kill(pid, libc::SIGKILL) }; // raw signal site: the shim this supervisor spawned (PHASE2.md §0.3)
         }
         let mut st = 0;
-        unsafe {
-            libc::waitpid(pid, &mut st, 0);
-            libc::close(go[1]);
-            libc::close(er[0]);
-        }
+        let reaped = unsafe { libc::waitpid(pid, &mut st, 0) } == pid;
+        unsafe { libc::close(er[0]) };
         let not_run = |why: &str| format!("the command could not be started ({why}); it did not run");
         return Err(match line {
             // the shim's own step (its `F` line): prctl, its parent, or an older shim's text
@@ -554,8 +566,13 @@ fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, PreRoot
                 PreRoot::new(step, errno, not_run(&why))
             }
             Ok(_) => PreRoot::new(Step::Handshake, None, not_run("an unexpected answer")),
-            Err(Unanswered::Eof) => PreRoot::new(Step::Handshake, None, not_run(&format!("its starter ended before it answered, {}", ended(st)))),
+            Err(Unanswered::Eof) => {
+                // a failed wait never reads as "exit 0"
+                let how = if reaped { ended(st) } else { "its end could not be read".to_string() };
+                PreRoot::new(Step::Handshake, None, not_run(&format!("its starter ended before it answered, {how}")))
+            }
             Err(Unanswered::Timeout) => PreRoot::new(Step::Handshake, None, not_run(&format!("its starter gave no answer in {ms} ms"))),
+            Err(Unanswered::Failed(e)) => PreRoot::new(Step::Handshake, Some(e), not_run(&format!("its answer could not be read: {}", std::io::Error::from_raw_os_error(e)))),
         });
     }
     unsafe { libc::fcntl(er[0], libc::F_SETFL, libc::O_NONBLOCK) };

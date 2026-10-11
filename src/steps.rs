@@ -12,7 +12,8 @@
 //! A step before the command can run returns `PreRoot`, and `Before::end` is the ONE place that
 //! turns it into the status (`error`, `error_code`, `error_source`, root "not-started") and the
 //! exit code; each OS's pre-root segment is one function returning `Result<_, Before>`, so an
-//! early return there cannot compile without a step.
+//! early return there cannot compile without a step, or without ending the process its own way
+//! (`Before::term`, `Before::like`: `Ended`'s field is private to this module).
 //!
 //! Debug seam `SHEEPR_TEST_FAIL_STEP=<step>[:<errno>]` (an errno name or number; EIO when left
 //! out): the step's syscall runs and its result is replaced by that failure, so the real error
@@ -245,7 +246,11 @@ pub fn parse_f(rest: &str) -> (Step, Option<i32>, String) {
     let mut words = rest.split(' ');
     let (first, second) = (words.next().unwrap_or(""), words.next());
     match [Step::ShimPrctl, Step::ShimParent].into_iter().find(|s| s.name() == first) {
-        Some(Step::ShimPrctl) => (Step::ShimPrctl, second.and_then(|e| e.parse().ok()), "the command's starter could not set PR_SET_PDEATHSIG".to_string()),
+        Some(Step::ShimPrctl) => {
+            let errno: Option<i32> = second.and_then(|e| e.parse().ok());
+            let why = errno.map_or_else(String::new, |e| format!(": {}", std::io::Error::from_raw_os_error(e)));
+            (Step::ShimPrctl, errno, format!("the command's starter could not set PR_SET_PDEATHSIG{why}"))
+        }
         Some(step) => (step, second.and_then(|e| e.parse().ok()), "the command's starter's parent is not this sheepr".to_string()),
         None => (Step::Handshake, None, rest.to_string()),
     }
@@ -360,6 +365,9 @@ mod tests {
         let (s, e, t) = parse_f("shim-prctl 1");
         assert_eq!((s, e), (Step::ShimPrctl, Some(1)));
         assert!(t.contains("PR_SET_PDEATHSIG"), "{t}");
+        let strerror = std::io::Error::from_raw_os_error(1).to_string();
+        assert!(t.contains(&strerror), "the text names the errno too: {t}");
+        assert!(!parse_f("shim-prctl").2.contains("os error"), "no errno, no strerror");
         let (s, e, t) = parse_f("shim-parent");
         assert_eq!((s, e), (Step::ShimParent, None));
         assert!(t.contains("parent"), "{t}");

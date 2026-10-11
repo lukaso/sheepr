@@ -227,7 +227,8 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   process tree; the job's journal is kept, and `sheepr sweep` (or your next `sheepr run`) ends it.
   No status line is written when sheepr ends before it can: before it has read `--status-fd`,
   before it has set up its signals, and on macOS when a TERM was already pending across its
-  self re-exec, or that re-exec failed.
+  self re-exec, or when the new image of that re-exec fails to start (a re-exec that is refused
+  outright is not this case: sheepr then runs on, tracking by parent ids).
 - `sweep` exits 0 when it is done, also when there is nothing to sweep; 1 when it refuses and
   signals nothing (the state directory or its journal folder is not safe, cannot be reached or
   cannot be listed; sheepr cannot follow its own chain of parent processes; on Linux, no /proc of

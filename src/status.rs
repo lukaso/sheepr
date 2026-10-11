@@ -129,7 +129,6 @@ impl Status {
         }
     }
 
-    /// The root's end, known for certain: it clears what the recorder took and keeps it off.
     /// The one setter of `error`, `error_code` and `error_source` (plan §2): the three are set
     /// together from the step's row of crate::steps' table. The first error wins and a later one
     /// becomes a note `also: <text>`, except that an internal error (the tree may not be clean)
@@ -154,6 +153,7 @@ impl Status {
         self.error_internal = step.internal();
     }
 
+    /// The root's end, known for certain: it clears what the recorder took and keeps it off.
     fn set_root_final(&mut self, root: &'static str) {
         self.root = root;
         self.root_final = true;
@@ -497,15 +497,16 @@ fn bounded_write(fd: i32, b: &[u8], idle: Duration, cap: Duration) -> Result<(),
 
 /// The class guard (plan §2): a line never says root "not-started" with neither an `error` nor a
 /// `trigger` (an early end that recorded no reason). A debug build panics, so a cell sees it; a
-/// release build fills the error, source "sheepr".
+/// release build fills the error, source "sheepr", and says it on stderr (`say`).
 const NO_REASON: &str = "sheepr ended before the command started and recorded no reason";
-fn guard(s: &mut Status, debug: bool) {
+fn guard(s: &mut Status, debug: bool, say: &mut dyn FnMut(&str)) {
     if s.root_fields().0 != "not-started" || s.error.is_some() || s.trigger.is_some() {
         return;
     }
     if debug {
         panic!("{NO_REASON}");
     }
+    say(NO_REASON);
     s.set_error(crate::steps::Step::Unrecorded, None, NO_REASON);
 }
 
@@ -514,7 +515,7 @@ fn line(code: i32) -> Option<(i32, String)> {
     with(|s| {
         s.fd?;
         // before the fd is taken: in a debug build the panic's own line is written after it
-        guard(s, cfg!(debug_assertions));
+        guard(s, cfg!(debug_assertions), &mut |m| crate::say!("sheepr: {}", m.strip_prefix("sheepr ").unwrap_or(m)));
         let fd = s.fd.take()?;
         // debug seam: a note of this many bytes, so a test's line is larger than any pipe buffer
         // (a real job reaches that size with a few hundred killed members; seam_ms reads a number)
@@ -645,28 +646,32 @@ mod tests {
     /// that may have run leave the record as it is.
     #[test]
     fn a_release_line_never_says_not_started_without_a_reason() {
+        let mut said: Vec<String> = Vec::new();
         let mut s = Status::new();
-        guard(&mut s, false);
+        guard(&mut s, false, &mut |m| said.push(m.to_string()));
         assert_eq!((s.error.as_deref(), s.error_source), (Some(NO_REASON), Some("sheepr")));
+        assert_eq!(said, [NO_REASON], "the reason is said on stderr too");
+        said.clear();
         let mut e = Status::new();
         e.set_error(crate::steps::Step::Usage, None, "usage");
-        guard(&mut e, false);
+        guard(&mut e, false, &mut |m| said.push(m.to_string()));
         assert_eq!(e.error.as_deref(), Some("usage"));
         let mut t = Status::new();
         t.set_trigger("term");
-        guard(&mut t, false);
+        guard(&mut t, false, &mut |m| said.push(m.to_string()));
         assert_eq!(t.error, None);
         let mut r = Status::new();
         r.root_may_run = true;
-        guard(&mut r, false);
+        guard(&mut r, false, &mut |m| said.push(m.to_string()));
         assert_eq!(r.error, None);
+        assert!(said.is_empty(), "control: nothing said when there is a reason: {said:?}");
     }
 
     /// The same guard in a debug build panics (a cell sees the bare early return).
     #[test]
     #[should_panic(expected = "recorded no reason")]
     fn a_debug_line_panics_on_not_started_without_a_reason() {
-        guard(&mut Status::new(), true);
+        guard(&mut Status::new(), true, &mut |_| {});
     }
 
     /// Plan §2: the one setter of the error triple. The first error wins, and its errno name and

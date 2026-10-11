@@ -1329,7 +1329,7 @@ fn the_root_is_reaped_only_through_the_recorder() {
     let allowed: &[(&str, &str, Wait, &str)] = &[
         ("linux.rs", "wait_any", Wait::Reaps, "let r = unsafe { libc::waitpid(-1, &mut st, flags) };"),
         ("linux.rs", "doctor_mechanisms", Wait::Reaps, "libc::waitpid(c, &mut st, 0) == c && libc::WIFEXITED(st) && libc::WEXITSTATUS(st) == 0"),
-        ("linux.rs", "spawn", Wait::Reaps, "libc::waitpid(pid, &mut st, 0);"),
+        ("linux.rs", "spawn", Wait::Reaps, "let reaped = unsafe { libc::waitpid(pid, &mut st, 0) } == pid;"),
         ("linux.rs", "relay_if_needed", Wait::Reaps, "if libc::waitpid(sup, &mut st, libc::WNOHANG | libc::WUNTRACED) == sup {"),
         ("linux.rs", "abandon_shim", Wait::Reaps, "while unsafe { libc::waitpid(root, std::ptr::null_mut(), libc::WNOHANG) } == 0 {"),
         ("linux.rs", "abandon_shim", Wait::Reaps, "libc::waitpid(root, std::ptr::null_mut(), 0);"),
@@ -1869,14 +1869,29 @@ fn a_bare_early_return_never_writes_a_silent_line() {
 /// The step table of src/steps.rs: (variant, seam word), read from its `Step::X => ("word", ...)`
 /// rows.
 fn step_table() -> Vec<(String, String)> {
-    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/steps.rs")).unwrap();
-    src.lines()
-        .filter_map(|l| {
-            let l = l.trim().strip_prefix("Step::")?;
-            let (variant, rest) = l.split_once(" => (\"")?;
-            Some((variant.to_string(), rest.split('"').next()?.to_string()))
-        })
-        .collect()
+    step_rows_in(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/steps.rs")).unwrap())
+}
+
+/// The `Step::X => ("word", ...)` rows of `src`, also one rustfmt wrapped over several lines.
+fn step_rows_in(src: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("Step::") {
+        rest = &rest[i + "Step::".len()..];
+        let variant: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let after = rest[variant.len()..].trim_start();
+        let word = after.strip_prefix("=> (").map(str::trim_start).and_then(|t| t.strip_prefix('"')).and_then(|t| t.split('"').next());
+        if let Some(w) = word {
+            out.push((variant, w.to_string()));
+        }
+    }
+    out
+}
+
+/// The code the class cell reads: each file without its test modules and its comments (a site
+/// only in a comment is no site), joined.
+fn sweep_code(files: &[String]) -> String {
+    files.iter().map(|f| without_tests(f).lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n")).collect::<Vec<_>>().join("\n")
 }
 
 /// The text of `src` without its test modules (`#[cfg(test)]` then `mod NAME {` up to the next
@@ -1917,12 +1932,8 @@ fn every_step_has_its_seam_its_site_and_its_row() {
     let mut files = Vec::new();
     rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), Path::new(""), &mut files);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let code: String = files
-        .iter()
-        .filter(|f| !f.starts_with("bin") && f.to_str() != Some("steps.rs"))
-        .map(|f| without_tests(&std::fs::read_to_string(dir.join(f)).unwrap()))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let texts: Vec<String> = files.iter().filter(|f| !f.starts_with("bin") && f.to_str() != Some("steps.rs")).map(|f| std::fs::read_to_string(dir.join(f)).unwrap()).collect();
+    let code = sweep_code(&texts);
     let missing = |variant: &str| -> Vec<String> {
         let mut m = Vec::new();
         if MID_JOB.contains(&variant) {
@@ -1942,6 +1953,8 @@ fn every_step_has_its_seam_its_site_and_its_row() {
     };
     assert_eq!(missing("Planted"), ["Planted: no seam point", "Planted: no site that ends the run"], "control: a step with no site is reported");
     assert!(!without_tests("fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { f(Step::X, 1) }\n}\nfn b() {}").contains("Step::X"), "control: a test module is stripped");
+    assert_eq!(step_rows_in("            Step::Wrapped => (\n                \"wrapped\",\n                Kind::Sheepr,\n                false,\n            ),"), [("Wrapped".to_string(), "wrapped".to_string())], "control: a rustfmt-wrapped row");
+    assert!(!sweep_code(&["    // PreRoot::new(Step::Commented, None, \"x\")\n    let a = 1; // injected(Step::Commented)".to_string()]).contains("Step::Commented"), "control: a site only in a comment");
     let mut bad: Vec<String> = table.iter().flat_map(|(v, _)| missing(v)).collect();
     for (v, w) in &table {
         if !MID_JOB.contains(&v.as_str()) && !STEP_ROWS.iter().any(|r| r.step == w) {
