@@ -22,9 +22,10 @@
 use std::io::Write;
 
 /// Every step that can fail (`name` is the seam's word).
+// each OS builds only its own steps (the other OS's are never constructed there); the step
+// table's class cell checks every step has its seam point and its sites
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub enum Step {
     /// Linux: /proc is missing or another pid namespace's
     Proc,
@@ -185,6 +186,22 @@ impl Before {
     }
 }
 
+/// The shim's `F` line after its `F` (Linux): `<step> <errno>` from this version (`shim-prctl 1`)
+/// or `<step>` (`shim-parent`), or an older shim's free text (`cannot set PR_SET_PDEATHSIG`; a
+/// shim and a supervisor of different versions meet after an in-place upgrade): the step its
+/// first word names (else the handshake's), the errno its second word gives, and the text for
+/// `error`. Never panics, whatever the line.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn parse_f(rest: &str) -> (Step, Option<i32>, String) {
+    let mut words = rest.split(' ');
+    let (first, second) = (words.next().unwrap_or(""), words.next());
+    match [Step::ShimPrctl, Step::ShimParent].into_iter().find(|s| s.name() == first) {
+        Some(Step::ShimPrctl) => (Step::ShimPrctl, second.and_then(|e| e.parse().ok()), "the command's starter could not set PR_SET_PDEATHSIG".to_string()),
+        Some(step) => (step, second.and_then(|e| e.parse().ok()), "the command's starter's parent is not this sheepr".to_string()),
+        None => (Step::Handshake, None, rest.to_string()),
+    }
+}
+
 /// Debug seam SHEEPR_TEST_FAIL_STEP: the errno to inject at `step`, if the seam names it.
 pub fn injected(step: Step) -> Option<i32> {
     if !cfg!(debug_assertions) {
@@ -285,6 +302,28 @@ mod tests {
         assert_eq!(seam_errno("pipe:EMFILE", Step::Spawn), None);
         assert_eq!(seam_errno("shim-spawn:EAGAIN", Step::ShimSpawn), Some(libc::EAGAIN));
         assert_eq!(seam_errno("", Step::Pipe), None);
+    }
+
+    /// Plan §2: the shim's `F` line, this version's and an older shim's, and lines no shim
+    /// writes: the step, the errno (only after a step word, only a number), the text; no panic.
+    #[test]
+    fn the_shim_s_f_line_is_read_leniently() {
+        let (s, e, t) = parse_f("shim-prctl 1");
+        assert_eq!((s, e), (Step::ShimPrctl, Some(1)));
+        assert!(t.contains("PR_SET_PDEATHSIG"), "{t}");
+        let (s, e, t) = parse_f("shim-parent");
+        assert_eq!((s, e), (Step::ShimParent, None));
+        assert!(t.contains("parent"), "{t}");
+        // an older shim's lines: free text, no errno
+        assert_eq!(parse_f("cannot set PR_SET_PDEATHSIG"), (Step::Handshake, None, "cannot set PR_SET_PDEATHSIG".to_string()));
+        assert_eq!(parse_f("its parent is not the supervisor"), (Step::Handshake, None, "its parent is not the supervisor".to_string()));
+        assert_eq!(parse_f("pipe 24"), (Step::Handshake, None, "pipe 24".to_string()), "only the shim's own steps, and no errno from free text");
+        assert_eq!(parse_f("1 2 3").1, None, "no errno from free text");
+        assert_eq!(parse_f("shim-prctl x").1, None);
+        assert_eq!(parse_f("shim-prctl 99999999999999999999").1, None);
+        for odd in ["", " ", "shim-prctl", "shim-prctl  ", "\u{0}\u{ffff}", "1 2 3"] {
+            let _ = parse_f(odd);
+        }
     }
 
     /// The one source table: a resource errno is "resources" on any step; the command's exec is

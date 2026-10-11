@@ -145,16 +145,17 @@ fn a_shim_that_loses_its_supervisor_never_execs() {
 
 /// A shim that cannot set PDEATHSIG, or that finds another parent than its supervisor, never
 /// runs the command: the root is `not-started` and sheepr exits 125 (never 127, "not found").
+/// (The step seam replaces the result of the shim's prctl and getppid.)
 #[test]
 fn a_shim_failure_is_not_started() {
-    for seam in ["SHEEPR_TEST_SHIM_PRCTL_FAIL", "SHEEPR_TEST_SHIM_WRONG_PARENT"] {
+    for seam in ["shim-prctl:EPERM", "shim-parent"] {
         let d = scratch(&seam.to_lowercase());
         let (out, ran) = (d.join("status"), d.join("ran"));
         let code = finish(
             Command::new("/bin/sh")
                 .args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- /bin/sh -c 'touch "{}"' 3>"{}""#, ran.display(), out.display())])
                 .env("SD", sheepr())
-                .env(seam, "1")
+                .env("SHEEPR_TEST_FAIL_STEP", seam)
                 .spawn()
                 .unwrap(),
         );

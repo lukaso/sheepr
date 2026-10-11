@@ -4,6 +4,7 @@
 //! (measured in round 1, also as non-root in a default container), so the tree is exactly
 //! this process's live descendants. The supervisor must reap what it adopts (round 1, F5).
 
+use crate::steps::{Before, PreRoot, Step};
 use crate::{cstrings, kill_tree, say, Args};
 use std::ffi::OsString;
 use std::io::Write;
@@ -224,22 +225,26 @@ pub fn responsible_pid(_pid: i32) -> Option<i32> {
     None
 }
 
-/// Is /proc this process's own pid namespace's? Under `unshare --pid --fork` without
-/// `--mount-proc` it is another namespace's: every pid, parent and start time read from it names
-/// someone else's process, and a signal sent by that pid reaches whoever has it here.
-pub fn proc_is_ours() -> bool {
-    std::fs::read_link("/proc/self").ok().and_then(|p| p.to_str()?.parse::<i32>().ok()) == Some(unsafe { libc::getpid() })
-}
-
 /// Why /proc cannot be used, for the refusal (None: it is ours). No /proc at all is told apart
 /// from another namespace's.
 pub fn proc_problem() -> Option<&'static str> {
-    if proc_is_ours() {
-        None
-    } else if std::fs::read_link("/proc/self").is_err() {
-        Some("no /proc is mounted")
-    } else {
-        Some("/proc belongs to another pid namespace")
+    proc_check().map(|p| p.0)
+}
+
+/// `proc_problem`, with the errno of the read of /proc/self when there is one (`run`'s refusal,
+/// plan §2). /proc is ours when /proc/self names this pid: under `unshare --pid --fork` without
+/// `--mount-proc` it is another namespace's, where every pid, parent and start time read from it
+/// names someone else's process, and a signal sent by that pid reaches whoever has it here.
+/// Debug seam SHEEPR_TEST_FAIL_STEP=proc: the read's result is replaced by the error.
+fn proc_check() -> Option<(&'static str, Option<i32>)> {
+    let link = match crate::steps::injected(Step::Proc) {
+        Some(e) => Err(std::io::Error::from_raw_os_error(e)),
+        None => std::fs::read_link("/proc/self"),
+    };
+    match link {
+        Err(e) => Some(("no /proc is mounted", e.raw_os_error())),
+        Ok(p) if p.to_str().and_then(|p| p.parse::<i32>().ok()) == Some(unsafe { libc::getpid() }) => None,
+        Ok(_) => Some(("/proc belongs to another pid namespace", None)),
     }
 }
 
@@ -370,27 +375,42 @@ impl Root {
 /// before then finds nothing (the pipe is non-blocking) and changes nothing.
 fn exec_failure(shim: &mut Root, cmd: &OsString) {
     if let Some(e) = shim.exec_failed() {
-        crate::status::set_root_final("not-started"); // the shim could not exec the command
-        crate::status::set_error(crate::steps::Step::Exec, Some(e), &format!("cannot run {}: {}", crate::shown(cmd), std::io::Error::from_raw_os_error(e)));
+        // the shim could not exec the command (it said so on stderr itself)
+        PreRoot::said(Step::Exec, Some(e), format!("cannot run {}: {}", crate::shown(cmd), std::io::Error::from_raw_os_error(e))).record();
     }
 }
 
 /// The path this binary is spawned by for the shim: the literal /proc/self/exe (an in-place
 /// upgrade or a removed file does not break it), unless that names a translator (Rosetta, qemu:
 /// the emulated leg), then AT_EXECFN made absolute (never argv[0], which the caller controls).
-fn self_exe() -> Option<CString> {
-    let link = std::fs::read_link("/proc/self/exe").ok()?;
+/// Its error keeps the io error (plan §2, L8). Debug seam SHEEPR_TEST_FAIL_STEP=self-exe: the
+/// read of the link has its result replaced by the error.
+fn self_exe() -> Result<CString, std::io::Error> {
+    let link = match crate::steps::injected(Step::SelfExe) {
+        Some(e) => Err(std::io::Error::from_raw_os_error(e)),
+        None => std::fs::read_link("/proc/self/exe"),
+    }?;
+    let nul = || std::io::Error::new(std::io::ErrorKind::InvalidData, "its path holds a NUL");
     let name = link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if name != "rosetta" && !name.starts_with("qemu-") {
-        return CString::new("/proc/self/exe").ok();
+        return CString::new("/proc/self/exe").map_err(|_| nul());
     }
     let p = unsafe { libc::getauxval(libc::AT_EXECFN) } as *const libc::c_char;
     if p.is_null() {
-        return None;
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no AT_EXECFN under the translator"));
     }
     let s = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes()));
-    let abs = if s.is_absolute() { s } else { std::env::current_dir().ok()?.join(s) };
-    CString::new(abs.into_os_string().into_vec()).ok()
+    let abs = if s.is_absolute() { s } else { std::env::current_dir()?.join(s) };
+    CString::new(abs.into_os_string().into_vec()).map_err(|_| nul())
+}
+
+/// A wait status in words: `exit N` or `signal N`.
+fn ended(st: libc::c_int) -> String {
+    if libc::WIFSIGNALED(st) {
+        format!("signal {}", libc::WTERMSIG(st))
+    } else {
+        format!("exit {}", libc::WEXITSTATUS(st))
+    }
 }
 
 fn hex(b: &[u8]) -> String {
@@ -401,14 +421,20 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-/// Read one handshake line from `fd` within `ms`.
-fn read_line(fd: i32, ms: i32) -> Option<String> {
+/// How a handshake read ended without a line: the shim closed its end (it ended), or `ms` passed.
+enum Unanswered {
+    Eof,
+    Timeout,
+}
+
+/// Read one handshake line from `fd` within `ms` (a part before EOF counts as the line).
+fn read_line(fd: i32, ms: i32) -> Result<String, Unanswered> {
     let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
     let mut out = Vec::new();
     loop {
         let left = end.saturating_duration_since(std::time::Instant::now()).as_millis() as i32;
         if left <= 0 {
-            return None;
+            return Err(Unanswered::Timeout);
         }
         let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         if unsafe { libc::poll(&mut p, 1, left) } <= 0 {
@@ -417,10 +443,10 @@ fn read_line(fd: i32, ms: i32) -> Option<String> {
         let mut b = [0u8; 1];
         let n = unsafe { libc::read(fd, b.as_mut_ptr() as *mut libc::c_void, 1) };
         if n <= 0 {
-            return (!out.is_empty()).then(|| String::from_utf8_lossy(&out).into_owned());
+            return if out.is_empty() { Err(Unanswered::Eof) } else { Ok(String::from_utf8_lossy(&out).into_owned()) };
         }
         if b[0] == b'\n' {
-            return Some(String::from_utf8_lossy(&out).into_owned());
+            return Ok(String::from_utf8_lossy(&out).into_owned());
         }
         out.push(b[0]);
     }
@@ -430,21 +456,37 @@ fn read_line(fd: i32, ms: i32) -> Option<String> {
 /// `Root::go`. Its signal dispositions are the caller's (sheepr changes none except SIGCHLD,
 /// `#![no_main]`, see main.rs); the shim restores the caller's mask as its last step before the
 /// exec (PLAN.md §3.1, cell 23). posix_spawn also avoids running Rust code in a forked child.
-fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, i32> {
-    let argv: Vec<CString> = cstrings(cmd).map_err(|e| {
-        say!("sheepr: {e}");
-        125
-    })?;
-    let Some(exe) = self_exe() else {
-        say!("sheepr: cannot find its own executable to start the command");
-        return Err(125);
-    };
+fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, PreRoot> {
+    // (a NUL in an argument cannot come from a C argv: unreachable from a shell, kept as 125)
+    let argv: Vec<CString> = cstrings(cmd).map_err(|e| PreRoot::new(Step::Usage, None, e))?;
+    let exe = self_exe().map_err(|e| PreRoot::new(Step::SelfExe, e.raw_os_error(), format!("cannot find its own executable to start the command: {e}")))?;
     let (mut go, mut er) = ([0i32; 2], [0i32; 2]);
-    unsafe {
-        if libc::pipe2(go.as_mut_ptr(), libc::O_CLOEXEC) != 0 || libc::pipe2(er.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
-            say!("sheepr: cannot make a pipe: {}", std::io::Error::last_os_error());
-            return Err(125);
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    let mut ok = unsafe { libc::pipe2(go.as_mut_ptr(), libc::O_CLOEXEC) } == 0;
+    let mut e = if ok { 0 } else { errno() };
+    if ok {
+        ok = unsafe { libc::pipe2(er.as_mut_ptr(), libc::O_CLOEXEC) } == 0;
+        if !ok {
+            e = errno();
+            unsafe {
+                libc::close(go[0]);
+                libc::close(go[1]);
+            }
         }
+    }
+    // debug seam: the pipes' result is replaced by the injected error (the real pipes are closed)
+    if let Some(x) = crate::steps::injected(Step::Pipe) {
+        if ok {
+            for f in [go[0], go[1], er[0], er[1]] {
+                unsafe { libc::close(f) };
+            }
+        }
+        (ok, e) = (false, x);
+    }
+    if !ok {
+        return Err(PreRoot::new(Step::Pipe, Some(e), format!("cannot make a pipe: {}", std::io::Error::from_raw_os_error(e))));
+    }
+    unsafe {
         // the shim's ends cross its exec; the shim sets them CLOEXEC again before the command's
         libc::fcntl(go[0], libc::F_SETFD, 0);
         libc::fcntl(er[1], libc::F_SETFD, 0);
@@ -469,7 +511,11 @@ fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, i32> {
         libc::sigfillset(&mut all);
         libc::posix_spawnattr_setsigmask(&mut attr, &all);
         libc::posix_spawnattr_setflags(&mut attr, libc::POSIX_SPAWN_SETSIGMASK as libc::c_short);
-        let rc = libc::posix_spawn(&mut pid, exe.as_ptr(), std::ptr::null(), &attr, ptrs.as_ptr(), environ);
+        // debug seam: the spawn is skipped and fails with the injected errno (no shim exists)
+        let rc = match crate::steps::injected(Step::ShimSpawn) {
+            Some(e) => e,
+            None => libc::posix_spawn(&mut pid, exe.as_ptr(), std::ptr::null(), &attr, ptrs.as_ptr(), environ),
+        };
         libc::posix_spawnattr_destroy(&mut attr);
         libc::close(go[0]);
         libc::close(er[1]);
@@ -480,30 +526,37 @@ fn spawn(cmd: &[OsString], caller_mask: &libc::sigset_t) -> Result<Root, i32> {
             libc::close(go[1]);
             libc::close(er[0]);
         }
-        say!("sheepr: cannot start the command: {}", std::io::Error::from_raw_os_error(rc));
-        // phase 1's posix_spawnp reported a spawn without resources (EAGAIN, ENOMEM) or with too
-        // long arguments (E2BIG) as 126; any other failure is sheepr's own (it cannot run its
-        // own binary)
-        return Err(if rc == libc::EAGAIN || rc == libc::ENOMEM || rc == libc::E2BIG { 126 } else { 125 });
+        // the exit code (126 for no resources or too long arguments, as phase 1's posix_spawnp
+        // gave it; else 125: sheepr cannot run its own binary) is the step table's
+        return Err(PreRoot::new(Step::ShimSpawn, Some(rc), format!("cannot start the command: {}", std::io::Error::from_raw_os_error(rc))));
     }
     // the handshake: the shim is running, is this protocol, and holds its PDEATHSIG and parent
-    // (5 s: a cold start under an emulator)
-    let line = read_line(er[0], 5000);
-    if line.as_deref() != Some(format!("H{nonce} 1").as_str()) {
+    // (5 s: a cold start under an emulator; debug seam SHEEPR_TEST_HANDSHAKE_MS)
+    let ms = crate::seam_ms("SHEEPR_TEST_HANDSHAKE_MS").map_or(5000, |m| m as i32);
+    let line = read_line(er[0], ms);
+    if line.as_deref().ok() != Some(format!("H{nonce} 1").as_str()) {
+        // a shim that closed its end has ended: its own end is waited for, never a SIGKILL that
+        // could take its place; any other is killed first
+        if !matches!(line, Err(Unanswered::Eof)) {
+            unsafe { libc::kill(pid, libc::SIGKILL) }; // raw signal site: the shim this supervisor spawned (PHASE2.md §0.3)
+        }
+        let mut st = 0;
         unsafe {
-            libc::kill(pid, libc::SIGKILL); // raw signal site: the shim this supervisor spawned (PHASE2.md §0.3)
-            let mut st = 0;
             libc::waitpid(pid, &mut st, 0);
             libc::close(go[1]);
             libc::close(er[0]);
         }
-        let why = match line.as_deref() {
-            Some(l) if l.starts_with('F') => l[1..].to_string(),
-            Some(_) => "an unexpected answer".to_string(),
-            None => "no answer".to_string(),
-        };
-        say!("sheepr: the command could not be started ({why}); it did not run");
-        return Err(125);
+        let not_run = |why: &str| format!("the command could not be started ({why}); it did not run");
+        return Err(match line {
+            // the shim's own step (its `F` line): prctl, its parent, or an older shim's text
+            Ok(l) if l.starts_with('F') => {
+                let (step, errno, why) = crate::steps::parse_f(&l[1..]);
+                PreRoot::new(step, errno, not_run(&why))
+            }
+            Ok(_) => PreRoot::new(Step::Handshake, None, not_run("an unexpected answer")),
+            Err(Unanswered::Eof) => PreRoot::new(Step::Handshake, None, not_run(&format!("its starter ended before it answered, {}", ended(st)))),
+            Err(Unanswered::Timeout) => PreRoot::new(Step::Handshake, None, not_run(&format!("its starter gave no answer in {ms} ms"))),
+        });
     }
     unsafe { libc::fcntl(er[0], libc::F_SETFL, libc::O_NONBLOCK) };
     Ok(Root { pid, go: go[1], err: er[0] })
@@ -527,19 +580,44 @@ pub fn root_shim(a: &[OsString]) -> i32 {
         return 125;
     }
     let cmd = &a[8..];
+    // debug seam SHEEPR_TEST_FAIL_STEP=handshake: the shim ends before it answers (the
+    // supervisor reads EOF and names this end)
+    if crate::steps::injected(Step::Handshake).is_some() {
+        unsafe { libc::_exit(125) };
+    }
     let tell = |s: &str| unsafe {
         libc::write(err, s.as_ptr() as *const libc::c_void, s.len());
     };
-    let fail = |what: &str| -> ! {
-        tell(&format!("F{what}\n"));
+    // `F<step> <errno>` (plan §2): the supervisor names the step and its errno
+    let fail = |step: Step, errno: Option<i32>| -> ! {
+        tell(&match errno {
+            Some(e) => format!("F{} {e}\n", step.name()),
+            None => format!("F{}\n", step.name()),
+        });
         unsafe { libc::_exit(125) }
     };
-    let no_pdeath = crate::seam_flag("SHEEPR_TEST_SHIM_NO_PDEATHSIG");
-    if crate::seam_flag("SHEEPR_TEST_SHIM_PRCTL_FAIL") || (!no_pdeath && unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0) {
-        fail("cannot set PR_SET_PDEATHSIG");
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    // debug seams SHEEPR_TEST_FAIL_STEP=shim-prctl|shim-parent: the call's result is replaced
+    if !crate::seam_flag("SHEEPR_TEST_SHIM_NO_PDEATHSIG") {
+        let mut r = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
+        let mut e = if r == 0 { 0 } else { errno() };
+        if let Some(x) = crate::steps::injected(Step::ShimPrctl) {
+            (r, e) = (-1, x);
+        }
+        if r != 0 {
+            fail(Step::ShimPrctl, Some(e));
+        }
     }
-    if crate::seam_flag("SHEEPR_TEST_SHIM_WRONG_PARENT") || unsafe { libc::getppid() } != sup {
-        fail("its parent is not the supervisor");
+    let mut parent = unsafe { libc::getppid() };
+    if crate::steps::injected(Step::ShimParent).is_some() {
+        parent = -1;
+    }
+    if parent != sup {
+        fail(Step::ShimParent, None);
+    }
+    // debug seam: the answer comes this late (the supervisor's wait for it can time out)
+    if let Some(ms) = crate::seam_ms("SHEEPR_TEST_SHIM_SILENT_MS") {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
     tell(&format!("H{nonce} 1\n"));
     let mut b = [0u8; 1];
@@ -576,6 +654,8 @@ pub fn root_shim(a: &[OsString]) -> i32 {
             .collect()
     };
     let cands: Vec<CString> = candidates.into_iter().filter_map(|c| CString::new(c).ok()).collect();
+    // debug seam SHEEPR_TEST_FAIL_STEP=exec: every exec is skipped and fails with this errno
+    let exec_seam = crate::steps::injected(Step::Exec);
     let mut eacces = false;
     let mut last = libc::ENOENT;
     unsafe {
@@ -584,8 +664,13 @@ pub fn root_shim(a: &[OsString]) -> i32 {
         std::ptr::copy_nonoverlapping(mask.as_ptr(), &mut m as *mut _ as *mut u8, mask.len());
         libc::sigprocmask(libc::SIG_SETMASK, &m, std::ptr::null_mut());
         for c in &cands {
-            libc::execve(c.as_ptr(), ptrs.as_ptr(), environ as *const *const libc::c_char);
-            let e = *libc::__errno_location();
+            let e = match exec_seam {
+                Some(x) => x,
+                None => {
+                    libc::execve(c.as_ptr(), ptrs.as_ptr(), environ as *const *const libc::c_char);
+                    *libc::__errno_location()
+                }
+            };
             match e {
                 e if goes_on(e) => {}
                 libc::EACCES => eacces = true,
@@ -677,9 +762,10 @@ fn poll_fd(fd: i32, ms: i32) {
 /// - dies the way the supervisor died (P2-1).
 /// The supervisor gets PR_SET_PDEATHSIG(SIGTERM): if the relay is killed, the supervisor is
 /// told to end the job instead of running on unseen (review round 4, P3-2).
-/// Returns Err(code) in the relay (or on a failed fork), Ok(Some(relay pid)) in a supervisor
-/// that has a relay, Ok(None) without one.
-fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
+/// Returns Err in the relay (`Before::Ended`, its own end), on a failed fork (a `PreRoot`) or a
+/// TERM before it (death by TERM), Ok(Some(relay pid)) in a supervisor that has a relay,
+/// Ok(None) without one.
+fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, Before> {
     if !crate::has_children() {
         return Ok(None);
     }
@@ -691,7 +777,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
     // start and is then killed at once, never left running (the same as a TERM arriving just
     // after the pre-spawn check without a relay).
     if sig.watch_term && crate::term_pending() {
-        return Err(crate::die_by_term(143));
+        return Err(Before::Ended(crate::die_by_term(143)));
     }
     unsafe {
         let relay = libc::getpid();
@@ -702,7 +788,12 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
         }
         let mut old: libc::sigset_t = std::mem::zeroed();
         libc::sigprocmask(libc::SIG_BLOCK, &set, &mut old);
-        match libc::fork() {
+        // debug seam: the fork is skipped and fails with the injected errno
+        let (pid, e) = match crate::steps::injected(Step::RelayFork) {
+            Some(e) => (-1, e),
+            None => (libc::fork(), std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        };
+        match pid {
             0 => {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
                 if libc::getppid() != relay {
@@ -714,8 +805,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
             }
             -1 => {
                 libc::sigprocmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
-                say!("sheepr: fork failed: {}", std::io::Error::last_os_error());
-                Err(125)
+                Err(PreRoot::new(Step::RelayFork, Some(e), format!("fork failed: {}", std::io::Error::from_raw_os_error(e))).into())
             }
             sup => {
                 crate::status::disable(); // the supervisor writes the status line
@@ -758,7 +848,7 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
                         if fd >= 0 {
                             libc::close(fd);
                         }
-                        return Err(crate::die_like(st));
+                        return Err(Before::Ended(crate::die_like(st)));
                     }
                     let got = if fd >= 0 {
                         poll_fd(fd, 1000);
@@ -798,10 +888,22 @@ fn relay_if_needed(sig: &crate::Signals) -> Result<Option<i32>, i32> {
     }
 }
 
-pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
-    if let Some(why) = proc_problem() {
-        say!("sheepr: {why}, so sheepr cannot tell which processes are this job's. Mount a /proc for this pid namespace (for example unshare --mount-proc). Nothing was started.");
-        return 125;
+/// The Linux state at the end of its pre-root segment: the go byte is sent.
+struct Started {
+    relay: Option<i32>,
+    is_subreaper: bool,
+    me: i32,
+    journal: std::cell::RefCell<crate::journal::Journal>,
+    shim: Root,
+}
+
+/// The pre-root segment (plan §2): every step before the command can run, up to the go byte. An
+/// early end is a `Before`: a step's failure (`PreRoot`, made the status in one place,
+/// `Before::end`), or an end of the process's own (death by a TERM, the relay's own end); never
+/// a bare exit code.
+fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
+    if let Some((why, errno)) = proc_check() {
+        return Err(PreRoot::new(Step::Proc, errno, format!("{why}, so sheepr cannot tell which processes are this job's. Mount a /proc for this pid namespace (for example unshare --mount-proc). Nothing was started.")).into());
     }
     // PHASE2.md §1 decision 7: an inherited PR_SET_PDEATHSIG (this run is another run's command)
     // becomes SIGTERM, so the outer's death is an orderly kill of this job, never a SIGKILL that
@@ -817,17 +919,11 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
         crate::sweep::auto(&a.owner, a.quiet);
     }
     crate::caps::start();
-    let relay = match relay_if_needed(sig) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
+    let relay = relay_if_needed(sig)?;
     let subreaper = match a.mode.as_deref() {
         None | Some("subreaper") => true,
         Some("none") => false,
-        Some(m) => {
-            say!("sheepr: unknown mode {m}");
-            return 125;
-        }
+        Some(m) => return Err(PreRoot::new(Step::Mode, None, format!("unknown mode {m}")).into()),
     };
     crate::status::cloexec();
     let is_subreaper = subreaper && unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == 0;
@@ -839,14 +935,14 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
     }
     let me = unsafe { libc::getpid() };
     if let Some(code) = crate::term_before_spawn(sig) {
-        return code;
+        return Err(Before::Ended(code));
     }
     let journal = std::cell::RefCell::new(crate::journal::Journal::open(&a.owner, &a.argv));
     let mut shim = match spawn(&a.cmd, &sig.caller_mask) {
         Ok(r) => r,
-        Err(code) => {
+        Err(p) => {
             journal.into_inner().finish(true);
-            return code;
+            return Err(p.into());
         }
     };
     let root = shim.pid;
@@ -876,9 +972,18 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
         }
         crate::status::set_root_final("not-started");
         journal.into_inner().finish(true);
-        return crate::die_by_term(143);
+        return Err(Before::Ended(crate::die_by_term(143)));
     }
     shim.go();
+    Ok(Started { relay, is_subreaper, me, journal, shim })
+}
+
+pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
+    let Started { relay, is_subreaper, me, journal, mut shim } = match pre_root(a, sig) {
+        Ok(s) => s,
+        Err(b) => return b.end(),
+    };
+    let root = shim.pid;
     let scan = || {
         let found = descendants(me);
         journal.borrow_mut().record(&found);

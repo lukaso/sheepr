@@ -169,8 +169,8 @@ pub fn set_root(root: &'static str) {
         }
     });
 }
-/// The root's end, known for certain; no later `set_root` changes it (Linux: an exec that failed).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// The root's end, known for certain; no later `set_root` changes it (a step before the command
+/// ran: `crate::steps::PreRoot::record`).
 pub fn set_root_final(root: &'static str) {
     with(|s| s.set_root_final(root));
 }
