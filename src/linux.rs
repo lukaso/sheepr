@@ -947,7 +947,6 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
     };
     let root = shim.pid;
     crate::status::set_root_pid(root);
-    crate::status::set_root("signaled"); // until the root's own end is known
     // the root is journaled before it runs: the shim waits for the go byte
     if let Some(id) = sheepr::ident::identity(root) {
         journal.borrow_mut().record_root(root, id, &a.cmd);
@@ -974,6 +973,11 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Started, Before> {
         journal.into_inner().finish(true);
         return Err(Before::Ended(crate::die_by_term(143)));
     }
+    if crate::seam_flag("SHEEPR_TEST_PANIC_BEFORE_GO") {
+        panic!("test seam: a panic between the shim's spawn and the go byte");
+    }
+    // plan §2: the command may run from the go byte on
+    crate::status::set_root_may_run();
     shim.go();
     Ok(Started { relay, is_subreaper, me, journal, shim })
 }
@@ -1004,6 +1008,9 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
     let mut jobs = crate::JobControl::new(relay);
     let tick = crate::tick_ms() as i32;
     let status = loop {
+        if crate::seam_flag("SHEEPR_TEST_PANIC_IN_LOOP") {
+            panic!("test seam: a panic in the event loop");
+        }
         tracker.refresh(scan());
         let live: Vec<(i32, u64)> = tracker.known.iter().map(|(&p, &id)| (p, id)).collect();
         let got: Vec<i32> = if fd >= 0 {

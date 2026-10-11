@@ -1954,7 +1954,12 @@ pub extern "C" fn main(argc: c_int, argv: *const *const std::os::raw::c_char) ->
     }
     note(format!("start debug {}", std::process::id()));
     // a panic must not unwind out of an extern "C" fn (undefined behaviour before Rust 1.81)
-    std::panic::catch_unwind(|| run(argv)).unwrap_or_else(|_| status::write(125))
+    // plan §2: a panic is an internal error; `root` is "not-started" only if the command cannot
+    // have run yet (the record's `root_may_run`), else it follows the record
+    std::panic::catch_unwind(|| run(argv)).unwrap_or_else(|_| {
+        status::set_error(steps::Step::Panic, None, "internal error (a panic)");
+        status::write(125)
+    })
 }
 
 #[cfg(test)]

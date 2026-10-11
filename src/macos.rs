@@ -1009,6 +1009,9 @@ fn wait(
         // the members of the last scan, for the caps
         let mut live: Vec<(pid_t, u64)> = Vec::new();
         let result = loop {
+            if crate::seam_flag("SHEEPR_TEST_PANIC_IN_LOOP") {
+                panic!("test seam: a panic in the event loop");
+            }
             // polling never reads kqueue events, so it checks the parent pid instead
             if (relay_by_ppid || polling) && relay.is_some_and(|r| libc::getppid() != r) {
                 relay_died();
@@ -1151,6 +1154,8 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
             if let Some(code) = crate::term_before_spawn(sig) {
                 return Err(Before::Ended(code));
             }
+            // never suspended: it may run from its spawn (a failed spawn's end is final)
+            crate::status::set_root_may_run();
             return Ok(Pre::Disclaim(spawn(&a.cmd, true, false, &sig.caller_mask)?));
         }
         Some(m) => return Err(PreRoot::new(Step::Mode, None, format!("unknown mode {m}")).into()),
@@ -1281,6 +1286,10 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
             }
         }
     }
+    if cont_blocked {
+        // not suspended: it may run from its spawn (a failed spawn's end is final)
+        crate::status::set_root_may_run();
+    }
     let root = match spawn(&a.cmd, false, !cont_blocked, &sig.caller_mask) {
         Ok(r) => r,
         Err(p) => {
@@ -1296,8 +1305,10 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
 /// The responsible mode after its root is spawned.
 fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
     let Started { relay, journal, mut listener, tracker, cont_blocked, held, stops, root } = s;
-    crate::status::set_root("signaled"); // until the root's own end is known
     crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_SPAWN_MS");
+    if crate::seam_flag("SHEEPR_TEST_PANIC_AFTER_SPAWN") {
+        panic!("test seam: a panic after the spawn, before the stop signals' unblock");
+    }
     if crate::seam_flag("SHEEPR_TEST_KILL_BEFORE_ROOT_JOURNAL") {
         unsafe { libc::raise(libc::SIGKILL) }; // raw signal site: this process (PHASE2.md §0.3)
     }
@@ -1306,7 +1317,17 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
         // before the resuming CONT below: the root is journaled before it runs
         journal.borrow_mut().record_root(root, u, &a.cmd);
     }
+    // round 3 N3: once the stop signals are let through, a stop of sheepr and the job's CONT (or
+    // any CONT from outside) can run the suspended root before sheepr's own CONT
+    crate::status::set_root_may_run();
     unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &stops, std::ptr::null_mut()) };
+    if crate::seam_flag("SHEEPR_TEST_CONT_ROOT_EARLY") {
+        // debug seam: an outside CONT runs the suspended root now
+        unsafe { libc::kill(root, libc::SIGCONT) }; // raw signal site: the root this supervisor spawned (PHASE2.md §0.3)
+    }
+    if crate::seam_flag("SHEEPR_TEST_PANIC_BEFORE_CONT") {
+        panic!("test seam: a panic after the stop signals' unblock, before sheepr's CONT");
+    }
     crate::seam_sleep("SHEEPR_TEST_SLEEP_BEFORE_CONT_CHECK_MS");
     let mut ended = false;
     if !cont_blocked {
@@ -1320,7 +1341,7 @@ fn responsible(a: &Args, sig: &crate::Signals, s: Started) -> i32 {
                 let mut st = 0;
                 libc::waitpid(root, &mut st, 0);
             }
-            crate::status::set_root("not-started");
+            // its end records nothing; it may have run (N3), so `root` reads "signaled"
             ended = true;
         } else {
             if cfg!(debug_assertions) {
@@ -1408,7 +1429,9 @@ fn root_disclaim(sig: &crate::Signals, root: pid_t) -> i32 {
     // the recorder keys on the root's pid (#17); its TERM path does not reap the root
     // (stated), so its end then stays unobserved: "signaled", both fields null
     crate::status::set_root_pid(root);
-    crate::status::set_root("signaled");
+    if crate::seam_flag("SHEEPR_TEST_PANIC_AFTER_SPAWN") {
+        panic!("test seam: a panic after root-disclaim's spawn");
+    }
     let r = uniq(root).map(|u| u.0).unwrap_or(0);
     let mut ints = crate::Interrupts::none();
     let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);

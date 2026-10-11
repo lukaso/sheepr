@@ -1342,9 +1342,8 @@ fn the_root_is_reaped_only_through_the_recorder() {
 /// #17 (macOS): a root that sheepr kills while it is still suspended (a TERM came before the
 /// resuming CONT) is reaped there and records nothing: both fields null, and the reap after the
 /// kill is not run for it (its pid is no longer sheepr's child; the trace has no
-/// `root-after-kill` line). Its `root` value is not pinned here: plan §1 keeps it
-/// "not-started", round 3's N3 (slice 2, with `root_may_run()`) makes it "signaled" once the stop
-/// signals were let through.
+/// `root-after-kill` line). Round 3 N3: the stop signals were let through before that kill, so
+/// a stop and the job's CONT may have run the root: `root` is "signaled" (it was "not-started").
 #[cfg(target_os = "macos")]
 #[test]
 fn a_root_killed_while_suspended_records_nothing() {
@@ -1365,6 +1364,7 @@ fn a_root_killed_while_suspended_records_nothing() {
     let t = std::fs::read_to_string(&trace).unwrap_or_default();
     assert_eq!(x.code, None, "sheepr dies of the TERM: {:?}", x.status);
     assert_eq!(field(&x, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(field(&x, "root").and_then(Json::str), Some("signaled"), "{:?}", x.status);
     assert!(both_null(&x), "{:?}", x.status);
     assert!(!t.lines().any(|l| l.starts_with("root-after-kill")), "trace:\n{t}");
     let _ = std::fs::remove_dir_all(&d);
@@ -1707,5 +1707,101 @@ fn a_relay_gone_before_the_spawn_says_term() {
     assert!(held, "control: the window was not open when the relay was killed");
     assert!(!ran, "the command ran although its relay was gone");
     assert!(says_term_before_the_root(&j), "{j:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// One run under a panic seam: (the run, whether MARK exists within 2 s when `wait_mark`).
+fn panic_run(d: &Path, name: &str, args: &str, env: &[(&str, &str)], mark: &Path, wait_mark: bool) -> (Run, bool) {
+    let x = run(d, name, args, env, |_| {});
+    let end = Instant::now() + Duration::from_secs(if wait_mark { 2 } else { 0 });
+    while wait_mark && !mark.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    (x, mark.exists())
+}
+
+/// Plan §2 (P1 of round 1, round 3 N3): a panic says "internal error (a panic)" (source "sheepr",
+/// exit 125), and `root` is "not-started" only when the command cannot have run. Before the root
+/// may run: a panic before the spawn (the control) and, on Linux, between the shim's spawn and the
+/// go byte; on macOS, between the suspended spawn and the stop signals' unblock: "not-started".
+/// After it may run: a panic in the event loop; root-disclaim's root after its spawn (never
+/// suspended); macOS's suspended root after the unblock, which an outside CONT runs (a seam sends
+/// it; the command's marker shows it ran) before sheepr's own CONT: not "not-started".
+#[test]
+fn a_panic_says_so_and_whether_the_command_may_have_run() {
+    let d = scratch("panic");
+    let m = marker();
+    let mark = d.join("ran");
+    let cmd = format!(r#"-- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}'"#, mark.display());
+    let disclaim = format!("--mode root-disclaim {cmd}");
+    let mut cases: Vec<(&str, &str, Vec<(&str, &str)>, &str)> = vec![
+        ("before the spawn", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_IN_RUN", "1")], "not-started"),
+        ("in the event loop", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_IN_LOOP", "1")], "signaled"),
+    ];
+    if cfg!(target_os = "linux") {
+        cases.push(("before the go byte", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_BEFORE_GO", "1")], "not-started"));
+    }
+    if cfg!(target_os = "macos") {
+        cases.push(("after the suspended spawn", cmd.as_str(), vec![("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "not-started"));
+        cases.push(("after root-disclaim's spawn", disclaim.as_str(), vec![("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1")], "signaled"));
+        cases.push(("after an outside CONT", cmd.as_str(), vec![("SHEEPR_TEST_CONT_ROOT_EARLY", "1"), ("SHEEPR_TEST_PANIC_BEFORE_CONT", "1")], "signaled"));
+    }
+    for (i, (name, args, env, root)) in cases.iter().enumerate() {
+        let _ = std::fs::remove_file(&mark);
+        let (x, ran) = panic_run(&d, &format!("p{i}"), args, env, &mark, *root == "signaled");
+        kill_marked(&m);
+        let what = format!("{name}: {:?}", x.status);
+        assert_eq!(x.code, Some(125), "{what}");
+        assert_eq!(field(&x, "root").and_then(Json::str), Some(*root), "{what}");
+        assert_eq!(field(&x, "error").and_then(Json::str), Some("internal error (a panic)"), "{what}");
+        assert_eq!(field(&x, "error_source").and_then(Json::str), Some("sheepr"), "{what}");
+        assert_eq!(field(&x, "error_code"), Some(&Json::Null), "{what}");
+        if *root == "not-started" {
+            assert!(!ran, "{name}: the command ran");
+        }
+        if *name == "after an outside CONT" {
+            assert!(ran, "control: the outside CONT did not run the root, so this row proves nothing");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §2 (macOS): a caller that blocks SIGCONT gets a root that is not suspended, so it may run
+/// from its spawn: a panic right after that spawn says not "not-started" ("signaled"), and the
+/// command does run (its marker appears). The control is the suspended root of
+/// `a_panic_says_so_and_whether_the_command_may_have_run`: "not-started" at the same seam.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_panic_after_an_unsuspended_spawn_says_the_command_may_have_run() {
+    use std::os::unix::process::CommandExt;
+    let d = scratch("contblock");
+    let m = marker();
+    let (out, mark) = (d.join("status"), d.join("ran"));
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}' 3>"{}" 2>/dev/null"#, mark.display(), out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_PANIC_AFTER_SPAWN", "1");
+    unsafe {
+        c.pre_exec(|| {
+            let mut s: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut s);
+            libc::sigaddset(&mut s, libc::SIGCONT);
+            libc::sigprocmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let code = c.status().unwrap().code();
+    let end = Instant::now() + Duration::from_secs(2);
+    while !mark.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ran = mark.exists();
+    kill_marked(&m);
+    let j = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    let get = |k: &str| j.as_ref().and_then(|j| j.get(k)).cloned();
+    assert_eq!(code, Some(125), "{j:?}");
+    assert!(ran, "control: the root did not run, so it was suspended after all");
+    assert_eq!(get("root").as_ref().and_then(Json::str), Some("signaled"), "{j:?}");
+    assert_eq!(get("error").as_ref().and_then(Json::str), Some("internal error (a panic)"), "{j:?}");
     let _ = std::fs::remove_dir_all(&d);
 }

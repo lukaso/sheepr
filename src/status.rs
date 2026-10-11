@@ -42,6 +42,10 @@ struct Status {
     /// set once the root's end is known for certain (an exec that failed): later guesses keep off
     root_final: bool,
     root_pid: i32,
+    /// the command may have run (plan §2, round 3 N3): set just before the point where it can
+    /// (the Linux go byte; macOS: the stop signals' unblock, or a spawn that is not suspended);
+    /// before it, an end is "not-started"
+    root_may_run: bool,
     /// the root's wait status, as the recorder took it (#17)
     root_end: Option<libc::c_int>,
     trigger: Option<(&'static str, u128)>,
@@ -69,6 +73,7 @@ impl Status {
             root: "not-started",
             root_final: false,
             root_pid: 0,
+            root_may_run: false,
             root_end: None,
             trigger: None,
             deadline_missed: false,
@@ -145,13 +150,16 @@ impl Status {
     }
 
     /// (`root`, `root_code`, `root_signal`): what the recorder took (option A: "exited" exactly
-    /// with a code, "signaled" exactly with a signal); else `root` as set, with both null (never
-    /// ran, or its end was not observed).
+    /// with a code, "signaled" exactly with a signal); else, with both null, the final end
+    /// ("not-started": the command never ran), "signaled" once the command may have run (its end
+    /// not observed), or "not-started" before that (also after a panic there).
     fn root_fields(&self) -> (&'static str, Option<i32>, Option<i32>) {
         match self.root_end {
             Some(st) if libc::WIFSIGNALED(st) => ("signaled", None, Some(libc::WTERMSIG(st))),
             Some(st) => ("exited", Some(libc::WEXITSTATUS(st)), None),
-            None => (self.root, None, None),
+            None if self.root_final => (self.root, None, None),
+            None if self.root_may_run => ("signaled", None, None),
+            None => ("not-started", None, None),
         }
     }
 }
@@ -179,15 +187,12 @@ pub fn cloexec() {
 pub fn set_job(job: Option<String>) {
     with(|s| s.job = job);
 }
-pub fn set_root(root: &'static str) {
-    with(|s| {
-        if !s.root_final {
-            s.root = root;
-        }
-    });
+/// The command may run from now on (plan §2): `root` is no longer "not-started" by default.
+pub fn set_root_may_run() {
+    with(|s| s.root_may_run = true);
 }
-/// The root's end, known for certain; no later `set_root` changes it (a step before the command
-/// ran: `crate::steps::PreRoot::record`).
+/// The root's end, known for certain; nothing later changes it (a step before the command ran:
+/// `crate::steps::PreRoot::record`).
 pub fn set_root_final(root: &'static str) {
     with(|s| s.set_root_final(root));
 }
@@ -551,7 +556,7 @@ mod tests {
         s.record_root_end(42, crate::exit_status(3));
         assert_eq!(s.root_fields(), ("not-started", None, None), "no root pid set: nothing is recorded");
         s.root_pid = 42;
-        s.root = "signaled";
+        s.root_may_run = true;
         s.record_root_end(43, killed_by(libc::SIGKILL));
         assert_eq!(s.root_fields(), ("signaled", None, None), "another pid is not the root");
         s.record_root_end(42, (libc::SIGSTOP << 8) | 0x7f);
@@ -561,7 +566,7 @@ mod tests {
         s.record_root_end(42, killed_by(libc::SIGKILL));
         assert_eq!(s.root_fields(), ("exited", Some(3), None), "a second record at the root's pid");
         let mut k = Status::new();
-        (k.root_pid, k.root) = (7, "signaled");
+        (k.root_pid, k.root_may_run) = (7, true);
         k.record_root_end(7, killed_by(libc::SIGKILL));
         k.record_root_end(7, crate::exit_status(0));
         assert_eq!(k.root_fields(), ("signaled", None, Some(libc::SIGKILL)));
@@ -572,13 +577,13 @@ mod tests {
     #[test]
     fn a_final_not_started_clears_and_blocks_the_root_fields() {
         let mut s = Status::new();
-        (s.root_pid, s.root) = (42, "signaled");
+        (s.root_pid, s.root_may_run) = (42, true);
         s.record_root_end(42, crate::exit_status(127));
         assert_eq!(s.root_fields(), ("exited", Some(127), None), "control");
         s.set_root_final("not-started");
         assert_eq!(s.root_fields(), ("not-started", None, None), "cleared");
         let mut b = Status::new();
-        (b.root_pid, b.root) = (42, "signaled");
+        (b.root_pid, b.root_may_run) = (42, true);
         b.set_root_final("not-started");
         b.record_root_end(42, crate::exit_status(127));
         assert_eq!(b.root_fields(), ("not-started", None, None), "blocked");
@@ -651,13 +656,13 @@ mod tests {
         let mut s = Status::new();
         assert_eq!(field(&s, "root_code"), Some(sheepr::json::Json::Null), "never ran");
         assert_eq!(field(&s, "root_signal"), Some(sheepr::json::Json::Null), "never ran");
-        (s.root_pid, s.root) = (42, "signaled");
+        (s.root_pid, s.root_may_run) = (42, true);
         s.record_root_end(42, crate::exit_status(3));
         assert_eq!(field(&s, "root").as_ref().and_then(|j| j.str().map(String::from)), Some("exited".to_string()));
         assert_eq!(field(&s, "root_code").as_ref().and_then(|j| j.num()), Some(3.0));
         assert_eq!(field(&s, "root_signal"), Some(sheepr::json::Json::Null));
         let mut k = Status::new();
-        (k.root_pid, k.root) = (42, "signaled");
+        (k.root_pid, k.root_may_run) = (42, true);
         k.record_root_end(42, killed_by(libc::SIGTERM));
         assert_eq!(field(&k, "root_code"), Some(sheepr::json::Json::Null));
         assert_eq!(field(&k, "root_signal").as_ref().and_then(|j| j.num()), Some(libc::SIGTERM as f64));
