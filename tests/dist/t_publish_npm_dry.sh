@@ -112,7 +112,8 @@ pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the n
   (cd "$REPO" && no_osascript env HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
     HTTPS_PROXY=http://127.0.0.1:9 NPM_CONFIG_USERCONFIG="$FX/decoy-npmrc" \
     PATH="$FX/bin:$PATH" SR_PUBLISH_DRY_NPM="$FX/npm" ${PART:+SR_PUBLISH_DRY_NPM_PART="$PART"} ${PUBX:+"$PUBX"} "$nv_" \
-    sh scripts/release.sh __publish-npm-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    sh scripts/release.sh __publish-npm-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; sed -n 's/^release: __publish[a-z-]*-dry (.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\))$/\1/p' "$FX/o" >> "$FX/homes"
+  return $r_
 }
 # "view NAME" or "publish NAME" per call (a name's parts start with a letter, a version with a digit)
 order() { sed -En 's/^npm (view|publish) (.* |.*\/)(sheepr(-[a-z][a-z0-9]*)*)[-@][0-9].*$/\1 \3/p' "$FX/calls" 2>/dev/null | tr '\n' ','; }
@@ -406,6 +407,9 @@ done
 # sleep stand-in runs during a wait, outside the npm class)
 mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-linux-x64"
 [ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && pass "NOTIFY, NPM, NETC, npm_part and shipping are not exported (a waited run's sleep sees none)" || fail "exported to a child: rc=$r sleeps=$(grep -c . "$FX/sleeps" 2>/dev/null) exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
-n=$(ls -d /private/tmp/sr-dryhome.* 2>/dev/null | wc -l | tr -d ' ')
-[ "$n" = 0 ] && pass "no dry HOME is left, after the refused runs too" || fail "$n dry HOME dirs left"
+# this cell's own dry HOMEs (each run prints the one it made; other sessions may run these cells at
+# the same time, so the whole /private/tmp is not counted): at least ten seen, none left
+nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""
+while IFS= read -r h; do [ -e "$h" ] && left="$left $h"; done < "$FX/homes" 2>/dev/null
+[ "$nh" -ge 10 ] && [ -z "$left" ] && pass "none of this cell's $nh dry HOMEs is left, after the refused runs too" || fail "this cell's dry HOMEs: $nh seen; left:$left"
 finish

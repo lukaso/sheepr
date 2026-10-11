@@ -122,6 +122,9 @@ exit 0
 EOF
 chmod +x "$FX/gh" "$FX/git" "$FX/npm" "$FX/curl"
 printf '%s\trefs/tags/v0.1.0\n%s\trefs/tags/v0.1.0^{}\n' "$T" "$C" > "$FX/remote"
+# rec: the dry HOME the last run printed (every dry run here is followed by it; the last row checks
+# that none of them is left)
+rec() { sed -n 's/^release: __publish[a-z-]*-dry (.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\))$/\1/p' "$FX/o" >> "$FX/homes"; }
 pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 when unset; TAPKEEP=1:
        # the tap as it is). Set them as plain assignments and clear them after: a VAR=x prefix on
        # a function call persists in POSIX sh
@@ -130,12 +133,14 @@ pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 wh
   (cd "$REPO" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     GH_TOKEN="$DECOY" GITHUB_TOKEN="$DECOY" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" NPM_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" \
     SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls" \
-    ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
+  return $r_
 }
 cask() { # tag -> rc: `__publish-cask-dry` (the cask step alone); the tap as it is; output in $FX/o
   rm -rf "$FX/calls" "$FX"/env.*
   (cd "$REPO" && env -u LC_ALL HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GH_TOKEN="$DECOY" \
-    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
+  return $r_
 }
 nowrite() { ! grep -q -e '^gh api -X PUT' "$FX/calls"; }
 nopublic() { ! grep -q -e '^gh api -X POST' -e '^gh api -X PATCH' "$FX/calls"; }
@@ -391,7 +396,7 @@ printf '#!/bin/sh\nexec "%s" "$@"\n' "$OUT/gh" > "$FX/gh-wrap"; chmod +x "$FX/gh
 for spec in "outside:$OUT/gh" "symlink:$FX/gh-link" "dotdot:$FX/../$(basename "$OUT")/gh"; do
   l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
   (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$p" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
   [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_GH' "$FX/o" && pass "__publish-dry, a $l gh: refused for the gh stand-in, the outside gh never called" || fail "__publish-dry, $l: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1)"
 done
 # a stand-in whose name ends in a newline, next to a symlink without it: refused, the symlink's
@@ -400,14 +405,14 @@ nl='
 '
 cp "$FX/gh" "$FX/ghn$nl"; ln -s "$OUT/gh" "$FX/ghn"; rm -f "$OUT/called"
 (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/ghn$nl" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-  sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+  sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
 [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_GH' "$FX/o" && pass "a stand-in name ending in a newline: refused for the gh stand-in, the symlink's target never called" || fail "newline name: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1)"
 # a wrapper inside the fixtures that execs a gh outside them cannot be seen before it runs: what
 # it reaches runs with a fresh temp HOME and no token or transport variable, so a real gh would
 # have no login and could not write
 rm -f "$OUT/called" "$OUT/env"
 (cd "$REPO" && env HOME="$FX/ghome" GH_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" SR_PUBLISH_DRY_GH="$FX/gh-wrap" \
-  SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1
+  SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; rec
 if [ -e "$OUT/env" ]; then
   h=$(sed -n 's/^HOME=//p' "$OUT/env")
   case $h in /private/tmp/sr-*) ! grep -q -e '^GH_TOKEN=' -e '^GH_CONFIG_DIR=' -e '^SSH_AUTH_SOCK=' -e '^GITHUB_TOKEN=' "$OUT/env" \
@@ -418,7 +423,7 @@ printf '#!/bin/sh\necho "OUTSIDE npm $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OU
 for spec in "outside:$OUT/npm" "symlink:$FX/npm-link"; do
   l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
   (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$p" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
   [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_NPM' "$FX/o" && pass "__publish-dry, a $l npm: refused for the npm stand-in, the outside npm never called" || fail "__publish-dry, $l npm: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1) $(tail -1 "$FX/o")"
 done
 printf '#!/bin/sh\necho "OUTSIDE curl $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OUT/curl"; chmod +x "$OUT/curl"; ln -s "$OUT/curl" "$FX/curl-link"
@@ -426,7 +431,7 @@ for spec in "outside:$OUT/curl" "symlink:$FX/curl-link"; do
   l=${spec%%:*} p=${spec#*:}
   for entry in __publish-dry __publish-cask-dry; do rm -f "$OUT/called"
     (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$p" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-      sh scripts/release.sh $entry --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; r=$?
+      sh scripts/release.sh $entry --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; r=$?; rec
     [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_CURL' "$FX/o" && pass "$entry, a $l curl: refused for the curl stand-in, the outside curl never called" || fail "$entry, $l curl: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1) $(tail -1 "$FX/o")"
   done
 done
@@ -450,8 +455,6 @@ echo stranger > "$FX/owner.sheepr"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/owner.sh
 [ $r = 1 ] && nogh && grep -q 'sheepr on npm belongs to stranger, not to lukasco' "$FX/o" && pass "an npm name owned by someone else: refused before any git or gh call" || fail "npm owner: rc=$r $(seq) $(tail -1 "$FX/o")"
 : > "$FX/ownerfail.sheepr-linux-arm64"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/ownerfail.sheepr-linux-arm64"
 [ $r = 1 ] && nogh && grep -q 'sheepr-linux-arm64 is not on npm yet' "$FX/o" && pass "an npm name not on npm yet: refused before any git or gh call" || fail "npm absent: rc=$r $(seq) $(tail -1 "$FX/o")"
-n=$(ls -d /private/tmp/sr-dryhome.* 2>/dev/null | wc -l | tr -d ' ')
-[ "$n" = 0 ] && pass "no dry HOME is left, after the refused runs too" || fail "$n dry HOME dirs left"
 # the planner judges the stamped manifest (the run's private copy), not the output dir's read
 # again: a stamped manifest naming another commit, the output dir's file corrected after the copy
 # (at the first git call), is refused by the planner
@@ -522,4 +525,10 @@ awk '{ print } /^publish_check\(\) \{/ && !d { print "  tool \"$NETC\" \"$GITCMD
 awk '{ print } /^cask_pre\(\) \{/ && !d { print "  tool \"$NETC\" \"$GH\" api -X PUT x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant2.sh"
 [ -n "$(pcwrites "$FX/rel-plant1.sh")" ] && [ -n "$(pcwrites "$FX/rel-plant2.sh")" ] && pass "control: a remote read planted in publish_check, and a write planted in cask_pre, are each caught" || fail "control: plant1 '$(pcwrites "$FX/rel-plant1.sh")' plant2 '$(pcwrites "$FX/rel-plant2.sh")'"
 
+# the last row (every run of the cell comes before it): this cell's own dry HOMEs (each run prints
+# the one it made; other sessions may run these cells at the same time, so the whole /private/tmp
+# is not counted): at least ten seen, none left
+nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""
+while IFS= read -r h; do [ -e "$h" ] && left="$left $h"; done < "$FX/homes" 2>/dev/null
+[ "$nh" -ge 10 ] && [ -z "$left" ] && pass "none of this cell's $nh dry HOMEs is left, after the refused runs too" || fail "this cell's dry HOMEs: $nh seen; left:$left"
 finish

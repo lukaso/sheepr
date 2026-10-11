@@ -516,7 +516,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
-  echo "release: __publish-dry (stand-ins; verify not run; a temp HOME)"
+  echo "release: __publish-dry (stand-ins; verify not run; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   # the cells' way into the shipping branches (only `yes` sets it; the planned ship sets shipping itself)
   [ "${SR_PUBLISH_DRY_SHIPPING:-}" = yes ] && shipping=yes
@@ -626,7 +626,7 @@ publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real 
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
-  echo "release: __publish-cask-dry (stand-ins; a temp HOME)"
+  echo "release: __publish-cask-dry (stand-ins; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   GH=$SR_PUBLISH_DRY_GH NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry publish_cask_exec "$out/$tag"
   rm -rf "$DRYHOME"
@@ -787,7 +787,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
   fi
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
-  echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME)"
+  echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME, $DRYHOME)"
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
   [ -z "${SR_PUBLISH_DRY_NPM_PART+set}" ] || npm_part=$SR_PUBLISH_DRY_NPM_PART
