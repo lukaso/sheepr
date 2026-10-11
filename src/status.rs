@@ -1,7 +1,7 @@
 //! `--status-fd N` (PLAN.md §3.1; PHASE2.md §1 decision 8): one JSON line, written once at the
 //! end, by the supervisor only (a relay drops the fd), within IDLE and CAP (issue #14). Fields: `v`, `job`, `root` (`exited`,
 //! `signaled`, `not-started`), `root_code`, `root_signal`, `code`, `trigger` (null, `term`,
-//! `timeout`, `cap`), `trigger_at` (ms since start), `deadline_missed`, `killed`
+//! `timeout`, `cap`; `journal` only under `--require-journal`), `trigger_at` (ms since start), `deadline_missed`, `killed`
 //! (`[{pid, cmd, escaped}]`, escaped: null | `setsid` | `reparented`), `survivors`, `tracking`,
 //! `degraded`, `error`, `error_code`, `error_source`, `notes`. The fd is set CLOEXEC once the
 //! supervisor runs (after the macOS SETEXEC), so the job never holds it. The same record feeds the

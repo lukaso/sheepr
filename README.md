@@ -216,6 +216,13 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   `error` is the first, and the others are in `notes` as `also: …`; an internal error is never
   only a note. A run that ends before its command runs always says why: an `error`, or `trigger`
   `term` when a TERM ended it.
+- `run --require-journal`: the command runs only once sheepr has written it into its job journal,
+  the record that lets `sheepr sweep` (or your next `sheepr run`) end the job if sheepr is killed.
+  When the journal cannot be kept (no state directory, a full disk, no permission), the command
+  does not run: exit 125, and the `--status-fd` line's `error` says why. When the journal fails
+  while the job runs, sheepr ends the job: exit 125, `trigger` `journal`. Without the option, a
+  journal that cannot be kept only costs the cleanup after a killed sheepr, and the job runs.
+  Not with `--mode root-disclaim`; on macOS, not when the caller blocks SIGCONT.
 - After an internal error (a panic) once the command may have run, sheepr does not end the
   process tree; the job's journal is kept, and `sheepr sweep` (or your next `sheepr run`) ends it.
   No status line is written when sheepr ends before it can: before it has read `--status-fd`,
