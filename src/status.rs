@@ -29,8 +29,10 @@
 //! a running root is never an end), a root still alive after the kill (the macOS reap after the
 //! kill never waits on a root whose identity still reads, as a setuid root the scan cannot see),
 //! a root that the macOS reap after the kill saw exiting but could not reap within its 1 s
-//! (`root-after-kill unseen` in the debug trace), and `--mode root-disclaim`'s TERM path, which
-//! does not reap the root. Under a trigger they are the root's end whoever caused it: its own end
+//! (`root-after-kill unseen` in the debug trace), a macOS root killed while still suspended
+//! (`kill_suspended_root`: a TERM before sheepr's CONT, or `--require-journal`'s refusal; it is
+//! reaped there, outside the recorder, and its end records nothing), and `--mode root-disclaim`'s
+//! TERM path, which does not reap the root. Under a trigger they are the root's end whoever caused it: its own end
 //! (an exit as the TERM was taken, or during the grace), the caller's signal (a TERM to the whole
 //! process group reaches the root too), or sheepr's kill; not the command's own verdict on the
 //! job.

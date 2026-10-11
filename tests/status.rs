@@ -1813,8 +1813,9 @@ fn a_panic_says_so_and_whether_the_command_may_have_run() {
 
 /// Plan §2 (macOS): a caller that blocks SIGCONT gets a root that is not suspended, so it may run
 /// from its spawn: a panic right after that spawn says not "not-started" ("signaled"), and the
-/// command does run (its marker appears). The control is the suspended root of
-/// `a_panic_says_so_and_whether_the_command_may_have_run`: "not-started" at the same seam.
+/// command does run (its marker appears). The control is the before-the-spawn row of
+/// `a_panic_says_so_and_whether_the_command_may_have_run`: "not-started" (since slice 2's P2-1
+/// a suspended root reads "signaled" too, as any SIGCONT may run it).
 #[cfg(target_os = "macos")]
 #[test]
 fn a_panic_after_an_unsuspended_spawn_says_the_command_may_have_run() {
