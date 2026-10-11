@@ -1380,3 +1380,76 @@ fn a_failed_poll_of_the_root_is_not_its_end() {
     assert_eq!(field(&x, "trigger"), Some(&Json::Null), "{:?}", x.status);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of slice 1, P2-2: when the event loop has already reaped the root (its end and the
+/// TERM came in one wake), nothing polls for the root after the kill: sheepr ends within 500 ms
+/// of the TERM (the poll's bound is 1 s; v0.1.3 took 20 ms), keeps the root's recorded end, and
+/// the trace has no `root-after-kill unseen`. Here the root sends TERM to sheepr and exits 3:
+/// `root` "exited", `root_code` 3. The control is the visible root of
+/// `under_a_trigger_the_root_fields_say_how_the_kill_ended_it`, which still traces
+/// `root-after-kill reaped` on macOS.
+#[test]
+fn a_root_that_terms_sheepr_and_exits_does_not_hold_it() {
+    let d = scratch("rootterm");
+    let (f, trace) = (d.join("ready"), d.join("trace"));
+    let t0 = std::cell::Cell::new(None::<Instant>);
+    let a = run(&d, "a", &format!(r#"-- /bin/sh -c 'touch "{}"; kill -TERM $PPID; exit 3'"#, f.display()), &[("SHEEPR_TEST_TRACE", trace.to_str().unwrap())], |_| {
+        wait_file(&f);
+        t0.set(Some(Instant::now()));
+    });
+    let took = t0.get().map(|t| t.elapsed());
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(took.is_some_and(|t| t < Duration::from_millis(500)), "sheepr took {took:?} after the root's TERM; trace:\n{t}");
+    assert!(!t.lines().any(|l| l == "root-after-kill unseen"), "trace:\n{t}");
+    assert_eq!(a.code, None, "sheepr dies of the TERM: {:?}", a.status);
+    assert_eq!(field(&a, "trigger").and_then(Json::str), Some("term"));
+    assert_eq!(root_end(&a), (Some("exited".into()), Some(3), None), "{:?}", a.status);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 1, P2-2, the second shape: a TERM to sheepr's whole process group (sheepr
+/// leads its own), which also ends the root, a sleep: sheepr ends within 500 ms of the TERM,
+/// with no `root-after-kill unseen` in the trace, `root_signal` 15 (the caller's TERM, not
+/// sheepr's kill) and `trigger` "term".
+#[test]
+fn a_group_term_does_not_hold_sheepr() {
+    use std::os::unix::process::CommandExt;
+    let d = scratch("groupterm");
+    let m = marker();
+    let (f, trace, out) = (d.join("ready"), d.join("trace"), d.join("status"));
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", &format!(r#"exec "$SD" run --status-fd 3 -- /bin/sh -c 'touch "{}"; exec /bin/sleep {m}' 3>"{}" 2>/dev/null"#, f.display(), out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_TRACE", &trace)
+        .process_group(0);
+    let mut c = c.spawn().unwrap();
+    let leader = common::found(c.id() as i32);
+    wait_file(&f);
+    let sent = Instant::now();
+    let grouped = leader.is_some_and(|(p, id)| common::send_group(p, id, libc::SIGTERM));
+    let end = Instant::now() + Duration::from_secs(10);
+    let st = loop {
+        if let Some(s) = c.try_wait().unwrap() {
+            break Some(s);
+        }
+        if Instant::now() > end {
+            common::send_child(&mut c, libc::SIGKILL);
+            let _ = c.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let took = sent.elapsed();
+    kill_marked(&m);
+    let b = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    let get = |k: &str| b.as_ref().and_then(|j| j.get(k)).cloned();
+    assert!(grouped, "the group TERM was not sent");
+    assert!(took < Duration::from_millis(500), "sheepr took {took:?} after the group TERM; trace:\n{t}");
+    assert!(!t.lines().any(|l| l == "root-after-kill unseen"), "trace:\n{t}");
+    assert_eq!(st.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s)), Some(libc::SIGTERM), "{b:?}");
+    assert_eq!(get("trigger").as_ref().and_then(Json::str), Some("term"), "{b:?}");
+    assert_eq!(get("root").as_ref().and_then(Json::str), Some("signaled"), "{b:?}");
+    assert_eq!(get("root_signal").as_ref().and_then(Json::num), Some(libc::SIGTERM as f64), "{b:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

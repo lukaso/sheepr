@@ -852,7 +852,9 @@ fn reap_after_kill(root: pid_t) {
 }
 
 /// The event loop's wait (PHASE1.md §1): returns the root's end (a lost wait included), or None
-/// if the job must be ended because of TERM or a cap. INT and HUP are forwarded (`Interrupts`), never an end.
+/// if the job must be ended because of TERM or a cap; and whether the loop's own waits took the
+/// root's end (also when a TERM in the same pass ended the job: then nothing polls for the root
+/// after the kill, review of slice 1, P2-2). INT and HUP are forwarded (`Interrupts`), never an end.
 ///
 /// - kqueue watches the root's exit (EVFILT_PROC NOTE_EXIT) and TERM (EVFILT_SIGNAL). A
 ///   report is only a wake-up; TERM is consumed with `consume` (the SIG_IGN/SIG_DFL toggle),
@@ -873,7 +875,7 @@ fn wait(
     group_is_ours: &mut dyn FnMut(i32) -> bool,
     ints: &mut crate::Interrupts,
     mut reg: Option<(&mut crate::register::Listener, &mut crate::register::Admit)>,
-) -> Option<crate::Reaped> {
+) -> (Option<crate::Reaped>, bool) {
     let mut jobs = crate::JobControl::new(relay);
     let watch_term = sig.watch_term;
     unsafe {
@@ -1104,7 +1106,7 @@ fn wait(
         if kq >= 0 {
             libc::close(kq);
         }
-        result
+        (result, exited.is_some())
     }
 }
 
@@ -1319,7 +1321,9 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
             let mut ints = crate::Interrupts::new(a, relay);
             let mut ours = |pg: i32| crate::only_ours(&group_pids(pg), relay, &tracker.borrow().known);
             let reg = listener.as_mut().map(|l| (l, &mut admit as &mut crate::register::Admit));
-            let status = if ended { None } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg) };
+            // `taken`: the root's end is already taken (the loop reaped it, or lost its wait, or the
+            // early end above reaped it)
+            let (status, taken) = if ended { (None, true) } else { wait(root, sig, relay, &mut current, &mut ours, &mut ints, reg) };
             // no registration is served during the kill: an inner run then fails fast (no socket)
             drop(listener);
             if a.leave_strays && status.is_some() {
@@ -1344,8 +1348,9 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 crate::signal,
                 initial,
             );
-            // the root reaped by the early end above (killed while suspended) records nothing
-            if status.is_none() && !ended {
+            // only a root whose end nothing took yet: a TERM or a cap ended the job before the root
+            // ended (the root reaped by the early end above, killed while suspended, records nothing)
+            if !taken {
                 reap_after_kill(root);
             }
             journal.into_inner().finish(result.is_ok());
@@ -1366,7 +1371,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
             crate::status::set_root("signaled");
             let r = uniq(root).map(|u| u.0).unwrap_or(0);
             let mut ints = crate::Interrupts::none();
-            let status = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);
+            let (status, _) = wait(root, sig, None, &mut Vec::new, &mut |_| false, &mut ints, None);
             let result = kill_tree(&crate::KillOpts::from_env(), || responsible_to(r), || {}, || None, crate::signal, Default::default());
             crate::finish(status, result, &mut ints, sig)
         }
