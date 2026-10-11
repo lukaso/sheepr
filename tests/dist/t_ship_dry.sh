@@ -19,6 +19,8 @@ wall_ok && pass "the wall: a path naming osascript cannot run here, another can"
 g remote add origin "file://$FX/origin.git" && git init -q --bare "$FX/origin.git" && g push -q origin HEAD:refs/heads/main || exit 3
 fx_release 0.1.0 1 v0.1.0
 C=$(g rev-parse "v0.1.0^{commit}"); T=$(g rev-parse v0.1.0)
+g config fetch.prune true && g config fetch.pruneTags true && g config push.followTags true && g tag -a x-follow -m x-follow HEAD~1 || exit 3
+BASE=$(g rev-parse HEAD~1)
 OUTR=$FX/out
 # the PATH shims: record, never answer; the git shim forwards local subcommands only
 B=$FX/bin; mkdir -p "$B"
@@ -62,7 +64,31 @@ standin build 'exit 1'
 standin gh 'exit 1'
 standin npm 'exit 1'
 standin curl 'exit 1'
-standin sgit 'exit 1'
+# $GITCMD's stand-in: `remote get-url` answered with the GitHub spelling ($FX/pushurl, $FX/fetchurl);
+# push, fetch and ls-remote forwarded to /usr/bin/git, with only github.com/lukaso/sheepr rewritten
+# (to $FX/updir, origin's bare repo by default); $FX/dryextra adds a line to a dry-run push;
+# $FX/onpush runs once before the first real push
+cat > "$S/sgit" <<EOF
+#!/bin/sh
+[ -d "\$HOME" ] || echo "NOHOME sgit" >> "$FX/calls"
+echo "sgit \$*" >> "$FX/calls"
+c=""; if [ "\$1" = -C ]; then c=\$2; shift 2; fi
+if [ "\$1 \$2" = "remote get-url" ]; then
+  case " \$* " in *" --push "*) cat "$FX/pushurl" 2>/dev/null || echo https://github.com/lukaso/sheepr.git ;; *) cat "$FX/fetchurl" 2>/dev/null || echo https://github.com/lukaso/sheepr.git ;; esac
+  exit 0
+fi
+up=\$(cat "$FX/updir" 2>/dev/null || echo "file://$FX/origin.git")
+n=\$#; for a; do [ "\$a" = https://github.com/lukaso/sheepr ] && a=\$up; set -- "\$@" "\$a"; done; shift \$n
+extra=""
+if [ "\$1" = push ]; then
+  case " \$* " in *" --dry-run "*) [ -e "$FX/dryextra" ] && extra=1 ;; *) [ -e "$FX/onpush" ] && [ ! -e "$FX/onpush.done" ] && { : > "$FX/onpush.done"; sh "$FX/onpush"; } ;; esac
+fi
+[ -z "\$c" ] || set -- -C "\$c" "\$@"
+GIT_CONFIG_NOSYSTEM=1 /usr/bin/git "\$@"; r=\$?
+[ -z "\$extra" ] || printf '*\trefs/heads/x:refs/heads/x\t[new branch]\n'
+exit \$r
+EOF
+chmod +x "$S/sgit"
 
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
@@ -132,4 +158,63 @@ rm -rf "${OUTR:?}"; mkdir -p "$FX/rel/out/.ship.lock"
   sh "$REPO/scripts/release.sh" __ship-dry --out rel/out v0.1.0) > "$FX/o" 2>&1
 grep -qF "another ship holds $FX/rel/out/.ship.lock" "$FX/o" && pass "a relative --out: made absolute from where ship ran (the lock named by its absolute path)" || fail "relative out: $(tail -1 "$FX/o")"
 rm -rf "${FX:?}/rel"
+
+# --- A1 to A3: the checks in the checkout, the $0 compare, the frozen tree, the push target, the
+# fetch, the ancestry and the dry-run push (the run goes on to the phases after them)
+lastline() { tail -1 "$FX/o"; }
+reached_a4() { ! grep -q -e 'is not lukaso/sheepr' -e 'push URL' -e 'ssh host alias' -e 'disagree' -e 'diverged' -e 'dry-run push' -e "is not $1's" -e 'cannot' "$FX/o"; }
+rm -rf "${OUTR:?}"; ship; r=$?
+WTP='/private/tmp/sr-ship\.[A-Za-z0-9]*/tree'
+grep -q "^sgit -C $WTP push --dry-run --porcelain --atomic --no-follow-tags origin $C:refs/heads/main $T:refs/tags/v0.1.0\$" "$FX/calls" \
+  && pass "the dry-run push: exactly main at the tag's commit and the tag object, atomic, --no-follow-tags, from the frozen tree" || fail "the dry-run push: $(grep 'push' "$FX/calls" | head -2 | tr '\n' ' ') $(lastline)"
+grep -q "^sgit -C $WTP fetch -q origin main\$" "$FX/calls" && pass "origin's main fetched with its refspec, in the frozen tree" || fail "the fetch: $(grep fetch "$FX/calls" | head -1)"
+grep -q "^sgit -C $WTP ls-remote origin refs/heads/main refs/tags/v0\.1\.0\*\$" "$FX/calls" && grep -q "^sgit -C $WTP ls-remote https://github.com/lukaso/sheepr refs/heads/main refs/tags/v0\.1\.0\*\$" "$FX/calls" \
+  && pass "ls-remote of origin and of github.com/lukaso/sheepr" || fail "ls-remote: $(grep ls-remote "$FX/calls" | tr '\n' ' ')"
+[ "$(g rev-parse -q --verify refs/tags/v0.1.0)" = "$T" ] && pass "the unpushed tag survives the fetch (fetch.prune and pruneTags on)" || fail "the local tag is gone"
+[ -z "$(git --git-dir="$FX/origin.git" for-each-ref refs/tags)" ] && [ "$(git --git-dir="$FX/origin.git" rev-parse refs/heads/main)" = "$BASE" ] \
+  && pass "nothing reached origin (a dry run only, so far)" || fail "origin: $(git --git-dir="$FX/origin.git" for-each-ref | tr '\n' ' ')"
+[ "$(g worktree list | grep -c .)" = 1 ] && pass "the frozen tree is removed at the end" || fail "worktrees left: $(g worktree list | tr '\n' ' ')"
+nopath && pass "no git call outside \$GITCMD reached the network (the PATH shim saw local subcommands only)" || fail "PATH calls: $(cat "$FX/pathcalls")"
+# the $0 compare: an edit hidden from git status (assume-unchanged) is still refused
+g update-index --assume-unchanged scripts/release.sh && cp "$REPO/scripts/release.sh" "$FX/rs.keep" && echo '# an edit' >> "$REPO/scripts/release.sh"
+rm -rf "${OUTR:?}"; ship; r=$?
+cp "$FX/rs.keep" "$REPO/scripts/release.sh"; g update-index --no-assume-unchanged scripts/release.sh
+[ $r = 1 ] && grep -q "is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null && pass "a scripts/release.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "\$0 compare: rc=$r $(lastline)"
+# the push target
+pt_row() { # label want-text: set up by the caller; one run
+  rm -rf "${OUTR:?}"; ship; r=$?
+  [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q 'push --dry-run' "$FX/calls" && pass "$1: refused before any push" || fail "$1: rc=$r $(lastline)"
+}
+echo https://github.com/someone/sheepr.git > "$FX/pushurl"; pt_row "a push URL that is not lukaso/sheepr" "is not lukaso/sheepr"; rm -f "$FX/pushurl"
+echo git@gh-alias:lukaso/sheepr.git > "$FX/pushurl"; pt_row "an ssh host alias" "ssh host alias"; rm -f "$FX/pushurl"
+printf 'https://github.com/lukaso/sheepr.git\ngit@github.com:lukaso/sheepr.git\n' > "$FX/pushurl"; pt_row "two push URLs" "push URLs"; rm -f "$FX/pushurl"
+echo https://example.com/lukaso/sheepr.git > "$FX/fetchurl"; pt_row "a fetch URL that is not lukaso/sheepr" "is not lukaso/sheepr"; rm -f "$FX/fetchurl"
+for u in git@github.com:lukaso/sheepr.git https://github.com/lukaso/sheepr ssh://git@github.com/lukaso/sheepr.git; do
+  echo "$u" > "$FX/pushurl"; echo "$u" > "$FX/fetchurl"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pushurl" "$FX/fetchurl"
+  grep -q 'push --dry-run' "$FX/calls" && pass "control: origin as $u: accepted" || fail "control: origin as $u: $(lastline)"
+done
+# origin and github.com/lukaso/sheepr disagree (two bare repos)
+# (the fixture's own pushes say --no-follow-tags: push.followTags is on here, and would add v0.1.0)
+git init -q --bare "$FX/origin2.git" && g push -q --no-follow-tags "file://$FX/origin2.git" "$C:refs/heads/main" || exit 3
+echo "file://$FX/origin2.git" > "$FX/updir"; pt_row "origin and github.com/lukaso/sheepr disagree on main" "disagree"; rm -f "$FX/updir"
+# origin's main diverged from the tag's commit
+g branch -q side "$BASE" && (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  git commit-tree -p "$BASE" -m side "$BASE^{tree}" > "$FX/side") && g push -q -f --no-follow-tags origin "$(cat "$FX/side"):refs/heads/main" || exit 3
+pt_row "origin's main diverged from the tag's commit" "diverged"
+g push -q -f --no-follow-tags origin "$BASE:refs/heads/main" || exit 3
+# a dry run that lists another ref than the intended two
+: > "$FX/dryextra"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/dryextra"
+[ $r = 1 ] && grep -q 'dry-run push' "$FX/o" && pass "a dry-run push that lists another ref: refused" || fail "dry-run extra: rc=$r $(lastline)"
+# an rc tag of this version on origin only (github.com/lukaso/sheepr a second bare repo, with the
+# same main and no rc tag): the glob lists it, and the checks ignore it (agreement, the remote tag)
+rm -rf "${FX:?}/origin2.git"; git init -q --bare "$FX/origin2.git" && g push -q --no-follow-tags "file://$FX/origin2.git" "$BASE:refs/heads/main" \
+  && g push -q --no-follow-tags origin "$BASE:refs/tags/v0.1.0-rc.1" || exit 3
+echo "file://$FX/origin2.git" > "$FX/updir"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/updir"
+grep -q 'push --dry-run' "$FX/calls" && reached_a4 v0.1.0 && pass "an rc tag of this version on origin only: ignored, the checks go on" || fail "rc tag on origin: $(lastline)"
+git --git-dir="$FX/origin.git" tag -d v0.1.0-rc.1 >/dev/null || exit 3
+# the text: no push, fetch or ls-remote git call in release.sh outside $GITCMD (the pattern: the
+# word git, then a subcommand among them; a planted line is caught)
+gitnet() { grep -n -E '(^|[^A-Za-z_$"])git( -C [^ ]+| -c [^ ]+)* (push|fetch|ls-remote)( |$)' "$1" | grep -v '^[0-9]*: *#'; }
+[ -z "$(gitnet "$RS")" ] && pass "release.sh makes no push, fetch or ls-remote but through \$GITCMD" || fail "git network calls: $(gitnet "$RS" | head -2 | tr '\n' ' ')"
+printf '  git -C "$root" fetch origin main\n' > "$FX/planted.sh"; [ -n "$(gitnet "$FX/planted.sh")" ] && pass "control: a planted 'git -C \"\$root\" fetch origin main' is caught" || fail "control: the planted line is not caught"
 finish

@@ -926,7 +926,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
-  locked=no logged_in=no armed=no phase=preflight oroot=$root
+  locked=no logged_in=no armed=no phase=preflight oroot=$root wt=""
   trap 'ship_exit $?' EXIT
   trap 'exit 1' INT HUP TERM
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
@@ -936,12 +936,73 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
   printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
-  die "ship's pre-flight is not built yet; nothing was done"
+  # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
+  # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
+  checks
+  git -C "$root" show "$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
+  cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
+  tagobj=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag") || die "no tag $tag"
+  # the frozen tree: a detached worktree of the tag's commit, in this run's temp dir; every later
+  # step reads its helpers, release.conf, the planner and the walls there, and the build child is
+  # its release.sh
+  git -C "$root" worktree add -q --detach "$st/tree" "$commit" || die "cannot make a worktree of $commit"
+  wt=$st/tree root=$st/tree
+  [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh
+  # A2. the push target; A3. the push, as far as a dry run can tell
+  ship_target
+  ship_pushcheck
+  die "ship's phases after the push checks are not built yet; nothing was done"
+}
+ship_target() { # A2: origin is lukaso/sheepr on github.com (exactly one push URL, and the fetch URL)
+  pu=$(tool "$NETC" "$GITCMD" -C "$root" remote get-url --push --all origin) || die "git: cannot read origin's push URL"
+  [ "$(printf '%s\n' "$pu" | grep -c .)" = 1 ] || die "origin has $(printf '%s\n' "$pu" | grep -c .) push URLs; ship pushes to one, lukaso/sheepr on github.com"
+  fu=$(tool "$NETC" "$GITCMD" -C "$root" remote get-url origin) || die "git: cannot read origin's URL"
+  for u in "$pu" "$fu"; do
+    case $u in
+      https://github.com/lukaso/sheepr|https://github.com/lukaso/sheepr.git|git@github.com:lukaso/sheepr|git@github.com:lukaso/sheepr.git|ssh://git@github.com/lukaso/sheepr|ssh://git@github.com/lukaso/sheepr.git) ;;
+      *:lukaso/sheepr|*:lukaso/sheepr.git) die "origin's URL $u names an ssh host alias: ship accepts github.com itself (git@github.com:lukaso/sheepr.git or https://github.com/lukaso/sheepr.git)" ;;
+      *) die "origin's URL $u is not lukaso/sheepr on github.com" ;;
+    esac
+  done
+  ship_lsr
+}
+ship_lsr() { # A2's read of the remote refs, again before the push: origin's and github.com/lukaso/
+             # sheepr's main and this tag (exactly refs/tags/vTAG and its peeled line; an rc tag of
+             # the version is not one) must agree; sets amain (origin's main) and rtag
+  for r_ in origin "$UPSTREAM"; do
+    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" || die "git: cannot list the refs of $r_ (ls-remote)"
+    awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' "$st/ls.raw" | sort > "$st/ls.$( [ "$r_" = origin ] && echo o || echo u)"
+  done
+  cmp -s "$st/ls.o" "$st/ls.u" || die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u"))"
+  amain=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.o")
+  [ -n "$amain" ] || die "origin has no main"
+  rtag=$(awk -v t="refs/tags/$tag" '$2 == t || $2 == t "^{}"' "$st/ls.o")
+}
+ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fetched (FETCH_HEAD is per
+  # worktree: fetched and read with one -C; the refspec keeps the unpushed tag under fetch.prune and
+  # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
+  # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
+  [ -z "$rtag" ] || die "something of $tag is public: the tag is on origin ($(printf '%s' "$rtag" | head -1))"
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || die "git: cannot fetch origin's main"
+  fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
+  [ "$fh" = "$amain" ] || die "origin's main moved between its read ($amain) and the fetch ($fh)"
+  if git -C "$root" merge-base --is-ancestor "$commit" "$fh"; then pushmain=no
+  elif git -C "$root" merge-base --is-ancestor "$fh" "$commit"; then pushmain=yes
+  else die "origin's main ($fh) has diverged from $tag's commit ($commit)"; fi
+  set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
+  tool "$NETC" "$GITCMD" -C "$root" push --dry-run --porcelain --atomic --no-follow-tags origin "$@" > "$st/dry" 2> "$st/dry.err" \
+    || die "the dry-run push failed ($(head -c 300 "$st/dry.err" | tr '\n' ' '))"
+  # git's porcelain lines, by tab-separated fields: the flag (a space for a fast-forward, measured;
+  # * for a new ref), from:to, the summary
+  want=$(printf '*\trefs/tags/%s\n' "$tag"; [ $pushmain = no ] || printf ' \trefs/heads/main\n')
+  got=$(awk -F '\t' 'NF >= 3 { split($2, a, ":"); print $1 "\t" a[2] }' "$st/dry" | sort)
+  [ "$got" = "$(printf '%s\n' "$want" | sort)" ] || die "the dry-run push lists other refs than $( [ $pushmain = no ] || echo 'main and ')$tag: $(tr '\t\n' ' ;' < "$st/dry")"
 }
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
   trap '' INT HUP TERM PIPE
   rc=$1
   [ -z "$DRYHOME" ] || rm -rf "$DRYHOME"
+  [ -z "$wt" ] || git -C "$oroot" worktree remove --force "$wt" >/dev/null 2>&1
   rm -rf "${st:?}"
   [ "$locked" = yes ] && rm -rf "${out:?}/.ship.lock"
   exit "$rc"
