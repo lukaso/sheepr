@@ -1807,8 +1807,11 @@ pub fn term_pending() -> bool {
     }
 }
 
-/// After the tree was killed for a TERM: die of SIGTERM, so the caller sees death by signal.
+/// After the tree was killed for a TERM, or a TERM came before the root: die of SIGTERM, so the
+/// caller sees death by signal. The line says "term" (plan §2: every TERM path, present and
+/// future, through here), unless a trigger is already set.
 pub fn die_by_term(fallback: i32) -> i32 {
+    status::set_trigger_if_none("term");
     status::write(fallback); // this process ends in the raise below
     unsafe {
         libc::signal(libc::SIGTERM, libc::SIG_DFL);

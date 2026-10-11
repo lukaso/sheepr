@@ -96,6 +96,23 @@ impl Status {
         }
     }
 
+    /// The first trigger wins (PLAN.md §3.1 exit-code order); a later, other one is a note.
+    fn set_trigger(&mut self, t: &'static str) {
+        let at = self.start.map_or(0, |st| st.elapsed().as_millis());
+        match self.trigger {
+            None => self.trigger = Some((t, at)),
+            Some((first, _)) if first != t => self.notes.push(format!("{t} after the trigger")),
+            _ => {}
+        }
+    }
+
+    /// `t` as the trigger only when none is set (never a note behind another trigger).
+    fn set_trigger_if_none(&mut self, t: &'static str) {
+        if self.trigger.is_none() {
+            self.set_trigger(t);
+        }
+    }
+
     /// The root's end, known for certain: it clears what the recorder took and keeps it off.
     /// The one setter of `error`, `error_code` and `error_source` (plan §2): the three are set
     /// together from the step's row of crate::steps' table. The first error wins and a later one
@@ -188,14 +205,11 @@ pub fn root_pid() -> i32 {
 }
 /// The first trigger wins (PLAN.md §3.1 exit-code order); a later one is a note.
 pub fn set_trigger(t: &'static str) {
-    with(|s| {
-        let at = s.start.map_or(0, |st| st.elapsed().as_millis());
-        match s.trigger {
-            None => s.trigger = Some((t, at)),
-            Some((first, _)) if first != t => s.notes.push(format!("{t} after the trigger")),
-            _ => {}
-        }
-    });
+    with(|s| s.set_trigger(t));
+}
+/// A death by TERM's own trigger (`die_by_term`): "term" only when no trigger is set.
+pub fn set_trigger_if_none(t: &'static str) {
+    with(|s| s.set_trigger_if_none(t));
 }
 /// Whether a trigger is already recorded (a TERM from outside, taken before a cap fired).
 pub fn has_trigger() -> bool {
@@ -568,6 +582,24 @@ mod tests {
         b.set_root_final("not-started");
         b.record_root_end(42, crate::exit_status(127));
         assert_eq!(b.root_fields(), ("not-started", None, None), "blocked");
+    }
+
+    /// Round 3 P4: the trigger a death by TERM sets is set only when none is set: no "term after
+    /// the trigger" note behind another trigger; the control, a later trigger by `set_trigger`,
+    /// is that note.
+    #[test]
+    fn a_term_s_own_trigger_never_notes_behind_another() {
+        let mut s = Status::new();
+        s.set_trigger_if_none("term");
+        assert_eq!(s.trigger.map(|t| t.0), Some("term"));
+        let mut t = Status::new();
+        t.trigger = Some(("timeout", 5));
+        t.set_trigger_if_none("term");
+        assert_eq!((t.trigger.map(|t| t.0), t.notes.len()), (Some("timeout"), 0));
+        let mut c = Status::new();
+        c.trigger = Some(("timeout", 5));
+        c.set_trigger("term");
+        assert_eq!(c.notes, ["term after the trigger"], "control");
     }
 
     /// Plan §2: the one setter of the error triple. The first error wins, and its errno name and

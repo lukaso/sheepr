@@ -1605,3 +1605,107 @@ fn the_spawn_seam_starts_no_root() {
     assert!(!mark.exists(), "the command ran under the spawn seam");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `sheepr run --status-fd 3 ARGS -- touch MARK` started by `/bin/sh -c 'PREFIX exec ...'` with
+/// TERM blocked and pending (the caller blocked it and it came), within 20 s: (exit status,
+/// status line, whether the command ran).
+fn with_term_pending(d: &Path, name: &str, prefix: &str, args: &str) -> (Option<std::process::ExitStatus>, Option<Json>, bool) {
+    use std::os::unix::process::CommandExt;
+    let (out, mark) = (d.join(format!("{name}.status")), d.join(format!("{name}.ran")));
+    let mut c = Command::new("/bin/sh");
+    c.args(["-c", &format!(r#"{prefix} exec "$SD" run --status-fd 3 {args} -- /bin/sh -c 'touch "{}"' 3>"{}" 2>/dev/null"#, mark.display(), out.display())]).env("SD", sheepr());
+    unsafe {
+        c.pre_exec(|| {
+            let mut s: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut s);
+            libc::sigaddset(&mut s, libc::SIGTERM);
+            libc::sigprocmask(libc::SIG_BLOCK, &s, std::ptr::null_mut());
+            libc::raise(libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let mut c = c.spawn().unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    let st = loop {
+        if let Some(s) = c.try_wait().unwrap() {
+            break Some(s);
+        }
+        if Instant::now() > end {
+            common::send_child(&mut c, libc::SIGKILL);
+            let _ = c.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    (st, json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok(), mark.exists())
+}
+
+/// A line that says a TERM ended the run before its command: `trigger` "term" (with its
+/// `trigger_at`), root "not-started", both root fields null, no error.
+fn says_term_before_the_root(j: &Option<Json>) -> bool {
+    let g = |k: &str| j.as_ref().and_then(|j| j.get(k)).cloned();
+    g("trigger").as_ref().and_then(Json::str) == Some("term")
+        && g("trigger_at").as_ref().and_then(Json::num).is_some()
+        && g("root").as_ref().and_then(Json::str) == Some("not-started")
+        && g("root_code") == Some(Json::Null)
+        && g("root_signal") == Some(Json::Null)
+        && g("error") == Some(Json::Null)
+}
+
+/// Plan §2 (#23): every TERM before the root says so: `die_by_term` sets `trigger` "term". A TERM
+/// pending at the start ends sheepr at the pre-spawn check (both OSes), at the relay's pre-fork
+/// check when sheepr starts with a child (both OSes), and at root-disclaim's pre-spawn check
+/// (macOS): sheepr dies of TERM, the command never ran, and the line says "term" (it said null).
+/// (Linux's TERM before the go byte: tests/shim.rs; macOS's relay gone before the spawn:
+/// `a_relay_gone_before_the_spawn_says_term`.)
+#[test]
+fn a_term_before_the_root_says_term() {
+    let d = scratch("termroot");
+    let m = marker();
+    let mut cases = vec![("spawn", String::new(), ""), ("relay", format!("/bin/sleep {m} &"), "")];
+    if cfg!(target_os = "macos") {
+        cases.push(("disclaim", String::new(), "--mode root-disclaim"));
+    }
+    for (name, prefix, args) in cases {
+        let (st, j, ran) = with_term_pending(&d, name, &prefix, args);
+        kill_marked(&m);
+        assert_eq!(st.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s)), Some(libc::SIGTERM), "{name}: {j:?}");
+        assert!(!ran, "{name}: the command ran");
+        assert!(says_term_before_the_root(&j), "{name}: {j:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Plan §2 (#23, D4, macOS): the relay already gone when the supervisor is about to spawn the
+/// root (it is SIGKILLed while the supervisor waits before its re-exec, debug seam) ends the run
+/// by TERM: the command never ran, and the line says "term". The control: the window was open
+/// (one supervisor, the command not yet run) when the relay was killed.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_relay_gone_before_the_spawn_says_term() {
+    let d = scratch("relaygone");
+    let m = marker();
+    let (out, mark, ready) = (d.join("status"), d.join("ran"), d.join("ready"));
+    let mut c = Command::new("/bin/sh")
+        .args(["-c", &format!(r#"/bin/sleep {m} & exec "$SD" run --status-fd 3 -- /bin/sh -c 'touch "{}"' 3>"{}" 2>/dev/null"#, mark.display(), out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_SLEEP_BEFORE_REEXEC_MS", "800")
+        .env("SHEEPR_TEST_READY_FILE", &ready)
+        .spawn()
+        .unwrap();
+    let held = wait_file(&ready) && !mark.exists();
+    common::send_child(&mut c, libc::SIGKILL); // the relay (the shell exec'd sheepr, which forked)
+    let _ = c.wait();
+    let end = Instant::now() + Duration::from_secs(15);
+    while !std::fs::read_to_string(&out).unwrap_or_default().ends_with('\n') && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let j = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    let ran = mark.exists();
+    kill_marked(&m);
+    assert!(held, "control: the window was not open when the relay was killed");
+    assert!(!ran, "the command ran although its relay was gone");
+    assert!(says_term_before_the_root(&j), "{j:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

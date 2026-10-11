@@ -405,6 +405,8 @@ fn a_term_before_the_go_byte_means_the_command_never_runs() {
     assert!(!ran.exists(), "the command ran after the TERM");
     assert_eq!(code, None, "sheepr dies of the TERM");
     assert_eq!(st.as_ref().and_then(|j| j.get("root")).and_then(Json::str), Some("not-started"));
+    // plan §2 (#23): a TERM before the root says so
+    assert_eq!(st.as_ref().and_then(|j| j.get("trigger")).and_then(Json::str), Some("term"), "{st:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
