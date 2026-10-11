@@ -147,12 +147,6 @@ pub fn set_root_pid(pid: i32) {
 pub fn record_root_end(pid: i32, st: libc::c_int) {
     with(|s| s.record_root_end(pid, st));
 }
-/// The root's wait status as the recorder took it (None: not reaped, or the command never ran).
-/// Linux reads it (the event loop, the shim's `E` line); macOS's `reap_root` returns it.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn root_end() -> Option<libc::c_int> {
-    with(|s| s.root_end)
-}
 pub fn root_pid() -> i32 {
     with(|s| s.root_pid)
 }

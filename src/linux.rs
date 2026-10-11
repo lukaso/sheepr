@@ -283,19 +283,20 @@ fn descendants(root: i32) -> Vec<(i32, u64)> {
 /// The one `waitpid(-1, ...)` of the supervisor, the Linux recorder (#17): every reap of the
 /// tree goes through here (the event loop, the kill's reap and emptiness check, the final reap),
 /// so the root's end is recorded whichever pass reaped it (the first status for the root's pid
-/// wins in the record). Returns waitpid's result; when it is -1, errno is waitpid's.
-fn wait_any(flags: libc::c_int) -> i32 {
+/// wins in the record). Returns waitpid's result and the status; when the result is -1, errno
+/// is waitpid's.
+fn wait_any(flags: libc::c_int) -> (i32, libc::c_int) {
     let mut st = 0;
     let r = unsafe { libc::waitpid(-1, &mut st, flags) };
     if r > 0 {
         crate::status::record_root_end(r, st);
     }
-    r
+    (r, st)
 }
 
 /// Reap every adopted orphan that has exited.
 fn reap() {
-    while wait_any(libc::WNOHANG) > 0 {}
+    while wait_any(libc::WNOHANG).0 > 0 {}
 }
 
 /// The authoritative emptiness check (phase-0 fix review, P1-A): with the subreaper set, every
@@ -304,7 +305,7 @@ fn reap() {
 /// whatever the tree does between two /proc scans.
 fn tree_empty() -> Option<bool> {
     loop {
-        match wait_any(libc::WNOHANG) {
+        match wait_any(libc::WNOHANG).0 {
             0 => return Some(false),
             r if r > 0 => continue, // reaped one; ask again
             _ => {
@@ -349,8 +350,8 @@ impl Root {
             self.go = -1;
         }
     }
-    /// After the root has exited: did the shim report that its command never ran?
-    /// The errno of the command's failed exec, if the shim reported one (`E<errno>`).
+    /// The errno of the command's failed exec, if the shim reported one (`E<errno>`) by now:
+    /// None also while the shim has not written it (the pipe is non-blocking; `exec_failure`).
     pub fn exec_failed(&mut self) -> Option<i32> {
         let mut buf = [0u8; 64];
         let n = unsafe { libc::read(self.err, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
@@ -890,6 +891,7 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
     // poll every 50 ms (a blocked signal stays pending, so nothing is lost).
     let fd = signal_fd(&sig.wait_set());
     crate::seam_sleep("SHEEPR_TEST_SLEEP_AFTER_REGISTER_MS");
+    let mut exited: Option<libc::c_int> = None;
     // membership while running (PLAN.md §3.2): a member seen on any tick is killed at the end
     // even if it is no longer a descendant by then (sticky, by identity)
     let mut tracker = crate::Tracker::default();
@@ -917,9 +919,17 @@ pub fn run(a: &Args, sig: &crate::Signals) -> i32 {
                 .map(|(_, s)| s)
                 .collect()
         };
-        // every reap goes through the recorder, and the root's end is what it recorded (#17)
-        while wait_any(libc::WNOHANG) > 0 {}
-        let exited = crate::status::root_end();
+        // every reap goes through the recorder (#17); the loop's end is the root's own reap, seen
+        // here, never the record's say (review of slice 1, P4)
+        loop {
+            let (r, st) = wait_any(libc::WNOHANG);
+            if r == root && exited.is_none() {
+                exited = Some(st);
+            }
+            if r <= 0 {
+                break;
+            }
+        }
         if got.contains(&libc::SIGTERM) {
             crate::status::set_trigger("term"); // the trigger from the moment it is taken
             break None;
