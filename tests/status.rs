@@ -1549,37 +1549,40 @@ struct StepRow {
     code: i32,
     error_code: Option<&'static str>,
     source: &'static str,
+    /// "not-started"; "signaled" for a macOS root already spawned (any SIGCONT could run it)
+    root: &'static str,
 }
 
 /// The step table's rows: each pre-root step at least once, on its OS.
 const STEP_ROWS: &[StepRow] = &[
-    StepRow { step: "relay-fork", os: "any", seam: "relay-fork:EAGAIN", args: "", missing: false, child: true, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "mode", os: "any", seam: "", args: "--mode bogus", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "usage", os: "any", seam: "", args: "--no-such-flag", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "spawn", os: "macos", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
-    StepRow { step: "spawn", os: "macos", seam: "spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "spawn", os: "macos", seam: "spawn:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
-    StepRow { step: "inherit", os: "macos", seam: "", args: "--inherit-terminal-permissions", missing: false, child: false, state: false, block_cont: false, env: &[("SHEEPR_TEST_PHASE1", "1")], code: 125, error_code: None, source: "usage" },
-    StepRow { step: "exec", os: "linux", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command" },
-    StepRow { step: "exec", os: "linux", seam: "exec:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command" },
-    StepRow { step: "proc", os: "linux", seam: "proc:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
-    StepRow { step: "self-exe", os: "linux", seam: "self-exe:EACCES", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EACCES"), source: "sheepr" },
-    StepRow { step: "pipe", os: "linux", seam: "pipe:EMFILE", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EMFILE"), source: "resources" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:E2BIG", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("E2BIG"), source: "command" },
-    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr" },
-    StepRow { step: "handshake", os: "linux", seam: "handshake", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
-    StepRow { step: "shim-prctl", os: "linux", seam: "shim-prctl:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EPERM"), source: "sheepr" },
-    StepRow { step: "journal", os: "any", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "0:ENOSPC")], code: 125, error_code: Some("ENOSPC"), source: "resources" },
-    StepRow { step: "root-identity", os: "any", seam: "root-identity", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
-    StepRow { step: "cont-blocked", os: "macos", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: true, env: &[], code: 125, error_code: None, source: "sheepr" },
-    StepRow { step: "shim-parent", os: "linux", seam: "shim-parent", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr" },
+    StepRow { step: "relay-fork", os: "any", seam: "relay-fork:EAGAIN", args: "", missing: false, child: true, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EAGAIN"), source: "resources", root: "not-started" },
+    StepRow { step: "mode", os: "any", seam: "", args: "--mode bogus", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage", root: "not-started" },
+    StepRow { step: "usage", os: "any", seam: "", args: "--no-such-flag", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "usage", root: "not-started" },
+    StepRow { step: "spawn", os: "macos", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command", root: "not-started" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources", root: "not-started" },
+    StepRow { step: "spawn", os: "macos", seam: "spawn:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command", root: "not-started" },
+    StepRow { step: "inherit", os: "macos", seam: "", args: "--inherit-terminal-permissions", missing: false, child: false, state: false, block_cont: false, env: &[("SHEEPR_TEST_PHASE1", "1")], code: 125, error_code: None, source: "usage", root: "not-started" },
+    StepRow { step: "exec", os: "linux", seam: "", args: "", missing: true, child: false, state: false, block_cont: false, env: &[], code: 127, error_code: Some("ENOENT"), source: "command", root: "not-started" },
+    StepRow { step: "exec", os: "linux", seam: "exec:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EPERM"), source: "command", root: "not-started" },
+    StepRow { step: "proc", os: "linux", seam: "proc:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr", root: "not-started" },
+    StepRow { step: "self-exe", os: "linux", seam: "self-exe:EACCES", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EACCES"), source: "sheepr", root: "not-started" },
+    StepRow { step: "pipe", os: "linux", seam: "pipe:EMFILE", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EMFILE"), source: "resources", root: "not-started" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:EAGAIN", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("EAGAIN"), source: "resources", root: "not-started" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:E2BIG", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 126, error_code: Some("E2BIG"), source: "command", root: "not-started" },
+    StepRow { step: "shim-spawn", os: "linux", seam: "shim-spawn:ENOENT", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("ENOENT"), source: "sheepr", root: "not-started" },
+    StepRow { step: "handshake", os: "linux", seam: "handshake", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr", root: "not-started" },
+    StepRow { step: "shim-prctl", os: "linux", seam: "shim-prctl:EPERM", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: Some("EPERM"), source: "sheepr", root: "not-started" },
+    StepRow { step: "journal", os: "any", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "0:ENOSPC")], code: 125, error_code: Some("ENOSPC"), source: "resources", root: "not-started" },
+    StepRow { step: "root-identity", os: "linux", seam: "root-identity", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr", root: "not-started" },
+    StepRow { step: "root-identity", os: "macos", seam: "root-identity", args: "--require-journal", missing: false, child: false, state: true, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr", root: "signaled" },
+    StepRow { step: "cont-blocked", os: "macos", seam: "", args: "--require-journal", missing: false, child: false, state: true, block_cont: true, env: &[], code: 125, error_code: None, source: "sheepr", root: "not-started" },
+    StepRow { step: "shim-parent", os: "linux", seam: "shim-parent", args: "", missing: false, child: false, state: false, block_cont: false, env: &[], code: 125, error_code: None, source: "sheepr", root: "not-started" },
 ];
 
 /// Plan §2 (#21, #23): every way `run` ends before its command, one row per step of the table on
 /// this OS, through SHEEPR_TEST_FAIL_STEP (the step's syscall runs and its result is replaced;
 /// a process-creating step is skipped) or the arguments that cause it: the exit code (v0.1.3's),
-/// `root` "not-started" with both root fields null, `trigger` null, an `error`, its `error_code`
+/// `root` "not-started" (or "signaled" for a macOS root already spawned) with both root fields null, `trigger` null, an `error`, its `error_code`
 /// (the injected errno's name) and its `error_source`; and the command never ran (its marker file
 /// is absent; a seam row's command is a `touch`).
 #[test]
@@ -1608,7 +1611,7 @@ fn every_pre_root_step_says_why() {
         kill_marked(&m);
         let what = format!("{} ({}): {:?}\nstderr: {}", r.step, r.seam, x.status, x.stderr);
         assert_eq!(x.code, Some(r.code), "{what}");
-        assert_eq!(field(&x, "root").and_then(Json::str), Some("not-started"), "{what}");
+        assert_eq!(field(&x, "root").and_then(Json::str), Some(r.root), "{what}");
         assert!(both_null(&x), "{what}");
         assert_eq!(field(&x, "trigger"), Some(&Json::Null), "{what}");
         assert!(field(&x, "error").and_then(Json::str).is_some(), "{what}");
