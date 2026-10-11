@@ -856,6 +856,9 @@ case $sub in
   check) checks ;;
   verify) verify "$out/$tag" ;;
   build)
+    # a relative --out names a directory from where build was started, and some of the build's
+    # helpers run in other directories (npm pack): made absolute before anything else
+    case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
     checks
     if [ $sign = no ]; then build_release unsigned
     elif [ $nonot = yes ]; then build_release control

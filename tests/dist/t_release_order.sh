@@ -154,7 +154,8 @@ case $pd in "$OUTR/$STG"??????) pass "the packages were written into a staging d
 [ "$(ls -A "$OUTR" | tr '\n' ' ')" = "v0.1.0-rc.1-unsigned " ] && pass "the output root holds only the output dir" || fail "the output root holds: $(ls -A "$OUTR" | tr '\n' ' ')"
 n=$(sed -n 's/.*"name": "\([^"]*\)", "sha256": "[0-9a-f]\{64\}".*/\1/p' "$FINAL/MANIFEST.json" 2>/dev/null | grep -c .)
 [ "$n" = 8 ] && (cd "$FINAL" && shasum -a 256 -c --strict SHA256SUMS >/dev/null 2>&1) && pass "the output dir holds the manifest (8 files) and a matching SHA256SUMS" || fail "the output dir: $n manifest entries; $(ls "$FINAL" 2>/dev/null | tr '\n' ' ')"
-grep -q "built (unsigned) in $FINAL\$" "$FX/o" && pass "the build names the output dir" || fail "the last line: $(tail -1 "$FX/o")"
+[ "$(tail -1 "$FX/o")" = "release: v0.1.0-rc.1 built (unsigned) in $FINAL" ] && ! grep -q -e 'stopped' -e 'kept in' "$FX/o" \
+  && pass "the build's last line names the output dir; no 'stopped' or 'kept in' line" || fail "a finished build's output: $(grep -e stopped -e 'kept in' "$FX/o" | head -1) / last: $(tail -1 "$FX/o")"
 mkdir "$FX/moderef"; want=$(/usr/bin/stat -f %Lp "$FX/moderef"); got=$(/usr/bin/stat -f %Lp "$FINAL" 2>/dev/null)
 [ "$got" = "$want" ] && pass "the output dir has the mode a mkdir gives under the same umask ($want), not mktemp's 700" || fail "the output dir's mode is '$got', a mkdir's is $want"
 [ "$(g worktree list | grep -c .)" = 1 ] && pass "no worktree left after a build" || fail "a worktree left"
@@ -185,8 +186,15 @@ st=$(stages)
 # 7. the output dir appears during the rename itself (mv nests and returns 0): caught after it
 fresh; : > "$S/race"; b; r=$?
 nest=$(cd "$FINAL" 2>/dev/null && ls -d "$STG"* 2>/dev/null)
-[ $r = 1 ] && grep -q '^race ' "$S/calls" && [ -n "$nest" ] && grep -q "$FINAL/$nest" "$FX/o" \
-  && pass "an output dir made during the rename: caught after it (rc 1), the build's place named" || fail "race: rc=$r nested '$nest' $(tail -1 "$FX/o")"
+[ $r = 1 ] && grep -q '^race ' "$S/calls" && [ -n "$nest" ] && grep -q "$FINAL/$nest" "$FX/o" && ! grep -q 'kept in' "$FX/o" \
+  && pass "an output dir made during the rename: caught after it (rc 1), the build's place named, and only that place" || fail "race: rc=$r nested '$nest' $(grep 'kept in' "$FX/o" | head -1) $(tail -1 "$FX/o")"
+
+# 7b. a relative --out is the directory it names from where build was started (made absolute first)
+fresh; rm -rf "${FX:?}/rel"
+(cd "$FX" && env PATH="$S:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 sh "$REPO/scripts/release.sh" build --out rel/out v0.1.0-rc.1) > "$FX/o" 2>&1; r=$?
+[ $r = 0 ] && [ -f "$FX/rel/out/v0.1.0-rc.1-unsigned/MANIFEST.json" ] && [ "$(tail -1 "$FX/o")" = "release: v0.1.0-rc.1 built (unsigned) in $FX/rel/out/v0.1.0-rc.1-unsigned" ] \
+  && pass "a relative --out: made absolute from where build ran; the build is there (0)" || fail "relative --out: rc=$r $(tail -1 "$FX/o")"
+rm -rf "${FX:?}/rel"
 
 # 8. an earlier run's staging dir: left as it is, and the next build is not stopped by it
 fresh; mkdir -p "$OUTR/${STG}OLD000"; echo old > "$OUTR/${STG}OLD000/MANIFEST.json"; b; r=$?
@@ -198,7 +206,7 @@ fresh; mkdir -p "$OUTR/${STG}OLD000"; echo old > "$OUTR/${STG}OLD000/MANIFEST.js
 body=$(awk '/^build_release\(\) \{/ { f = 1 } f { print NR ": " $0 } f && /^}/ { exit }' "$SR_ROOT/scripts/release.sh")
 prev=0 bad=""
 for m in 'step "the signing identity"' 'step "the compiler"' 'step "the Linux images"' 'mktemp -d "$out/.' 'step "the Linux fetch"' \
-    'step "the macOS compile"' 'step "the macOS bundle"' '"$S/lib/sign.sh" "$@"' 'step "the Linux builds' '> "$dest/MANIFEST.json"' 'mv "$dest" "$final"'; do
+    'step "the macOS compile"' 'step "the macOS bundle"' '"$S/lib/sign.sh" "$@" || die "signing failed"' 'step "the Linux builds' '> "$dest/MANIFEST.json"' 'mv "$dest" "$final"'; do
   l=$(printf '%s\n' "$body" | grep -F -- "$m" | cut -d: -f1)
   [ "$(printf '%s\n' "$l" | grep -c .)" = 1 ] || { bad="$bad [$m: $(printf '%s\n' "$l" | grep -c .) lines]"; continue; }
   [ "$l" -gt "$prev" ] || bad="$bad [$m at $l, before $prev]"
