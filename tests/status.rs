@@ -1874,10 +1874,12 @@ fn step_table() -> Vec<(String, String)> {
     step_rows_in(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/steps.rs")).unwrap())
 }
 
-/// The `Step::X => ("word", ...)` rows of `src`, also one rustfmt wrapped over several lines.
+/// The `Step::X => ("word", ...)` rows of `src`, also one spelled `Self::X` and one rustfmt
+/// wrapped over several lines.
 fn step_rows_in(src: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut rest = src;
+    let src = src.replace("Self::", "Step::");
+    let mut rest = src.as_str();
     while let Some(i) = rest.find("Step::") {
         rest = &rest[i + "Step::".len()..];
         let variant: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
@@ -1888,6 +1890,14 @@ fn step_rows_in(src: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// The variants of `pub enum Step { ... }` in `src`, in order (doc comments, comments and
+/// attributes left out); a variant that carries data is kept whole, so it matches no row.
+fn step_variants_in(src: &str) -> Vec<String> {
+    let start = src.find("pub enum Step {").expect("pub enum Step") + "pub enum Step {".len();
+    let body = &src[start..start + src[start..].find("\n}").expect("the enum's end")];
+    body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("#[")).map(|l| l.trim_end_matches(',').to_string()).collect()
 }
 
 /// The code the class cell reads: each file without its test modules and its comments (a site
@@ -1931,6 +1941,16 @@ fn every_step_has_its_seam_its_site_and_its_row() {
     const OWN_SEAM: [(&str, &str); 1] = [("Journal", "SHEEPR_TEST_JOURNAL_FAIL_AFTER")];
     let table = step_table();
     assert!(table.iter().any(|(v, w)| v == "Pipe" && w == "pipe"), "control: the table read: {table:?}");
+    // the table read is the enum: every variant has exactly one row, and every row a variant (a
+    // row spelled `Self::` counts: review of slice 2's fixes, P4)
+    assert_eq!(step_rows_in("            Self::Zz => (\"zz\", Kind::Sheepr, false),"), [("Zz".to_string(), "zz".to_string())], "control: a row spelled Self::");
+    assert_eq!(step_variants_in("pub enum Step {\n    /// doc\n    A,\n    // note\n    #[allow(x)]\n    B,\n    C(i32),\n}\n"), ["A", "B", "C(i32)"], "control: the enum read");
+    let variants = step_variants_in(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/steps.rs")).unwrap());
+    let mut rows: Vec<String> = table.iter().map(|(v, _)| v.clone()).collect();
+    rows.sort();
+    let mut vs = variants.clone();
+    vs.sort();
+    assert_eq!(rows, vs, "the table's rows against `pub enum Step`'s variants");
     let mut files = Vec::new();
     rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), Path::new(""), &mut files);
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
