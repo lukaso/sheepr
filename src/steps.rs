@@ -151,7 +151,9 @@ impl Step {
 pub struct PreRoot {
     pub step: Step,
     pub errno: Option<i32>,
-    pub code: i32,
+    /// private to this module: only the step's row sets it (`PreRoot::new`), so an exit 0 before
+    /// the root cannot be planted (review of the fix commits, P4: `p.code = 0` does not compile)
+    code: i32,
     pub text: String,
     /// the stderr line was already written (by the shim, by the usage check)
     said: bool,
