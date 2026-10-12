@@ -105,7 +105,8 @@ cannot read may belong to a running job (another user's file, one with no read p
 sweep ends nothing, and the run says so in one stderr line (not with `--quiet`); this repeats on
 every run until the file is removed or fixed, and `sheepr sweep` says what to do. Its other stops
 before any dead job is swept (a state folder it may not use, a folder it cannot list, a chain of
-parent processes it cannot follow) are notes in the `--status-fd` line only.
+parent processes it cannot follow) are notes in the `--status-fd` line only; with no boot id it
+stops with no note (the run's own journal note says there is none).
 
 On macOS a running job costs some CPU: sheepr checks your processes four times a second to find
 the ones that escaped. Measured on a busy Mac (about 1000 of your processes, load average 16): about 1.5% of one CPU

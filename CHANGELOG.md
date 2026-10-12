@@ -77,10 +77,14 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   with a pid or a job id, also `--dry-run` and `--json`): a FIFO (or another file that is not a
   regular one) named like a journal no longer makes them wait for ever; `sweep` says "not a
   journal; remove it".
-- `kill j-…`: when it read the journal's header but then cannot open, lock or read the journal,
-  its refusal gives the new reason, as `sweep` does (for example "could not read it (EIO); try
-  again"); a journal whose header it cannot read gives the same refusal as before. Only the
-  `sheepr:` at the start of a message is a stable interface.
+- `kill j-…`, `kill --dry-run j-…` and `ps j-…`: a journal they open but cannot sweep gives
+  `sweep`'s reason in the refusal: one whose header they read but that they then cannot open or
+  read (for example "could not read it (EIO); try again"), and one with no complete header line
+  (for example a cut-off file: "it holds no job; remove it", where it said "no header"). A lock
+  that is held, or that fails with any other errno, still gives the "busy" refusal, as before. A
+  journal whose header they cannot read gives the same refusal as before, and a FIFO named like
+  a journal now gets that refusal too (they waited for ever). Only the `sheepr:` at the start of
+  a message is a stable interface.
 - `sweep`, also without `--strict` (its exit codes do not change): each line about a journal it
   could not sweep now ends with what to do (remove it, check its mode, try again, check how
   another user's file got there, wait for the process that holds the job), except a journal of
@@ -100,7 +104,8 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   root-owned journal left by `sudo sheepr run`); before, such a file was only noted and the dead
   jobs were swept. Its other stops before any dead job is swept (a state folder it may not use, a
   folder it cannot list, a chain of parent processes it cannot follow) are still notes in the
-  status line only, not stderr lines.
+  status line only, not stderr lines; with no boot id it stops with no note (the run's own
+  journal note says there is none).
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.
