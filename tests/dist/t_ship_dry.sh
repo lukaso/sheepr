@@ -280,8 +280,11 @@ $a" ;; esac; done
       $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 2> "$FX/o"; echo $? > "$FX/pipe.rc"; } | sed -n "/$PIPEQ/q"
     r_=$(cat "$FX/pipe.rc")
   fi
+  dryhomes "$FX/o"
   [ -n "${KEEP:-}" ] || world_reset; return $r_
 }
+# the dry HOMEs a run named (its stdout: a PIPEQ run's went to the pipe), for the last row
+dryhomes() { sed -n 's/.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$1" >> "$FX/dryhomes"; }
 # what a run changed, kept for the rows (origin's refs, the tap's cask), then put back: origin's main
 # at BASE and no v0.1.0 tag, npm with nothing published, the tap at 0.0.9, no uploads
 world_reset() {
@@ -747,7 +750,8 @@ cont() { # run each step the next file names, in order: npm login (the operator'
         (cd "$REPO" && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
           SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" \
           SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh scripts/release.sh "__$e-dry" --out "$OUTR" v0.1.0) > "$FX/co" 2>&1 \
-          || { RC=1; echo "refused: $e: $(tail -1 "$FX/co")" >> "$FX/cont"; return; } ;;
+          || { dryhomes "$FX/co"; RC=1; echo "refused: $e: $(tail -1 "$FX/co")" >> "$FX/cont"; return; }
+        dryhomes "$FX/co" ;;
     esac
   done < "${1:-$NF}"
 }
@@ -894,4 +898,10 @@ cr "the out dir's cask edited" "is not the cask the tag renders"
 : > "$FX/npmcheck.nostamp"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.nostamp"; cr "no npm-check stamp" "npm-check has not passed on"
 : > "$FX/npmcheck.touchpkg"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.touchpkg"; cr "an npm package changed after npm-check" "a file npm-check checked has changed since"
 rm -rf "${OUTR:?}"
+
+# --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
+# tag off the grammar are refused before ship's own exit handler is set)
+n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .)
+left_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)
+[ -z "$left_dh" ] && [ "$n_dh" -ge 100 ] && pass "none of the $n_dh dry HOMEs this cell's runs named is left" || fail "dry HOMEs left ($(printf '%s\n' "$left_dh" | grep -c .) of $n_dh): $(printf '%s\n' "$left_dh" | tr '\n' ' ')"
 finish

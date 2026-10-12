@@ -936,6 +936,9 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
     SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   cmp -s "$SR_SHIP_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_SHIP_DRY_NOTIFY is the real notify.sh, not a stand-in"
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  # right after mktemp, as in the other dry entries: ship_run refuses an rc or a tag off the grammar
+  # before it sets its own exit handler (which then replaces this one and removes the temp HOME)
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
