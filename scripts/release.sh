@@ -786,11 +786,13 @@ publish_npm_exec() { # dir
     if [ "$npm_part" = platform ]; then [ $asked = yes ] || { notify npm-approve; asked=yes; }
     elif [ $waited = yes ] && [ "$p" = "$mainp" ]; then notify npm-approve-again
     elif [ $waited = yes ]; then notify npm-approve-next; fi
+    [ "$npm_part" != platform ] || progress "start npm-platform $p"
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
       || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out: run publish-npm again (it skips a version already there with this file). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}, wait, then run publish-npm again. A blocked version needs a new version number. Nothing after it is published"
     if [ "$npm_part" = platform ]; then
+      progress "done npm-platform $p"
       echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"
       continue
     fi
@@ -978,7 +980,64 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # binds the archive it judged, so it runs in the same subshell as publish_check
   phase=checks
   ( drysub; $SHIP_VERIFY "$out/$tag" && publish_check "$out/$tag" ) || die "the checks before publishing refused (above)"
-  die "ship's phases after the checks before the push are not built yet; nothing was done"
+  # C4. the npm session, in the parent: a notification, then npm's own login (the operator's
+  # browser); logged_in from the attempt on (the handler logs out); then npm must name SR_NPM_USER
+  phase=npm-login; stopclass fix
+  notify npm-login
+  logged_in=yes
+  tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
+  who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(head -c 200 "$st/who.err" | tr '\n' ' ')); nothing is public"
+  [ "$who" = "$SR_NPM_USER" ] || die "logged in to npm as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), not as $SR_NPM_USER; nothing is public"
+  # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
+  # exactly A3's refspecs (the recorded object), atomic, no tag followed
+  phase=push
+  ship_lsr; ship_pushcheck; ship_nothing_public
+  [ "$(git -C "$root" rev-parse -q --verify "refs/tags/$tag")" = "$tagobj" ] || die "the tag $tag moved since ship recorded it ($tagobj); nothing is public"
+  set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
+  progress "start push"
+  if ! tool "$NETC" "$GITCMD" -C "$root" push --porcelain --atomic --no-follow-tags origin "$@" > "$st/push" 2> "$st/push.err"; then
+    # an atomic push moves both refs or neither: refused, when github.com/lukaso/sheepr shows no tag
+    # and main not at the tag's commit (pushed, or held by it before)
+    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" 2>/dev/null \
+      || die "the push failed, and the refs of $UPSTREAM cannot be read to tell whether it landed ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
+    if ! awk -v t="refs/tags/$tag" '$2 == t {f = 1} END {exit !f}' "$st/ls.push" \
+       && { [ $pushmain = no ] || ! awk -v c="$commit" '$2 == "refs/heads/main" && $1 == c {f = 1} END {exit !f}' "$st/ls.push"; }; then
+      progress "push refused"
+      die "the push was refused, and nothing of it landed ($(head -c 300 "$st/push.err" | tr '\n' ' ')); nothing is public"
+    fi
+    die "the push failed, but $UPSTREAM shows a part of it ($(tr '\t\n' ' ;' < "$st/ls.push"))"
+  fi
+  # what the push did: origin's main fetched, and github.com/lukaso/sheepr shows the tag at the
+  # recorded object and main at or past the tag's commit
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || die "the push ran, but origin's main cannot be fetched to confirm it"
+  tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" || die "the push ran, but the refs of $UPSTREAM cannot be read to confirm it"
+  [ "$(awk -v t="refs/tags/$tag" '$2 == t {print $1}' "$st/ls.push")" = "$tagobj" ] || die "after the push, $UPSTREAM's $tag is not the recorded object $tagobj"
+  um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
+  [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null || die "after the push, $UPSTREAM's main (${um:-none}) does not hold $tag's commit"
+  progress "done push"
+  # C6. npm, the platform packages, back to back (one approval); nothing waited for here
+  phase=npm-platform
+  ( drysub; NETC=$NPMC npm_part=platform; publish_npm_exec "$out/$tag" ) || die "the npm upload of a platform package stopped (above)"
+  # C7. GitHub while npm scans: verify binds the archive it judged, in publish_exec's subshell
+  phase=github
+  progress "start github"
+  ( drysub; $SHIP_VERIFY "$out/$tag" && publish_exec "$out/$tag" ); r=$?
+  case $r in
+    0) progress "done github" ;;
+    5) progress exit5; die "$tag is public on GitHub, but its Homebrew cask is not updated (above)" ;;
+    *) die "the GitHub publish stopped (above)" ;;
+  esac
+  # C8. npm, the main package: once npm shows the three, uploaded and waited for
+  phase=npm-main
+  progress "start npm-main"
+  ( drysub; NETC=$NPMC npm_part=main; publish_npm_exec "$out/$tag" ) || die "the npm upload of the main package stopped (above)"
+  progress "done npm-main"
+  # C9. done: the handler logs out
+  echo "release: ship: $tag is public on GitHub, Homebrew and npm"
+  exit 0
+}
+progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names
+  [ -z "$shipprog" ] || printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
 }
 drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase's own trap removes it)
   [ "$dryentry" = yes ] || return 0
@@ -1124,9 +1183,11 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
   trap '' INT HUP TERM PIPE
   rc=$1
-  [ -z "$DRYHOME" ] || rm -rf "$DRYHOME"
+  # the npm session ship made (in a dry entry its temp HOME still exists here)
+  [ "$logged_in" = no ] || tool "$NPMC" "$NPM" logout --registry="$NPMREG"
   [ -z "$wt" ] || git -C "$oroot" worktree remove --force "$wt" >/dev/null 2>&1
   rm -rf "${st:?}"
+  [ -z "$DRYHOME" ] || rm -rf "$DRYHOME"
   [ "$locked" = yes ] && rm -rf "${out:?}/.ship.lock"
   exit "$rc"
 }
