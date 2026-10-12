@@ -947,6 +947,15 @@ cr "the out dir's cask edited" "is not the cask the tag renders"
 : > "$FX/npmcheck.touchpkg"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.touchpkg"; cr "an npm package changed after npm-check" "a file npm-check checked has changed since"
 rm -rf "${OUTR:?}"
 
+# --- by text, what only the real ship reaches: the notifier swapped to the frozen tree's notify.sh
+# (once, after root is the frozen tree, before A8), and shipcall's and shipdocker's real branches
+ln_rs() { grep -n -x -F -- "$1" "$RS" | cut -d: -f1; }
+sw=$(ln_rs '  [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh'); rt=$(ln_rs '  wt=$st/tree root=$st/tree'); ar=$(grep -n '^  armed=yes ' "$RS" | cut -d: -f1)
+[ "$(printf '%s\n' "$sw" | grep -c .)" = 1 ] && [ -n "$rt" ] && [ -n "$ar" ] && [ "$sw" -gt "$rt" ] && [ "$sw" -lt "$ar" ] \
+  && pass "the notifier's swap to the frozen tree's notify.sh: once, after root is the frozen tree, before A8 (text)" || fail "the notifier swap: lines '$sw' root '$rt' armed '$ar'"
+grep -qx -F 'shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@"; fi; }' "$RS" && pass "shipcall: the real branch runs the tool as the operator has it (text)" || fail "shipcall's text"
+grep -qx -F '  else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} "$SHIP_DOCKER" "$@"; fi' "$RS" \
+  && pass "shipdocker: the real branch, the docker class (text)" || fail "shipdocker's text"
 # --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
 # tag off the grammar are refused before ship's own exit handler is set)
 n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .)
