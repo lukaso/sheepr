@@ -75,6 +75,8 @@ struct Status {
     error_internal: bool,
     quiet: bool,
     notes: Vec<String>,
+    /// a relay's record: it writes no line, and its end is its supervisor's (no guard)
+    disabled: bool,
 }
 
 impl Status {
@@ -100,6 +102,7 @@ impl Status {
             error_internal: false,
             quiet: false,
             notes: Vec::new(),
+            disabled: false,
         }
     }
 
@@ -266,7 +269,10 @@ pub fn add_note(n: &str) {
 /// This process is a relay (sheepr started with children): only the supervisor writes the
 /// status line, so the relay drops the fd from its state.
 pub fn disable() {
-    with(|s| s.fd = None);
+    with(|s| {
+        s.fd = None;
+        s.disabled = true;
+    });
 }
 
 /// The kill report (PLAN.md §10.4) for a job whose root ended as `root_status` (None: ended
@@ -356,7 +362,8 @@ const CHUNK: usize = 4096;
 /// end) is said in one stderr line, also under `--quiet` (the machine-readable record is gone),
 /// which waits at most NOTICE; the exit code stays the command's.
 pub fn write(code: i32) -> i32 {
-    let Some((fd, line, code)) = line(code) else { return code };
+    let (line, code) = line(code);
+    let Some((fd, line)) = line else { return code };
     // sheepr's end: only an exit or a raise follows (die_like resets the one signal it raises).
     // A closed reader must be EPIPE, never a SIGPIPE death, also before setup_signals blocked it
     // (a usage error, an early panic)
@@ -524,20 +531,26 @@ fn guarded(s: &mut Status, code: i32, debug: bool, say: &mut dyn FnMut(&str)) ->
     }
 }
 
-/// The status line, the fd it goes to (taken: the line is written once), and the exit code.
-fn line(code: i32) -> Option<(i32, String, i32)> {
-    with(|s| {
-        s.fd?;
-        // before the fd is taken: in a debug build the panic's own line is written after it
-        let code = guarded(s, code, cfg!(debug_assertions), &mut |m| crate::say!("sheepr: {}", m.strip_prefix("sheepr ").unwrap_or(m)));
-        let fd = s.fd.take()?;
-        // debug seam: a note of this many bytes, so a test's line is larger than any pipe buffer
-        // (a real job reaches that size with a few hundred killed members; seam_ms reads a number)
-        if let Some(n) = crate::seam_ms("SHEEPR_TEST_STATUS_PAD") {
-            s.notes.push("x".repeat(n as usize));
-        }
-        Some((fd, render(s, code), code))
-    })
+/// The status line and the fd it goes to (taken: the line is written once), if there is one, and
+/// the exit code. The guard runs with or without a status fd, so the exit code never depends on
+/// that flag (the whole-batch review, P4); a relay's record (disabled) is left as it is.
+fn settle(s: &mut Status, code: i32, debug: bool, say: &mut dyn FnMut(&str)) -> (Option<(i32, String)>, i32) {
+    if s.disabled {
+        return (None, code);
+    }
+    // before the fd is taken: in a debug build the panic's own line is written after it
+    let code = guarded(s, code, debug, say);
+    let Some(fd) = s.fd.take() else { return (None, code) };
+    // debug seam: a note of this many bytes, so a test's line is larger than any pipe buffer
+    // (a real job reaches that size with a few hundred killed members; seam_ms reads a number)
+    if let Some(n) = crate::seam_ms("SHEEPR_TEST_STATUS_PAD") {
+        s.notes.push("x".repeat(n as usize));
+    }
+    (Some((fd, render(s, code))), code)
+}
+
+fn line(code: i32) -> (Option<(i32, String)>, i32) {
+    with(|s| settle(s, code, cfg!(debug_assertions), &mut |m| crate::say!("sheepr: {}", m.strip_prefix("sheepr ").unwrap_or(m))))
 }
 
 /// The status line of record `s` for exit code `code`.
@@ -690,6 +703,19 @@ mod tests {
         let mut e = Status::new();
         e.set_error(crate::steps::Step::Usage, None, "usage");
         assert_eq!(guarded(&mut e, 0, false, &mut |_| {}), 0, "control");
+    }
+
+    /// The whole-batch review, P4: the guard sets the exit code also without --status-fd (the exit
+    /// code never depends on that flag): no fd, root "not-started", no reason, code 0: 125, and no
+    /// line. The control: a disabled record (a relay's, which records nothing) keeps its code.
+    #[test]
+    fn the_guard_sets_the_exit_code_without_a_status_fd() {
+        let mut s = Status::new();
+        let (line, code) = settle(&mut s, 0, false, &mut |_| {});
+        assert_eq!((line.is_none(), code), (true, 125));
+        let mut r = Status::new();
+        r.disabled = true;
+        assert_eq!(settle(&mut r, 0, false, &mut |_| {}).1, 0, "control: a relay's record");
     }
 
     /// The same guard in a debug build panics (a cell sees the bare early return).
