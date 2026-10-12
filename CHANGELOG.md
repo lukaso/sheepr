@@ -84,8 +84,11 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
 - The sweep before each `run`: it no longer locks another owner's journals (it reads them
   without the lock, so a `sweep --owner` running meanwhile finds its own stale jobs), it holds one
   journal open at a time (many dead journals no longer use up its file descriptors), and when a
-  journal that may be a running job's cannot be read at all, it signals nothing that pass and
-  says why in `notes`.
+  journal that may be a running job's cannot be read at all, it signals nothing that pass, says
+  why in `notes`, and says it in one stderr line (not with `--quiet`) that names the file and
+  `sheepr sweep`. This repeats on every run until the file is removed or fixed (for example a
+  root-owned journal left by `sudo sheepr run`); before, such a file was only noted and the dead
+  jobs were swept.
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.

@@ -48,6 +48,19 @@ n=$(grep 'j-f1f0f1f0\.journal' "$FX/err" | grep -c 'not a journal; remove it')
 rto run -- /bin/sh -c "touch '$FX/ranf'"; r=$?
 [ "$r" = 0 ] && [ -e "$FX/ranf" ] && pass "a release run with a FIFO named like a journal starts its command, exit 0" || fail "FIFO run: rc=$r (124: it hung), ran=$( [ -e "$FX/ranf" ] && echo yes || echo no) $(tr '\n' ' ' < "$FX/err")"
 rm -f "${dir}j-f1f0f1f0.journal"
+# the whole-batch review, P3-1: a journal the sweep before a run cannot read (this user's own, at
+# mode 000) may be a running job's, so that sweep ends nothing, and the run says so: one stderr
+# line that names the file and `sheepr sweep`. The control, the file removed: no line.
+if [ "$(id -u)" != 0 ]; then
+  printf 'x\n' > "${dir}j-00000000.journal" && chmod 000 "${dir}j-00000000.journal"
+  sr run -- /bin/sh -c 'exit 0'; r=$?
+  n=$(grep 'j-00000000\.journal' "$FX/err" | grep -c '`sheepr sweep`')
+  chmod 600 "${dir}j-00000000.journal"; rm -f "${dir}j-00000000.journal"
+  sr run -- /bin/sh -c 'exit 0'; rc=$?
+  [ "$r" = 0 ] && [ "$n" = 1 ] && [ "$rc" = 0 ] && ! grep -q 'j-00000000' "$FX/err" && pass "a release run says once that its sweep ended nothing (a journal it cannot read); none once the file is gone" || fail "held-back run: rc=$r, $n line(s); control rc=$rc $(tr '\n' ' ' < "$FX/err")"
+else
+  echo "SKIP: root reads a file of any mode"
+fi
 # issue #20: a release sweep removes a dead registration folder where its own listener would put
 # it (this TMPDIR), and never one in /private/tmp (the listener's place only when TMPDIR is unset
 # or too long): the host's /tmp is not this cell's. The verdict is the sweep's own count (one

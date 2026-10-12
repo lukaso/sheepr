@@ -843,3 +843,41 @@ fn a_dead_journal_that_fails_its_second_open_is_said() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of the whole batch, P3-1: a run whose auto-sweep is held back (a journal that may be a
+/// running job's cannot be read: seam, EMFILE on its open) says so on stderr, one line per run,
+/// naming the file and that `sheepr sweep` says what to do; `--quiet` keeps it to the status
+/// note. The control: without the seam the dead job is swept, and no line names its journal.
+#[test]
+fn a_held_back_auto_sweep_is_said_on_stderr() {
+    let d = scratch("heldsaid");
+    let s = state(&d);
+    let (here, boot, pidns) = this_boot(&d, &s);
+    forge_dead(&here, "j-0d000000", "default", &boot, &pidns, &[]);
+    let seam = [("SHEEPR_TEST_JOURNAL_ERRNO", "open:EMFILE:j-0d000000.journal")];
+    let said = |name: &str, flags: &[&str], env: &[(&str, &str)]| -> (Option<i32>, String) {
+        let err = d.join(format!("{name}.err"));
+        let code = Command::new(sheepr())
+            .arg("run")
+            .args(flags)
+            .args(["--", "/bin/sh", "-c", "exit 0"])
+            .env("SHEEPR_TEST_STATE", &s)
+            .envs(env.iter().copied())
+            .stderr(std::fs::File::create(&err).unwrap())
+            .status()
+            .unwrap()
+            .code();
+        (code, std::fs::read_to_string(&err).unwrap_or_default())
+    };
+    let naming = |e: &str| e.lines().filter(|l| l.contains("j-0d000000.journal")).map(String::from).collect::<Vec<_>>();
+    let (c1, e1) = said("held", &[], &seam);
+    let (c2, e2) = said("quiet", &["--quiet"], &seam);
+    let (c3, e3) = said("ctl", &[], &[]);
+    assert_eq!((c1, c2, c3), (Some(0), Some(0), Some(0)));
+    let l = naming(&e1);
+    assert!(l.len() == 1 && l[0].starts_with("sheepr: ") && l[0].contains("`sheepr sweep`"), "stderr:\n{e1}");
+    assert!(naming(&e2).is_empty(), "--quiet:\n{e2}");
+    assert!(naming(&e3).is_empty(), "control:\n{e3}");
+    assert!(journals(&s).is_empty(), "control: the dead job was not swept");
+    let _ = std::fs::remove_dir_all(&d);
+}

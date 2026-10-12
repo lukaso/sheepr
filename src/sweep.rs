@@ -793,7 +793,7 @@ pub fn auto(owner: &str, quiet: bool) {
     let mut dead: Vec<PathBuf> = Vec::new();
     let mut live_named: HashSet<(i32, u64)> = HashSet::new();
     // the first journal that may be a live job's and could not be read (`blinds`)
-    let mut blind: Option<String> = None;
+    let mut blind: Option<(PathBuf, String)> = None;
     for f in files {
         // another owner's journal is never locked here (a `sweep --owner X` running meanwhile must
         // find X's stale journal unlocked; review of slice 4, P3-1): its header is read first, and
@@ -826,13 +826,18 @@ pub fn auto(owner: &str, quiet: bool) {
             s
         };
         if blinds(&s) && !locked {
-            blind.get_or_insert_with(|| format!("{}: {}", f.display(), s.why()));
+            blind.get_or_insert_with(|| (f.clone(), s.why()));
         } else if !matches!(s, Skip::Kept | Skip::Gone | Skip::Live) {
             crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why()));
         }
     }
-    if let Some(why) = blind {
-        crate::status::add_note(&format!("auto-sweep skipped: {why}; it may be a running job's journal, so nothing was signalled"));
+    if let Some((f, why)) = blind {
+        crate::status::add_note(&format!("auto-sweep skipped: {}: {why}; it may be a running job's journal, so nothing was signalled", f.display()));
+        // said too, once per run (it holds back every run until the file is removed or fixed;
+        // review of the whole batch, P3-1)
+        if !quiet {
+            say!("sheepr: the sweep before this run ended nothing: {} may be a running job's journal and cannot be read ({why}); `sheepr sweep` says what to do.", crate::kill::clean(&f.display().to_string()));
+        }
         return;
     }
     let (mut swept, mut killed) = (0usize, 0usize);

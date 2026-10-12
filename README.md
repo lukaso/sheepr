@@ -100,7 +100,10 @@ reboot (in a container: in the same container), ends most of what was left; a pr
 never saw can stay, and `sheepr strays` lists it. On macOS, any later `run` or `sweep` with the
 same temp folder (`TMPDIR`) also removes the registration folder (`sr-…`) the killed sheepr left.
 A `run` with `--no-sweep` skips both, and a `run` stops sweeping jobs after 200 ms (and folders
-after 50 ms more), so when many were left, it can take more than one run.
+after 50 ms more), so when many were left, it can take more than one run. When a journal it
+cannot read may belong to a running job (another user's file, one with no read permission), that
+sweep ends nothing, and the run says so in one stderr line (not with `--quiet`); this repeats on
+every run until the file is removed or fixed, and `sheepr sweep` says what to do.
 
 On macOS a running job costs some CPU: sheepr checks your processes four times a second to find
 the ones that escaped. Measured on a busy Mac (about 1000 of your processes, load average 16): about 1.5% of one CPU
