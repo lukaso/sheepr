@@ -43,6 +43,8 @@ for x; do
   esac
   i=\$((i + 1))
 done
+# \$FX/onshow: a hook run once, before release.sh reads the tag's own release.sh (its \$0 compare)
+if [ -e "$FX/onshow" ] && [ ! -e "$FX/onshow.done" ]; then case " \$* " in *" show v0.1.0:scripts/release.sh "*) : > "$FX/onshow.done"; sh "$FX/onshow" ;; esac; fi
 case \$sub in
   status|show|rev-parse|worktree|tag|merge-base|config|cat-file|for-each-ref|show-ref) exec /usr/bin/git "\$@" ;;
 esac
@@ -980,6 +982,17 @@ sw=$(ln_rs '  [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh
 grep -qx -F 'shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@"; fi; }' "$RS" && pass "shipcall: the real branch runs the tool as the operator has it (text)" || fail "shipcall's text"
 grep -qx -F '  else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} "$SHIP_DOCKER" "$@"; fi' "$RS" \
   && pass "shipdocker: the real branch, the docker class (text)" || fail "shipdocker's text"
+# the tag moved between the checks and its recording (a hook moves it at the $0 compare, to another
+# commit with the same tree): refused before anything, since the checked commit is no longer the tag's
+cat > "$FX/onshow" <<EOF
+cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \\
+  /usr/bin/git commit-tree -p "$C" -m moved "$C^{tree}" > "$FX/movedc" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \\
+  /usr/bin/git tag -f -a v0.1.0 -m moved "\$(cat "$FX/movedc")" >/dev/null
+EOF
+rm -rf "${OUTR:?}"; rm -f "$FX/onshow.done"; ship; r=$?; rm -f "$FX/onshow" "$FX/onshow.done"; g update-ref refs/tags/v0.1.0 "$T" || exit 3
+[ $r = 1 ] && grep -q 'moved while ship checked it' "$FX/o" && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' -e '^build ' "$FX/calls" \
+  && pass "the tag moved between the checks and its recording: refused before anything" || fail "the tag moved early: rc=$r $(lastline)"
+rm -rf "${OUTR:?}"
 # --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
 # tag off the grammar are refused before ship's own exit handler is set)
 n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .)

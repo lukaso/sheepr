@@ -983,6 +983,9 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   git -C "$root" show "$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
   cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
   tagobj=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag") || die "no tag $tag"
+  # the commit the checks passed on must be the recorded object's (a tag moved in between is refused)
+  tc=$(git -C "$root" rev-parse -q --verify "$tagobj^{commit}") && [ "$tc" = "$commit" ] \
+    || die "the tag $tag moved while ship checked it (it names ${tc:-no commit} now; the checks passed on $commit): look at the tag, then run ship again"
   # the frozen tree: a detached worktree of the tag's commit, in this run's temp dir; every later
   # step reads its helpers, release.conf, the planner and the walls there, and the build child is
   # its release.sh
