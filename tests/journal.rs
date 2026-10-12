@@ -761,7 +761,9 @@ fn require_journal_ends_the_job_when_its_journal_dies() {
     let (c, st, err) = run_st(
         &d,
         "dead",
-        &format!("--require-journal -- /bin/sh -c '/bin/sleep {mk} & wait'"),
+        // the root execs a sleep: it cannot exit by itself before the kill's TERM reaches it (a
+        // shell's `wait` returned when its child died first, and it exited 143: a race)
+        &format!("--require-journal -- /bin/sh -c '/bin/sleep {mk} & exec /bin/sleep {mk}'"),
         &[("SHEEPR_TEST_STATE", ss), ("SHEEPR_TEST_JOURNAL_FAIL_AFTER", "2:ENOSPC"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())],
         false,
     );
