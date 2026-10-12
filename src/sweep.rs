@@ -213,7 +213,14 @@ fn open_checked(path: &Path, append: bool) -> Result<(std::fs::File, std::fs::Me
         o.read(true);
     }
     let errno = |e: std::io::Error| e.raw_os_error().unwrap_or(libc::EIO);
-    let file = o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).map_err(|e| Skip::of(Stage::Open, errno(e)))?;
+    // an open that fails: a file type open() refuses (a socket: EOPNOTSUPP on macOS, ENXIO on
+    // Linux) never reaches the checks below, so the name is looked at without following it
+    // (review of slice 4, P3-2): another user's, or not a regular file, says so
+    let file = o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).map_err(|e| match std::fs::symlink_metadata(path) {
+        Ok(m) if m.uid() != unsafe { libc::geteuid() } => Skip::Counted(Cause::OtherUser),
+        Ok(m) if !m.file_type().is_file() => Skip::Counted(Cause::NotAJournal),
+        _ => Skip::of(Stage::Open, errno(e)),
+    })?;
     let meta = file.metadata().map_err(|e| Skip::Counted(Cause::Error(Stage::Open, errno(e))))?;
     if meta.uid() != unsafe { libc::geteuid() } {
         return Err(Skip::Counted(Cause::OtherUser));

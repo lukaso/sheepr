@@ -1748,14 +1748,15 @@ fn strict_counts_a_file_that_holds_no_job_until_it_is_removed() {
 }
 
 /// N5, N6: what is not a regular file is not a journal: a FIFO, a folder, a symlink (to a valid
-/// journal elsewhere: never followed), each named `*.journal` in this boot's folder. `sweep
+/// journal elsewhere: never followed), a Unix socket (its open fails: EOPNOTSUPP on macOS, ENXIO
+/// on Linux; review of slice 4, P3-2), each named `*.journal` in this boot's folder. `sweep
 /// --strict` returns at once (before, a FIFO hung it: its open waited for a writer), exits 3, and
 /// its one line says to remove it. Removed, the next strict sweep exits 0.
 #[test]
 fn strict_counts_what_is_not_a_journal_until_it_is_removed() {
     let d = scratch("notj");
     let (here, boot, pidns) = folder(&d);
-    for kind in ["fifo", "folder", "symlink"] {
+    for kind in ["fifo", "folder", "symlink", "socket"] {
         let s = state(&d.join(kind));
         let dir = s.join("jobs").join(&here);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1767,6 +1768,13 @@ fn strict_counts_what_is_not_a_journal_until_it_is_removed() {
             "folder" => {
                 std::fs::create_dir(&p).unwrap();
                 mode(&p, 0o700);
+            }
+            "socket" => {
+                // bound at a short path (a socket path has at most 104 bytes), then moved in
+                let short = std::env::temp_dir().join(format!("sk{}", std::process::id()));
+                let _ = std::fs::remove_file(&short);
+                drop(std::os::unix::net::UnixListener::bind(&short).unwrap());
+                std::fs::rename(&short, &p).unwrap();
             }
             _ => {
                 let real = forge(&state(&d.join("elsewhere")), &here, "j-n0tj", "default", &boot, &pidns, &[], false);
