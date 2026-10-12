@@ -90,6 +90,7 @@ for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 
 "; done; printf '\n  ]\n}\n'; } > "\$d/MANIFEST.json"
 sh "\$(dirname "\$rs")/lib/render-cask.sh" "\$v" "\$(shasum -a 256 "\$d/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)" "\$d/sheepr.rb"
 [ ! -e "$FX/afterbuild" ] || sh "$FX/afterbuild"
+[ ! -e "$FX/build.nomanifest" ] || rm -f "\$d/MANIFEST.json"
 EOF
 chmod +x "$S/build"
 # npm-check's stand-in: writes the stamp for the manifest it is given ($FX/npmcheckfail: refuses;
@@ -698,8 +699,8 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
   && pass "caffeinate once: -i -w ship's pid" || fail "caffeinate: $(grep caffeinate "$FX/calls" | tr '\n' ' ') pid $(head -1 "$OUTR/.v0.1.0.ship-progress")"
 # a success whose logout leaves the token: no done, one logout-failed, exit 1, npm logout named
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
-[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q 'run npm logout --registry=https://registry.npmjs.org/' "$FX/o" && [ ! -e "$NF" ] && gone \
-  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done), npm logout named" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
+[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q 'run npm logout --registry=https://registry.npmjs.org/' "$FX/o" && grep -q 'run npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && [ ! -e "$NF" ] && gone \
+  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done), npm logout and npm config delete named" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
 # a failure after the login: one logout, one failed-PHASE; with the token left, one notification naming both
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
@@ -707,7 +708,7 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 [ -z "$(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | grep -v -e '^npm logout --registry=https://registry.npmjs.org/$' -e '^npm config get userconfig$' -e '^notify ')" ] \
   && pass "  after the stop: no read but the logout and the token count (the stop text reads nothing)" || fail "  calls after the stop: $(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | tr '\n' ' ')"
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail" "$FX/pubfail.sheepr"
-[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/" ] && gone \
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/; if a line stays (an expired token, which npm logout cannot revoke), run npm config delete //registry.npmjs.org/:_authToken" ] && gone \
   && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null)'"
 # an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
 # goes on; the token left: logout-failed, everything removed, exit 1
@@ -745,6 +746,11 @@ rm -rf "${OUTR:?}"
 rm -rf "${OUTR:?}"; : > "$FX/buildhup"; ship; r=$?; rm -f "$FX/buildhup"
 [ $r = 1 ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at build: a signal, or a step that named no cause" ] && grep -qx 'Nothing is public.' "$NF" && ! grep -q '^npmcheck' "$FX/calls" \
   && pass "a HUP during the build: stopped, the next file written" || fail "HUP: rc=$r '$(head -1 "$NF" 2>/dev/null)'"
+# a build with no manifest: a content stop (move it aside), never "fix the cause, run ship again" (it would loop)
+rm -rf "${OUTR:?}"; : > "$FX/build.nomanifest"; ship; r=$?; rm -f "$FX/build.nomanifest"
+[ $r = 1 ] && grep -q "no $OUTR/v0.1.0/MANIFEST.json" "$FX/o" && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" \
+  && pass "a build with no manifest: move it aside, then run ship again" || fail "no manifest: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null)"
+rm -rf "${OUTR:?}"
 # every phase ship names is a key notify.sh takes (failed-PHASE and logout-failed-PHASE: its dry mode)
 bad=""; for ph in $(sed -n 's/.*[ ;]phase=\([a-z0-9-]*\)[ ;].*/\1/p; s/.*[ ;]phase=\([a-z0-9-]*\)$/\1/p' "$RS" | sort -u); do
   for k in "failed-$ph" "logout-failed-$ph"; do

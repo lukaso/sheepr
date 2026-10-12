@@ -1163,7 +1163,7 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
 }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
   # its manifest's, and no control manifest inside it (-mindepth 2: a control build beside it is not)
-  [ -f "$1/MANIFEST.json" ] || die "no $1/MANIFEST.json"
+  [ -f "$1/MANIFEST.json" ] || { stopclass content; die "no $1/MANIFEST.json"; }
   pm() { sed -n "s/^ *\"$2\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$1/MANIFEST.json" | head -1; }
   [ "$(pm "$1" tag)" = "$tag" ] && [ "$(pm "$1" commit)" = "$commit" ] && [ "$(pm "$1" mode)" = signed ] && [ "$(pm "$1" control)" = false ] \
     || { stopclass content; die "$1 holds no signed build of $tag at $commit (or a control build)"; }
@@ -1258,7 +1258,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     drain; n=$(tokcount)
   fi
   if [ "$n" != 0 ]; then
-    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG"
+    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG; if a line stays (an expired token, which npm logout cannot revoke), run npm config delete //registry.npmjs.org/:_authToken"
     echo "release: $lo"
     drain; [ $wrote = no ] || printf '%s\n' "$lo" >> "$nf" 2>/dev/null
   fi
