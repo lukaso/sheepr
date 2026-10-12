@@ -175,19 +175,28 @@ impl Skip {
 /// Debug seam SHEEPR_TEST_JOURNAL_ERRNO=<open|lock|stat|read>:<errno>:<file name>: that step on that
 /// journal fails with that errno (a name or a number), and the call is not made. It is traced
 /// (`seam: <step> <errno> <file name>`) when it fires.
+/// SHEEPR_TEST_JOURNAL_ERRNO_LATER (same form) fires only from the second time that step is
+/// reached for that file (the auto-sweep's second open of a dead journal, to sweep it).
 fn seam_errno(stage: Stage, path: &Path) -> Option<i32> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    let v = std::env::var("SHEEPR_TEST_JOURNAL_ERRNO").ok()?;
-    let mut it = v.splitn(3, ':');
-    let (s, e, name) = (it.next()?, it.next()?, it.next()?);
-    if s != stage.verb() || path.file_name()? != std::ffi::OsStr::new(name) {
-        return None;
+    static LATER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    for (var, later) in [("SHEEPR_TEST_JOURNAL_ERRNO", false), ("SHEEPR_TEST_JOURNAL_ERRNO_LATER", true)] {
+        let Ok(v) = std::env::var(var) else { continue };
+        let mut it = v.splitn(3, ':');
+        let (Some(s), Some(e), Some(name)) = (it.next(), it.next(), it.next()) else { continue };
+        if s != stage.verb() || path.file_name() != Some(std::ffi::OsStr::new(name)) {
+            continue;
+        }
+        if later && LATER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            continue;
+        }
+        let Some(errno) = crate::steps::errno_of(e) else { continue };
+        crate::note(format!("seam: {s} {e} {name}"));
+        return Some(errno);
     }
-    let errno = crate::steps::errno_of(e)?;
-    crate::note(format!("seam: {s} {e} {name}"));
-    Some(errno)
+    None
 }
 
 /// Debug seam SHEEPR_TEST_JOURNAL_VANISH=<open|lock>:<file name>: that journal is unlinked just
@@ -833,8 +842,16 @@ pub fn auto(owner: &str, quiet: bool) {
             break;
         }
         // taken again (still dead: its lock is free); one taken meanwhile by another sweep, or
-        // gone, is that sweep's
-        let Ok(j) = open_fenced(&f) else { continue };
+        // gone, is that sweep's; any other skip is said as the first pass says it (review of
+        // b79a4d2, P4-A)
+        let j = match open_fenced(&f) {
+            Ok(j) => j,
+            Err(Skip::Live | Skip::Gone | Skip::Kept) => continue,
+            Err(s) => {
+                crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why()));
+                continue;
+            }
+        };
         if j.owner != owner {
             continue;
         }

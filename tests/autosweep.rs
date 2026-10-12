@@ -811,3 +811,35 @@ fn a_read_error_on_a_journal_the_pass_locked_is_only_a_note() {
     assert!(notes(&st).iter().any(|n| n.contains("j-0a000000.journal") && n.contains("EIO") && !n.contains("nothing was signalled")), "notes {:?}", notes(&st));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of b79a4d2, P4-A: the second open of a dead journal (to sweep it) that fails other than
+/// as live or gone is said, as the first pass would say it: with a read error that a seam gives
+/// only from the second read on, a note names the file and EIO, and the job is left (its decoy
+/// alive, the journal kept). The control, without the seam: the decoy ends.
+#[test]
+fn a_dead_journal_that_fails_its_second_open_is_said() {
+    let d = scratch("secondopen");
+    for (name, seam) in [("seam", true), ("ctl", false)] {
+        let s = state(&d.join(name));
+        let (here, boot, pidns) = this_boot(&d.join(name), &s);
+        let mr = d.join(format!("{name}.decoy"));
+        let _left = Leftovers(vec![mr.clone()], vec![]);
+        let mut mc = Command::new(fixture()).arg("sigcount").arg(&mr).spawn().unwrap();
+        assert!(wait_until(10, || !records(&mr).is_empty()), "{name}: the decoy started");
+        let m = records(&mr)[0];
+        let j = forge_dead(&here, "j-0c000000", "default", &boot, &pidns, &[m]);
+        let env: Vec<(&str, &str)> = if seam { vec![("SHEEPR_TEST_JOURNAL_ERRNO_LATER", "read:EIO:j-0c000000.journal")] } else { vec![] };
+        let (code, st) = run(&d, &s, name, "", "/bin/sh -c 'exit 0'", &env);
+        let gone = wait_until(if seam { 1 } else { 5 }, || !common::alive(m));
+        common::send_child(&mut mc, libc::SIGKILL);
+        let _ = mc.wait();
+        assert_eq!(code, Some(0), "{name}");
+        if seam {
+            assert!(!gone && j.exists(), "the job whose second open failed was swept");
+            assert!(notes(&st).iter().any(|n| n.starts_with("auto-sweep skipped ") && n.contains("j-0c000000.journal") && n.contains("(EIO)")), "notes {:?}", notes(&st));
+        } else {
+            assert!(gone, "control: the decoy was not ended: notes {:?}", notes(&st));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
