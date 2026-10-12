@@ -54,6 +54,10 @@ set -u
 # one collation and one message language for every sort and comparison (the operator's locale sorts
 # "SHA256SUMS" after "install.sh"; measured)
 LC_ALL=C; export LC_ALL
+# the signals every cleanup trap here catches: QUIT's default runs no EXIT trap at all, and the
+# others' defaults run it with the last command's status, not the run's (both measured, bash 3.2 as
+# sh); ship's own parent adds PIPE (below)
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
 DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, __publish-npm-dry); never inherited (their EXIT traps remove it)
 # release.sh's own, never inherited and never exported (unset first: a value from the environment
 # would stay exported): shipping (yes only under ship: publish_exec asks no second confirmation and
@@ -65,9 +69,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
@@ -253,7 +257,7 @@ build_release() { # mode: unsigned | signed | control
   dest=""   # the staging dir, once it is made (empty again after the rename)
   trap 'git -C "$root" worktree remove --force "$scratch/src" >/dev/null 2>&1; rm -rf "$scratch"
     [ -z "$dest" ] || echo "release: the build of $tag stopped; what it made is kept in $dest (never used by a later run: look at it, then remove it)" >&2' EXIT
-  trap 'exit 1' HUP INT TERM
+  trap 'exit 1' $SIGS
   src=$scratch/src
   git -C "$root" worktree add -q --detach "$src" "$tag" || die "cannot make a worktree of $tag"
   [ -z "$(git -C "$src" status --porcelain --ignored)" ] || die "the worktree holds an untracked or ignored file"
@@ -455,7 +459,7 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
-  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
+  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
   files_ok "$d" || die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"
@@ -562,7 +566,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-dry (stand-ins; verify not run; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   # the cells' way into the shipping branches (only `yes` sets it; the planned ship sets shipping itself)
@@ -651,7 +655,7 @@ publish_cask_exec() { # dir: the cask step alone, for a release that is already 
   d=$1
   case $tag in *-rc.*) die "an rc: the Homebrew cask follows final releases only" ;; esac
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
-  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
+  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"; m=$MAN
   mf() { sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$m" | head -1; }
   [ "$(mf tag)" = "$tag" ] && [ "$(mf mode)" = signed ] && [ "$(mf control)" = false ] \
@@ -674,7 +678,7 @@ publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real 
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __publish-cask-dry (stand-ins; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   GH=$SR_PUBLISH_DRY_GH NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry   # plain assignments, as above
@@ -757,7 +761,7 @@ publish_npm_exec() { # dir
   [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); nothing was published"
   case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; nothing was published" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
-  trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
+  trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   chmod 700 "$pc" || die "cannot make $pc private"
   private_manifest "$d" "$pc"; m=$MAN
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
@@ -839,7 +843,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
     NOTIFY=$SR_PUBLISH_DRY_NOTIFY
   fi
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME, $DRYHOME)"
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
@@ -858,7 +862,7 @@ npm_check() { # dir
   # a stamp from an earlier pass never outlives a check that does not pass
   rm -f "$d/NPM-CHECKED" || die "cannot remove $d/NPM-CHECKED"
   nt=/private/tmp/sr-npmcheck.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-  trap 'rm -rf "$nt"' EXIT; trap 'rm -rf "$nt"; exit 1' HUP INT TERM
+  trap 'rm -rf "$nt"' EXIT; trap 'rm -rf "$nt"; exit 1' $SIGS
   mkdir -m 700 "$nt" "$nt/p" "$nt/ref" || die "no temp dir"
   # the manifest every check reads, and the stamp names: a private copy, taken first (a manifest
   # replaced during the check gets no stamp that publish accepts)
@@ -905,7 +909,7 @@ verify() { # dir -> exit 1 naming the tool that refused
   d=$1 arc=$1/sheepr-macos-universal.tar.gz
   [ -f "$arc" ] || die "no $arc"
   vt=/private/tmp/sr-verify.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-  trap 'rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' HUP INT TERM
+  trap 'rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' $SIGS
   # the bundle the real tools judge, from a private copy whose hash publish then binds to the
   # stamped manifest (an archive replaced after this check is not the one judged)
   mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" && verified_ah=$(shasum -a 256 "$vt/a.tgz" | cut -d' ' -f1) \
@@ -938,7 +942,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   # right after mktemp, as in the other dry entries: ship_run refuses an rc or a tag off the grammar
   # before it sets its own exit handler (which then replaces this one and removes the temp HOME)
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
@@ -958,11 +962,12 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   shipcause=$st/cause shipcls=$st/class; stopclass fix
-  locked=no logged_in=no armed=no pubok=no phase=preflight oroot=$root wt=""
+  locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt=""
   trap 'ship_exit $?' EXIT
   # PIPE too: a stdout closed during the run otherwise kills the shell after the handler ran, with 141
-  # (bash 3.2 re-raises it; measured 2026-10-12); trapped, the handler's own status stands
-  trap 'exit 1' INT HUP TERM PIPE
+  # (bash 3.2 re-raises it; measured 2026-10-12); trapped, the handler's own status stands. A trapped
+  # signal waits for the foreground child (the build, an upload) to end
+  trap 'exit 1' $SIGS PIPE
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when no ship runs, remove that directory, then run ship again"
   echo $$ > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
@@ -1067,7 +1072,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   progress "done npm-main"
   # C9. done: the handler logs out
   echo "release: ship: $tag is public on GitHub, Homebrew and npm"
-  exit 0
+  shipok=yes   # the one place a run is done: the handler reads this, never the exit status (a signal
+  exit 0       # ship does not trap can reach the handler with status 0)
 }
 progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names
   [ -z "$shipprog" ] || printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
@@ -1075,7 +1081,7 @@ progress() { # line: ship's record of the phases (no-op outside ship); written b
 drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase's own trap removes it)
   [ "$dryentry" = yes ] || return 0
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: (a phase) a temp HOME, $DRYHOME"
 }
 # shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
@@ -1214,8 +1220,9 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   [ "$got" = "$(printf '%s\n' "$want" | sort)" ] || die "the dry-run push lists other refs than $( [ $pushmain = no ] || echo 'main and ')$tag: $(tr '\t\n' ' ;' < "$st/dry")"
 }
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
-  trap '' INT HUP TERM PIPE
-  rc=$1 ok=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
+  trap '' $SIGS PIPE
+  rc=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
+  [ "$shipok" = yes ] || [ "$rc" != 0 ] || rc=1   # a stop is never status 0
   # a write to a closed stdout leaves its bytes in the shell's buffer, and bash 3.2 hands them to the
   # next builtin write with a redirection, or to a $( ) (measured 2026-10-12): one byte to /dev/null
   # drains them, before each of those here (notify's own stderr line may carry them: the terminal)
@@ -1223,7 +1230,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # 1. a stop of a run that holds the lock: what to run next, built from this run's own record, to
   # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop that cannot vouch
   # for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before the push) keeps it
-  if [ "$rc" != 0 ] && [ "$locked" = yes ]; then
+  if [ "$shipok" != yes ] && [ "$locked" = yes ]; then
     txt=$(ship_stoptext)
     if [ -f "$nf" ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
       printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
@@ -1246,12 +1253,12 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   fi
   # 3. one notification, once armed: done only after a count of 0
   if [ "$armed" = yes ]; then
-    if [ "$ok" = 0 ] && [ "$n" = 0 ]; then notify done
-    elif [ "$ok" = 0 ]; then notify logout-failed
+    if [ "$shipok" = yes ] && [ "$n" = 0 ]; then notify done
+    elif [ "$shipok" = yes ]; then notify logout-failed
     elif [ "$n" = 0 ]; then notify "failed-$phase"
     else notify "logout-failed-$phase"; fi
   fi
-  [ "$ok" != 0 ] || rm -f "$nf"   # a release done: no steps left
+  [ "$shipok" != yes ] || rm -f "$nf"   # a release done: no steps left
   # 4. the frozen tree, the temp dirs, the lock (only this run's)
   [ -z "$wt" ] || git -C "$oroot" worktree remove --force "$wt" >/dev/null 2>&1
   rm -rf "${st:?}"

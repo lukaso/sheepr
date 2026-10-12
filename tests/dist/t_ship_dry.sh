@@ -76,6 +76,8 @@ if [ -e "$FX/buildint" ]; then
   trap 'echo "build got INT" >> "$FX/calls"; exit 0' INT; kill -INT 0; /bin/sleep 5
 fi
 [ -e "$FX/buildhup" ] && { kill -HUP \$PPID; /bin/sleep 1; }
+[ -e "$FX/buildusr1" ] && { kill -USR1 \$PPID; /bin/sleep 2; echo done > "$FX/build.done"; }
+[ -e "$FX/buildsys" ] && { kill -SYS \$PPID; exit 0; }
 [ -e "$FX/buildfail" ] && { echo "build: failed (stand-in)" >&2; exit 1; }
 rs=\$1 o=\$5 tg=\$6; v=\${tg#v}; d=\$o/\$tg
 c=\$(cat "$FX/build.other" 2>/dev/null || git -C "\$(dirname "\$rs")/.." rev-parse HEAD)
@@ -177,6 +179,11 @@ case \$1 in
     [ -e "$FX/logoutlies" ] && { grep -v "^\$TOK" "$FX/npmrc" > "$FX/npmrc.n" 2>/dev/null; mv "$FX/npmrc.n" "$FX/npmrc"; exit 1; }
     grep -v "^\$TOK" "$FX/npmrc" > "$FX/npmrc.n" 2>/dev/null; mv "$FX/npmrc.n" "$FX/npmrc"; exit 0 ;;
   publish) p=\$(basename "\$last" | sed 's/^\(.*\)-[0-9][0-9.a-z-]*\.tgz\$/\1/')
+    if [ -e "$FX/pubquit" ] && [ ! -e "$FX/pubquit.done" ]; then
+      : > "$FX/pubquit.done"
+      [ "\$(/usr/bin/perl -e 'print getpgrp()')" = "\$(cat "$FX/out/.ship.lock/pid" 2>/dev/null)" ] || { echo "UNSAFE pubquit" >> "$FX/calls"; exit 1; }
+      trap 'echo "npm got QUIT" >> "$FX/calls"' QUIT; kill -QUIT 0
+    fi
     [ -e "$FX/pubfail.\$p" ] && { echo "npm error code E401" >&2; echo STOP >> "$FX/calls"; exit 1; }
     python3 -c 'import base64, hashlib, sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "\$last" > "$FX/pub.\$p"
     exit 0 ;;
@@ -269,7 +276,7 @@ ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whos
 $a" ;; esac; done
   # the assignments as arguments to env, one per line (a value may hold spaces)
   printf '%s\n' "$envs" | sed '/^$/d' > "$FX/envs"
-  set --; [ -z "${SETSID:-}" ] || set -- /usr/bin/perl -e 'use POSIX; setsid() or die "setsid: $!"; $SIG{INT} = "DEFAULT"; exec @ARGV or die' --
+  set --; [ -z "${SETSID:-}" ] || set -- /usr/bin/perl -e 'use POSIX; setsid() or die "setsid: $!"; $SIG{$_} = "DEFAULT" for qw(INT QUIT); exec @ARGV or die' --
   if [ -z "${PIPEQ:-}" ]; then
     (cd "$REPO" && IFS='
 '; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
@@ -678,6 +685,24 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 rm -rf "${OUTR:?}"; : > "$FX/buildint"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/buildint"
 [ $r = 1 ] && grep -q '^build got INT$' "$FX/calls" && ! grep -q '^npmcheck' "$FX/calls" && [ "$(nots)" = "failed-build " ] && gone \
   && pass "an INT to ship's group during the build: no later phase, failed-build, everything removed" || fail "INT: rc=$r '$(nots)' $(grep -c '^npmcheck' "$FX/calls") npmcheck $(lastline)"
+# QUIT to ship's group during a platform upload (QUIT's default runs no EXIT trap, measured): ship
+# and the phase's subshell trap it; the handler runs
+: > "$FX/pubquit"; rm -f "$FX/pubquit.done"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/pubquit" "$FX/pubquit.done"
+[ $r = 1 ] && grep -q '^npm got QUIT$' "$FX/calls" && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && ! grep -q '_authToken=' "$FX/npmrc.after" \
+  && [ "$(nots)" = "npm-login npm-approve failed-npm-platform " ] && grep -q 'is pushed, and npm may hold a part of it' "$NF" && gone \
+  && pass "a QUIT to ship's group during a platform upload: one logout, the count 0, the post-push text, failed-npm-platform, all removed, exit 1" \
+  || fail "QUIT: rc=$r '$(nots)' logouts $(grep -c '^npm logout' "$FX/calls") '$(head -1 "$NF" 2>/dev/null)' lock $(ls -d "$OUTR/.ship.lock" 2>/dev/null)"
+# USR1 to ship during the build: its trap waits for the build (a foreground child), then stops
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; rm -f "$FX/build.done"; : > "$FX/buildusr1"; ship; r=$?; rm -f "$FX/buildusr1"
+[ $r = 1 ] && [ -e "$FX/build.done" ] && [ "$(nots)" = "failed-build " ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at build: a signal, or a step that named no cause" ] && gone \
+  && pass "a USR1 during the build: ship waits for the build, then stops: failed-build, this run's next file, exit 1" || fail "USR1: rc=$r build.done=$(ls "$FX/build.done" 2>/dev/null) '$(nots)' '$(head -1 "$NF" 2>/dev/null)'"
+rm -f "$FX/build.done"
+# a signal ship does not trap (SYS: its default runs the EXIT trap with status 0, measured): only
+# ship_run's own end is a success, so the handler takes the run as stopped, never as done
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; : > "$FX/buildsys"; ship; r=$?; rm -f "$FX/buildsys"
+[ $r != 0 ] && [ "$(nots)" = "failed-build " ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at build: a signal, or a step that named no cause" ] \
+  && pass "an untrapped SYS during the build: not done; failed-build, this run's next file, a non-zero exit" || fail "SYS: rc=$r '$(nots)' '$(head -1 "$NF" 2>/dev/null)'"
+rm -rf "${OUTR:?}"
 # HUP during the build: the next file is written
 rm -rf "${OUTR:?}"; : > "$FX/buildhup"; ship; r=$?; rm -f "$FX/buildhup"
 [ $r = 1 ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at build: a signal, or a step that named no cause" ] && grep -qx 'Nothing is public.' "$NF" && ! grep -q '^npmcheck' "$FX/calls" \
