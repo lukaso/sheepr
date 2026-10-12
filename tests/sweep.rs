@@ -220,10 +220,10 @@ fn sheepr_within(s: &Path, args: &[&str], env: &[(&str, &str)], secs: u64) -> (O
     (code, text, took)
 }
 
-/// `sheepr sweep --strict` with this state and these variables, within 10 s (then KILL, code
-/// None); (exit code, stderr).
+/// `sheepr sweep --strict` with this state and these variables, within 30 s as other cells' sweeps
+/// (then KILL, code None); (exit code, stderr). A row that checks a hang bounds its own call.
 fn strict(s: &Path, env: &[(&str, &str)]) -> (Option<i32>, String) {
-    let (code, text, _) = sheepr_within(s, &["sweep", "--strict"], env, 10);
+    let (code, text, _) = sheepr_within(s, &["sweep", "--strict"], env, 30);
     (code, text)
 }
 
@@ -1781,7 +1781,7 @@ fn strict_counts_what_is_not_a_journal_until_it_is_removed() {
                 std::os::unix::fs::symlink(&real, &p).unwrap();
             }
         }
-        let (code, err) = strict(&s, &[]);
+        let (code, err, _) = sheepr_within(&s, &["sweep", "--strict"], &[], 10);
         assert!(code.is_some(), "{kind}: the sweep did not return in 10 s");
         assert_eq!(code, Some(3), "{kind}: {err}");
         let l = naming(&err, "j-n0tj.journal");

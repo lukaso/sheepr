@@ -104,7 +104,8 @@ renv run --no-sweep -- /bin/sh -c "$wait_go" < /dev/null > /dev/null 2> "$FX/err
 i=0; while [ "$(journals)" -lt 1 ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 nj=$(journals)
 sr sweep; r=$?
+cp "$FX/err" "$FX/err.plain"   # the default run's stderr, checked too (the strict run reuses err)
 sr sweep --strict; rs=$?
 touch "$FX/go"; wait
-[ "$nj" -ge 1 ] && [ "$r" = 0 ] && [ "$rs" = 0 ] && ! grep -q '\.journal' "$FX/err" && pass "control: a live job's readable journal ($nj) is named by no line, exit 0, also --strict" || fail "control (live): $nj journal(s), rc=$r, --strict rc=$rs $(tr '\n' ' ' < "$FX/err")"
+[ "$nj" -ge 1 ] && [ "$r" = 0 ] && [ "$rs" = 0 ] && ! grep -q '\.journal' "$FX/err.plain" && ! grep -q '\.journal' "$FX/err" && pass "control: a live job's readable journal ($nj) is named by no line, exit 0, also --strict" || fail "control (live): $nj journal(s), rc=$r, --strict rc=$rs $(tr '\n' ' ' < "$FX/err.plain") / $(tr '\n' ' ' < "$FX/err")"
 finish
