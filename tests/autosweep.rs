@@ -728,3 +728,102 @@ fn the_auto_sweep_never_locks_another_owners_journal() {
     assert!(!lj.exists(), "liveapp's swept journal is still there");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// This boot's journal folder in state `s` (made, 0700), and the header's boot and pid namespace,
+/// from a short job's journal that a seam keeps (in a probe state of its own under `d`).
+fn this_boot(d: &Path, s: &Path) -> (PathBuf, String, String) {
+    let probe = state(&d.join("probe"));
+    let _ = Command::new(sheepr()).args(["run", "--", "/bin/sh", "-c", "exit 0"]).env("SHEEPR_TEST_STATE", &probe).env("SHEEPR_TEST_KEEP_JOURNAL", "1").status();
+    let pj = journals(&probe).pop().expect("a kept journal");
+    let h = json::parse(std::fs::read_to_string(&pj).unwrap().lines().next().unwrap()).unwrap();
+    let hf = |k: &str| h.get(k).and_then(Json::str).unwrap().to_string();
+    let here = s.join("jobs").join(pj.parent().unwrap().file_name().unwrap());
+    std::fs::create_dir_all(&here).unwrap();
+    for p in [s.join("jobs"), here.clone()] {
+        std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(d.join("probe"));
+    (here, hf("boot"), hf("pidns"))
+}
+
+/// A forged journal of a dead job (its supervisor gone) in `here`, naming `members`.
+fn forge_dead(here: &Path, job: &str, owner: &str, boot: &str, pidns: &str, members: &[(i32, u64)]) -> PathBuf {
+    let uid = unsafe { libc::getuid() };
+    let mut text = format!(
+        "{{\"v\":1,\"kind\":\"header\",\"job\":\"{job}\",\"boot\":\"{boot}\",\"pidns\":\"{pidns}\",\"owner\":\"{owner}\",\"uid\":{uid},\"sup\":{{\"pid\":999999,\"id\":{}}},\"argv\":\"sheepr run\"}}\n",
+        1u64 << 40
+    );
+    for (p, id) in members {
+        text.push_str(&format!("{{\"v\":1,\"pid\":{p},\"id\":{id},\"ppid\":1,\"pid_id\":null,\"puniq\":null,\"cmd\":\"decoy\"}}\n"));
+    }
+    let j = here.join(format!("{job}.journal"));
+    std::fs::write(&j, text).unwrap();
+    std::fs::set_permissions(&j, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    j
+}
+
+/// Review of the slice-4 fixes, P3-1: the auto-sweep holds one journal open at a time, so many
+/// dead journals never fill the fd table: 81 dead jobs of this owner (the first naming a live
+/// decoy) under `ulimit -n 64`: the pass ends the decoy, the journal count drops, and no note
+/// names EMFILE. Before, the pass kept every dead journal open while it listed the rest, hit
+/// EMFILE, took that journal for a live one it could not read, and signalled nothing, on every
+/// run. (The control, an EMFILE on a live journal, still signals nothing:
+/// `an_unreadable_journal_that_may_be_live_stops_the_auto_sweep_pass`.)
+#[test]
+fn the_auto_sweep_holds_one_journal_at_a_time() {
+    let d = scratch("manyfds");
+    let s = state(&d);
+    let (here, boot, pidns) = this_boot(&d, &s);
+    let mr = d.join("decoy");
+    let _left = Leftovers(vec![mr.clone()], vec![]);
+    let mut mc = Command::new(fixture()).arg("sigcount").arg(&mr).spawn().unwrap();
+    assert!(wait_until(10, || !records(&mr).is_empty()), "the decoy started");
+    let m = records(&mr)[0];
+    forge_dead(&here, "j-00000000", "default", &boot, &pidns, &[m]);
+    for i in 1..81 {
+        forge_dead(&here, &format!("j-{i:08x}"), "default", &boot, &pidns, &[]);
+    }
+    let out = d.join("status");
+    let code = Command::new("/bin/sh")
+        .args(["-c", &format!(r#"ulimit -n 64 && exec "$SD" run --status-fd 3 -- /bin/sh -c 'exit 0' 3>"{}""#, out.display())])
+        .env("SD", sheepr())
+        .env("SHEEPR_TEST_STATE", &s)
+        .status()
+        .unwrap()
+        .code();
+    let st = json::parse(std::fs::read_to_string(&out).unwrap_or_default().trim_end()).ok();
+    let gone = wait_until(5, || !common::alive(m));
+    let left = journals(&s).len();
+    common::send_child(&mut mc, libc::SIGKILL);
+    let _ = mc.wait();
+    assert_eq!(code, Some(0), "{st:?}");
+    assert!(!notes(&st).iter().any(|n| n.contains("EMFILE")), "notes {:?}", notes(&st));
+    assert!(gone, "the decoy of the first dead journal was not ended: notes {:?}", notes(&st));
+    assert!(left < 81, "no journal was swept: {left} left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of the slice-4 fixes, P4-1: a read error on a journal whose lock this pass took (seam:
+/// read:EIO) is a dead job's, not a live one's: a note, and the pass still sweeps the other dead
+/// job (its decoy ends). Before, it stopped the whole pass.
+#[test]
+fn a_read_error_on_a_journal_the_pass_locked_is_only_a_note() {
+    let d = scratch("lockedread");
+    let s = state(&d);
+    let (here, boot, pidns) = this_boot(&d, &s);
+    let mr = d.join("decoy");
+    let _left = Leftovers(vec![mr.clone()], vec![]);
+    let mut mc = Command::new(fixture()).arg("sigcount").arg(&mr).spawn().unwrap();
+    assert!(wait_until(10, || !records(&mr).is_empty()), "the decoy started");
+    let m = records(&mr)[0];
+    forge_dead(&here, "j-0a000000", "default", &boot, &pidns, &[]);
+    forge_dead(&here, "j-0b000000", "default", &boot, &pidns, &[m]);
+    let (code, st) = run(&d, &s, "pass", "", "/bin/sh -c 'exit 0'", &[("SHEEPR_TEST_JOURNAL_ERRNO", "read:EIO:j-0a000000.journal")]);
+    let gone = wait_until(5, || !common::alive(m));
+    common::send_child(&mut mc, libc::SIGKILL);
+    let _ = mc.wait();
+    assert_eq!(code, Some(0));
+    assert!(gone, "the other dead job's decoy was not ended: notes {:?}", notes(&st));
+    assert!(notes(&st).iter().any(|n| n.contains("j-0a000000.journal") && n.contains("EIO") && !n.contains("nothing was signalled")), "notes {:?}", notes(&st));
+    let _ = std::fs::remove_dir_all(&d);
+}

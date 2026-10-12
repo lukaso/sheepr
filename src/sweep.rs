@@ -506,9 +506,12 @@ pub(crate) fn peek_checked(path: &Path) -> Result<Vec<(i32, u64)>, Skip> {
     Ok(String::from_utf8_lossy(&bytes).lines().filter_map(|l| json::parse(l).ok()).filter_map(|l| Some((num(&l, "pid")? as i32, num(&l, "id")? as u64))).collect())
 }
 
-/// A journal the auto-sweep could not read at all, though it may be a live job's: an open, read or
-/// stat error, or another user's file. Its members cannot be ruled out, so the pass signals
-/// nothing (review of slice 4, P2-1). (A lock error is a live job's: its members are peeked.)
+/// A journal the auto-sweep could not read at all, though it may be a live job's: an open error,
+/// another user's file, or an error reading the members of a journal it holds no lock on (one it
+/// took for a live job's, after a lock or stat error). Its members cannot be ruled out, so the pass
+/// signals nothing (review of slice 4, P2-1). A lock or stat error alone is a live job's (its
+/// members are read without the lock), and a read error after the pass took the lock is a dead
+/// job's journal (a note: `auto`).
 fn blinds(s: &Skip) -> bool {
     matches!(s, Skip::Counted(Cause::Error(..)) | Skip::Counted(Cause::OtherUser))
 }
@@ -773,7 +776,10 @@ pub fn auto(owner: &str, quiet: bool) {
         return;
     };
     let start = std::time::Instant::now();
-    let mut opened = Vec::new();
+    // the dead jobs of this owner, by path: each journal's lock is let go as soon as it is read,
+    // and taken again to sweep it, so the pass holds one journal open at a time (many dead
+    // journals never fill the fd table; review of the slice-4 fixes, P3-1)
+    let mut dead: Vec<PathBuf> = Vec::new();
     let mut live_named: HashSet<(i32, u64)> = HashSet::new();
     // the first journal that may be a live job's and could not be read (`blinds`)
     let mut blind: Option<String> = None;
@@ -785,11 +791,15 @@ pub fn auto(owner: &str, quiet: bool) {
         let r = if other { Err(Skip::Live) } else { open_fenced(&f) };
         let s = match r {
             Ok(j) => {
-                opened.push(j);
+                drop(j); // its lock, let go
+                dead.push(f);
                 continue;
             }
             Err(s) => s,
         };
+        // a read error after this pass took the lock is a dead job's journal: a note, never a
+        // reason to signal nothing (review of the slice-4 fixes, P4-1)
+        let locked = matches!(s, Skip::Counted(Cause::Error(Stage::Read, _)));
         // every lock error too (N7): what its journal names is left alone
         let s = if s.live() {
             match peek_checked(&f) {
@@ -802,7 +812,7 @@ pub fn auto(owner: &str, quiet: bool) {
         } else {
             s
         };
-        if blinds(&s) {
+        if blinds(&s) && !locked {
             blind.get_or_insert_with(|| format!("{}: {}", f.display(), s.why()));
         } else if !matches!(s, Skip::Kept | Skip::Gone | Skip::Live) {
             crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why()));
@@ -812,14 +822,17 @@ pub fn auto(owner: &str, quiet: bool) {
         crate::status::add_note(&format!("auto-sweep skipped: {why}; it may be a running job's journal, so nothing was signalled"));
         return;
     }
-    // debug seam: hold here, with the journals of this pass open (and locked)
+    // debug seam: hold here, once every journal of this pass was read (none is held now)
     crate::seam_hold("SHEEPR_TEST_HOLD_AUTO_PASS");
     let (mut swept, mut killed) = (0usize, 0usize);
-    for j in opened {
+    for f in dead {
         if start.elapsed() > std::time::Duration::from_millis(200) {
             crate::status::add_note("partial: the auto-sweep's 200 ms budget ran out; the rest waits for the next run");
             break;
         }
+        // taken again (still dead: its lock is free); one taken meanwhile by another sweep, or
+        // gone, is that sweep's
+        let Ok(j) = open_fenced(&f) else { continue };
         if j.owner != owner {
             continue;
         }
