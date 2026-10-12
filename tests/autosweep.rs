@@ -549,18 +549,29 @@ fn a_fifo_named_like_a_journal_does_not_stop_the_run() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// N7: the auto-sweep still takes every lock error for a live job's journal. A live job whose
-/// journal's lock fails (a seam: ENOLCK, as on a network mount) keeps its escapee out of a dead
-/// job's pass, though the dead job's journal names it: the escapee gets no signal, and a note says
-/// the job was deferred. The controls: the dead job's other member is ended (the pass ran), and
-/// the trace shows the seam's lock error reached the live job's journal.
-#[test]
-fn a_lock_error_on_a_live_journal_keeps_its_member_from_the_auto_sweep() {
-    let d = scratch("lockerr");
-    let s = state(&d);
+/// What one auto-sweep pass did to a live job (journal `j-11ve0000`, its escapee G) and a dead job
+/// (`j-dead0000`) whose forged journal names G and a decoy M2, with `seam` on
+/// SHEEPR_TEST_JOURNAL_ERRNO (and the trace on).
+struct Pass {
+    code: Option<i32>,
+    notes: Vec<String>,
+    /// G: alive, and the signals it counted
+    g_alive: bool,
+    g_sigs: usize,
+    m2_gone: bool,
+    trace: String,
+}
+
+fn pass_over_a_live_job(d: &Path, seam: Option<&str>) -> Pass {
+    pass_over_a_live_job_of(d, seam, "default")
+}
+
+/// `pass_over_a_live_job`, the live job run with `--owner OWNER`.
+fn pass_over_a_live_job_of(d: &Path, seam: Option<&str>, owner: &str) -> Pass {
+    let s = state(d);
     let (r, m2r) = (d.join("live"), d.join("m2"));
     let _left = Leftovers(vec![r.clone(), m2r.clone()], vec![]);
-    let mut live = Outer(Command::new(sheepr()).args(["run", "--no-sweep", "--", fixture(), "escapee-and-wait"]).arg(&r).env("SHEEPR_TEST_STATE", &s).env("SHEEPR_TEST_JOB_ID", "11ve0000").spawn().unwrap());
+    let mut live = Outer(Command::new(sheepr()).args(["run", "--no-sweep", "--owner", owner, "--", fixture(), "escapee-and-wait"]).arg(&r).env("SHEEPR_TEST_STATE", &s).env("SHEEPR_TEST_JOB_ID", "11ve0000").spawn().unwrap());
     assert!(wait_until(15, || !records(&r).is_empty()), "the live job's escapee started");
     let g = records(&r)[0];
     assert!(wait_until(10, || journaled(&s).contains(&g.0)), "the escapee was journaled");
@@ -585,19 +596,135 @@ fn a_lock_error_on_a_live_journal_keeps_its_member_from_the_auto_sweep() {
     std::fs::write(&dj, text).unwrap();
     std::fs::set_permissions(&dj, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let trace = d.join("trace");
-    let (code, st) = run(&d, &s, "auto", "", "/bin/sh -c 'exit 0'", &[("SHEEPR_TEST_JOURNAL_ERRNO", "lock:ENOLCK:j-11ve0000.journal"), ("SHEEPR_TEST_TRACE", trace.to_str().unwrap())]);
+    let mut env = vec![("SHEEPR_TEST_TRACE", trace.to_str().unwrap())];
+    if let Some(v) = seam {
+        env.push(("SHEEPR_TEST_JOURNAL_ERRNO", v));
+    }
+    let (code, st) = run(d, &s, "auto", "", "/bin/sh -c 'exit 0'", &env);
     let gr = PathBuf::from(format!("{}.g", r.display()));
-    let (alive, n) = (common::alive(g), counted(&gr));
-    let m2_gone = wait_until(5, || !common::alive(m2));
-    let fired = std::fs::read_to_string(&trace).unwrap_or_default().lines().any(|l| l == "seam: lock ENOLCK j-11ve0000.journal");
+    let (g_alive, g_sigs) = (common::alive(g), counted(&gr));
+    let m2_gone = wait_until(if seam.is_some_and(|v| !v.starts_with("lock")) { 1 } else { 5 }, || !common::alive(m2));
     common::send_child(&mut live.0, libc::SIGTERM); // its own supervisor ends its job
     let _ = live.0.wait();
     common::send_child(&mut m2c, libc::SIGKILL);
     let _ = m2c.wait();
-    assert_eq!(code, Some(0));
-    assert!(fired, "the seam did not reach the live job's journal (the row proves nothing)");
-    assert!(m2_gone, "control: the dead job's pass did not end its other member");
-    assert!(alive && n == 0, "the live job's escapee got {n} signal(s), alive {alive}");
-    assert!(notes(&st).iter().any(|n| n.starts_with("deferred: job j-dead0000")), "notes {:?}", notes(&st));
+    Pass { code, notes: notes(&st), g_alive, g_sigs, m2_gone, trace: std::fs::read_to_string(&trace).unwrap_or_default() }
+}
+
+/// N7: the auto-sweep still takes every lock error for a live job's journal. A live job whose
+/// journal's lock fails (a seam: ENOLCK, as on a network mount) keeps its escapee out of a dead
+/// job's pass, though the dead job's journal names it: the escapee gets no signal, and a note says
+/// the job was deferred. The controls: the dead job's other member is ended (the pass ran), and
+/// the trace shows the seam's lock error reached the live job's journal.
+#[test]
+fn a_lock_error_on_a_live_journal_keeps_its_member_from_the_auto_sweep() {
+    let d = scratch("lockerr");
+    let p = pass_over_a_live_job(&d, Some("lock:ENOLCK:j-11ve0000.journal"));
+    assert_eq!(p.code, Some(0));
+    assert!(p.trace.lines().any(|l| l == "seam: lock ENOLCK j-11ve0000.journal"), "the seam did not reach the live job's journal (the row proves nothing)");
+    assert!(p.m2_gone, "control: the dead job's pass did not end its other member");
+    assert!(p.g_alive && p.g_sigs == 0, "the live job's escapee got {} signal(s), alive {}", p.g_sigs, p.g_alive);
+    assert!(p.notes.iter().any(|n| n.starts_with("deferred: job j-dead0000")), "notes {:?}", p.notes);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 4, P2-1: a journal that may be a live job's and cannot be read at all (its
+/// open fails, seam: EMFILE, as when the pass holds many journals open; or, after its lock was
+/// found held, the read of its members fails, seam: EIO) names members the pass cannot rule out,
+/// so the pass signals nothing: the live job's escapee gets no signal, the dead job's decoy is not
+/// ended either, and a note names the file. The control, the same jobs without the seam: the pass
+/// ends the decoy and still spares the escapee (its journal is locked).
+#[test]
+fn an_unreadable_journal_that_may_be_live_stops_the_auto_sweep_pass() {
+    let d = scratch("openerr");
+    for (name, seam, errno) in [("open", "open:EMFILE:j-11ve0000.journal", "EMFILE"), ("peek", "read:EIO:j-11ve0000.journal", "EIO")] {
+        let p = pass_over_a_live_job(&d.join(name), Some(seam));
+        assert_eq!(p.code, Some(0), "{name}: the run's own command runs");
+        assert!(p.trace.lines().any(|l| l.starts_with("seam: ") && l.ends_with(&format!("{errno} j-11ve0000.journal"))), "{name}: the seam did not reach the live job's journal (the row proves nothing)");
+        assert!(p.g_alive && p.g_sigs == 0, "{name}: the live job's escapee got {} signal(s), alive {}", p.g_sigs, p.g_alive);
+        assert!(!p.m2_gone, "{name}: the pass signalled the dead job though a journal it could not read may be a live job's");
+        assert!(p.notes.iter().any(|n| n.contains("j-11ve0000.journal") && n.contains(errno) && n.contains("nothing was signalled")), "{name}: notes {:?}", p.notes);
+    }
+    let c = pass_over_a_live_job(&d.join("ctl"), None);
+    assert!(c.m2_gone && c.g_alive && c.g_sigs == 0, "control: decoy gone {}, escapee alive {} ({} signal(s))", c.m2_gone, c.g_alive, c.g_sigs);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 4, P3-1: what another owner's live job names is still left alone, though the
+/// default pass no longer locks (or opens) that journal: it reads it without its lock. The live
+/// job runs with `--owner liveapp`, the dead job is the default owner's: the escapee gets no
+/// signal; the control, the dead job's decoy, is ended.
+#[test]
+fn another_owners_live_job_keeps_its_member_from_the_auto_sweep() {
+    let d = scratch("otherlive");
+    let p = pass_over_a_live_job_of(&d, None, "liveapp");
+    assert_eq!(p.code, Some(0));
+    assert!(p.m2_gone, "control: the dead job's pass did not end its other member");
+    assert!(p.g_alive && p.g_sigs == 0, "another owner's live escapee got {} signal(s), alive {}", p.g_sigs, p.g_alive);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review of slice 4, P3-1: the auto-sweep never takes the lock of another owner's journal (its
+/// header is read first, as `sweep` does), so a `sweep --owner liveapp --strict` that runs while a
+/// default run's pass holds (seam, after it opened the journals) still finds liveapp's stale
+/// journal unlocked: it sweeps it (the decoy ends, the journal goes, exit 0). Before, the pass held
+/// that lock and the strict sweep took the job for a live one (exit 0, the decoy alive).
+#[test]
+fn the_auto_sweep_never_locks_another_owners_journal() {
+    let d = scratch("otherlock");
+    let s = state(&d);
+    let mr = d.join("decoy");
+    let _left = Leftovers(vec![mr.clone()], vec![]);
+    // this boot's folder and header values, from a short job's journal kept by a seam
+    let probe = state(&d.join("probe"));
+    let _ = Command::new(sheepr()).args(["run", "--", "/bin/sh", "-c", "exit 0"]).env("SHEEPR_TEST_STATE", &probe).env("SHEEPR_TEST_KEEP_JOURNAL", "1").status();
+    let pj = journals(&probe).pop().expect("a kept journal");
+    let h = json::parse(std::fs::read_to_string(&pj).unwrap().lines().next().unwrap()).unwrap();
+    let hf = |k: &str| h.get(k).and_then(Json::str).unwrap().to_string();
+    let here = s.join("jobs").join(pj.parent().unwrap().file_name().unwrap());
+    std::fs::create_dir_all(&here).unwrap();
+    for p in [s.join("jobs"), here.clone()] {
+        std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    let mut mc = Command::new(fixture()).arg("sigcount").arg(&mr).spawn().unwrap();
+    assert!(wait_until(10, || !records(&mr).is_empty()), "the decoy started");
+    let m = records(&mr)[0];
+    let uid = unsafe { libc::getuid() };
+    let lj = here.join("j-11ab0000.journal");
+    std::fs::write(
+        &lj,
+        format!(
+            "{{\"v\":1,\"kind\":\"header\",\"job\":\"j-11ab0000\",\"boot\":\"{}\",\"pidns\":\"{}\",\"owner\":\"liveapp\",\"uid\":{uid},\"sup\":{{\"pid\":999999,\"id\":{}}},\"argv\":\"sheepr run\"}}\n{{\"v\":1,\"pid\":{},\"id\":{},\"ppid\":1,\"pid_id\":null,\"puniq\":null,\"cmd\":\"decoy\"}}\n",
+            hf("boot"),
+            hf("pidns"),
+            1u64 << 40,
+            m.0,
+            m.1
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&lj, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let (ready, release) = (d.join("ready"), d.join("release"));
+    let _go = GoOnDrop(release.clone());
+    let mut held = Outer(
+        Command::new(sheepr())
+            .args(["run", "--", "/bin/sh", "-c", "exit 0"])
+            .env("SHEEPR_TEST_STATE", &s)
+            .env("SHEEPR_TEST_HOLD_AUTO_PASS", &release)
+            .env("SHEEPR_TEST_READY_FILE", &ready)
+            .spawn()
+            .unwrap(),
+    );
+    let in_pass = wait_until(15, || ready.exists());
+    let st = Command::new(sheepr()).args(["sweep", "--owner", "liveapp", "--strict"]).env("SHEEPR_TEST_STATE", &s).status().unwrap();
+    let gone = wait_until(5, || !common::alive(m));
+    std::fs::write(&release, b"").unwrap();
+    let _ = held.0.wait();
+    common::send_child(&mut mc, libc::SIGKILL);
+    let _ = mc.wait();
+    assert!(in_pass, "the default run's pass never held (the row proves nothing)");
+    assert_eq!(st.code(), Some(0));
+    assert!(gone, "the strict sweep of liveapp did not end its stale job: the default pass held its lock");
+    assert!(!lj.exists(), "liveapp's swept journal is still there");
     let _ = std::fs::remove_dir_all(&d);
 }

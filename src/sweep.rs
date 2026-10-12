@@ -470,10 +470,26 @@ pub enum Outcome {
 /// The members named by a journal, read without its lock (a live job's: the auto-sweep leaves
 /// them alone). Only this user's regular file, never through a symlink (`open_checked`).
 pub(crate) fn peek(path: &Path) -> Vec<(i32, u64)> {
-    let Ok((f, _)) = open_checked(path, false) else { return Vec::new() };
-    let mut text = String::new();
-    let _ = std::io::Read::read_to_string(&mut &f, &mut text);
-    text.lines().filter_map(|l| json::parse(l).ok()).filter_map(|l| Some((num(&l, "pid")? as i32, num(&l, "id")? as u64))).collect()
+    peek_checked(path).unwrap_or_default()
+}
+
+/// `peek`, or why the journal could not be read. Read as bytes, so a byte that is not UTF-8 in one
+/// line loses no other line.
+pub(crate) fn peek_checked(path: &Path) -> Result<Vec<(i32, u64)>, Skip> {
+    let (f, _) = open_checked(path, false)?;
+    if let Some(e) = seam_errno(Stage::Read, path) {
+        return Err(Skip::of(Stage::Read, e));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut &f, &mut bytes).map_err(|e| Skip::of(Stage::Read, e.raw_os_error().unwrap_or(libc::EIO)))?;
+    Ok(String::from_utf8_lossy(&bytes).lines().filter_map(|l| json::parse(l).ok()).filter_map(|l| Some((num(&l, "pid")? as i32, num(&l, "id")? as u64))).collect())
+}
+
+/// A journal the auto-sweep could not read at all, though it may be a live job's: an open, read or
+/// stat error, or another user's file. Its members cannot be ruled out, so the pass signals
+/// nothing (review of slice 4, P2-1). (A lock error is a live job's: its members are peeked.)
+fn blinds(s: &Skip) -> bool {
+    matches!(s, Skip::Counted(Cause::Error(..)) | Skip::Counted(Cause::OtherUser))
 }
 
 /// How a sweep treats live supervisors and live jobs.
@@ -738,15 +754,45 @@ pub fn auto(owner: &str, quiet: bool) {
     let start = std::time::Instant::now();
     let mut opened = Vec::new();
     let mut live_named: HashSet<(i32, u64)> = HashSet::new();
+    // the first journal that may be a live job's and could not be read (`blinds`)
+    let mut blind: Option<String> = None;
     for f in files {
-        match open_fenced(&f) {
-            Ok(j) => opened.push(j),
-            // every lock error too (N7): what its journal names is left alone
-            Err(s) if s.live() => live_named.extend(peek(&f)),
-            Err(Skip::Kept) => {}
-            Err(s) => crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why())),
+        // another owner's journal is never locked here (a `sweep --owner X` running meanwhile must
+        // find X's stale journal unlocked; review of slice 4, P3-1): its header is read first, and
+        // what it names is left alone, live or not
+        let other = header(&f).is_some_and(|h| h.owner != owner);
+        let r = if other { Err(Skip::Live) } else { open_fenced(&f) };
+        let s = match r {
+            Ok(j) => {
+                opened.push(j);
+                continue;
+            }
+            Err(s) => s,
+        };
+        // every lock error too (N7): what its journal names is left alone
+        let s = if s.live() {
+            match peek_checked(&f) {
+                Ok(m) => {
+                    live_named.extend(m);
+                    continue;
+                }
+                Err(e) => e,
+            }
+        } else {
+            s
+        };
+        if blinds(&s) {
+            blind.get_or_insert_with(|| format!("{}: {}", f.display(), s.why()));
+        } else if !matches!(s, Skip::Kept | Skip::Gone | Skip::Live) {
+            crate::status::add_note(&format!("auto-sweep skipped {}: {}", f.display(), s.why()));
         }
     }
+    if let Some(why) = blind {
+        crate::status::add_note(&format!("auto-sweep skipped: {why}; it may be a running job's journal, so nothing was signalled"));
+        return;
+    }
+    // debug seam: hold here, with the journals of this pass open (and locked)
+    crate::seam_hold("SHEEPR_TEST_HOLD_AUTO_PASS");
     let (mut swept, mut killed) = (0usize, 0usize);
     for j in opened {
         if start.elapsed() > std::time::Duration::from_millis(200) {
