@@ -1103,3 +1103,61 @@ fn require_journal_ends_a_shim_that_ignores_its_abandon() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The whole-batch review, P4: under --require-journal a journal removed while the job is already
+/// ending (here during the kill: the cell removes it while the kill holds after its freeze, seam;
+/// the root ignores TERM, so the kill reaches its freeze) is said once at the end (the TERM, not
+/// the journal, ended the job), and never "the job runs". The control: without the option, no
+/// line names it.
+#[test]
+fn require_journal_says_a_journal_removed_as_the_job_ends() {
+    let d = scratch("reqgoneend");
+    for (name, opt) in [("req", true), ("ctl", false)] {
+        let s = state(&d.join(name));
+        let mk = marker();
+        let (ready, release, err) = (d.join(format!("{name}.ready")), d.join(format!("{name}.release")), d.join(format!("{name}.err")));
+        let flags: &[&str] = if opt { &["--require-journal"] } else { &[] };
+        let mut c = Command::new(sheepr())
+            .arg("run")
+            .args(flags)
+            .args(["--grace", "0.2", "--", "/bin/sh", "-c", &format!("trap '' TERM; exec /bin/sleep {mk}")])
+            .env("SHEEPR_TEST_STATE", &s)
+            .env("SHEEPR_TEST_HOLD_AFTER_FREEZE", &release)
+            .env("SHEEPR_TEST_READY_FILE", &ready)
+            .stderr(std::fs::File::create(&err).unwrap())
+            .spawn()
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        let j = loop {
+            if let Some(j) = journals(&s).pop() {
+                break Some(j);
+            }
+            if Instant::now() > end {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // the root has its line once the journal names it
+        let named = j.as_ref().is_some_and(|j| {
+            let end = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < end && !std::fs::read_to_string(j).unwrap_or_default().contains("\"root\":true") {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::read_to_string(j).unwrap_or_default().contains("\"root\":true")
+        });
+        common::send_child(&mut c, libc::SIGTERM);
+        let froze = wait_for(&ready, 20);
+        if let Some(j) = &j {
+            let _ = std::fs::remove_file(j);
+        }
+        std::fs::write(&release, b"").unwrap();
+        let _ = finish(c);
+        common::kill_marked(&[&mk]);
+        let e = std::fs::read_to_string(&err).unwrap_or_default();
+        let said = e.lines().filter(|l| l.contains("was removed")).count();
+        assert!(named && froze, "{name}: the journal named the root {named}, the kill froze {froze} (the row proves nothing)");
+        assert_eq!(said, usize::from(opt), "{name}: stderr:\n{e}");
+        assert!(!e.contains("the job runs"), "{name}: stderr:\n{e}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

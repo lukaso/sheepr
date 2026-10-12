@@ -483,6 +483,17 @@ impl Journal {
         // job (during the kill, in the pass that a TERM, a cap or the root's end ended it, at the
         // --leave-strays mark) is said here, once (review of slice 3, P3-1); one that ended the job
         // was said by `end_by_journal`, one that refused the command by the refusal
+        if self.required && self.root_written && crate::status::trigger() != Some("journal") {
+            // also a journal removed or replaced in the pass the root ended, or during the kill
+            // (the check after each pass did not run then; the whole-batch review, P4)
+            let gone = match (&self.file, &self.path) {
+                (Some(f), Some(p)) if !self.dead => not_named(f, p),
+                _ => None,
+            };
+            if let Some((what, e)) = gone {
+                self.failed(&what, e);
+            }
+        }
         if self.required && self.root_written && self.dead && crate::status::trigger() != Some("journal") {
             if let Some((what, _)) = &self.why {
                 crate::say!("sheepr: the job journal failed ({what}) while the job was ending");
