@@ -87,6 +87,7 @@ for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 
     printf '%s    {"name": "%s", "sha256": "%s"}' "\$sep" "\$f" "\$(shasum -a 256 "\$d/\$f" | cut -d' ' -f1)"; sep=",
 "; done; printf '\n  ]\n}\n'; } > "\$d/MANIFEST.json"
 sh "\$(dirname "\$rs")/lib/render-cask.sh" "\$v" "\$(shasum -a 256 "\$d/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)" "\$d/sheepr.rb"
+[ ! -e "$FX/afterbuild" ] || sh "$FX/afterbuild"
 EOF
 chmod +x "$S/build"
 # npm-check's stand-in: writes the stamp for the manifest it is given ($FX/npmcheckfail: refuses;
@@ -100,6 +101,8 @@ d=\$1; tg=\$(basename "\$d")
 [ -e "$FX/npmcheck.swap" ] && echo ' ' >> "\$d/MANIFEST.json"
 printf '%s %s\n' "\$tg" "\$(shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.badstamp" ] || echo "\$tg 0000" > "\$d/NPM-CHECKED"
+[ ! -e "$FX/npmcheck.nostamp" ] || rm -f "\$d/NPM-CHECKED"
+[ ! -e "$FX/npmcheck.touchpkg" ] || echo x >> "\$d/sheepr-linux-x64-0.1.0.tgz"
 [ ! -e "$FX/npmcheck.touch" ] || echo x >> "\$d/sheepr-linux-x86_64"
 EOF
 chmod +x "$S/npmcheck"
@@ -877,4 +880,18 @@ tagdel() { grep -n -E -e 'push +(--delete|-d)( |$)' -e '(^|[] "'"'"'`(])\+?:refs
 printf '%s\n' 'delete it with `git push --delete origin v0.1.0`' '  git push -d origin v0.1.0' '  git push origin :refs/tags/v0.1.0' > "$FX/planted.md"
 [ "$(tagdel "$FX/planted.md" | grep -c .)" = 3 ] && pass "control: the three planted deletions are caught" || fail "control: caught $(tagdel "$FX/planted.md" | grep -c .) of 3"
 printf '%s\n' '  set -- "$tagobj:refs/tags/$tag"' > "$FX/planted.md"; [ -z "$(tagdel "$FX/planted.md")" ] && pass "control: a push refspec of the tag object is not a deletion" || fail "control: the push refspec is counted"
+
+# --- t_publish_dry's refusals before anything is public, under ship (C3): no push, no upload, no
+# POST; the build moved aside (each check of publish_check also has its own row in t_publish_dry)
+cr() { # label want-text
+  [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
+    && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" && pass "under ship, $1: refused at C3, nothing public; move the build aside" || fail "$1: rc=$r $(lastline)"
+}
+printf 'cd "%s/v0.1.0" && sort -r -k2 SHA256SUMS > S && mv S SHA256SUMS\n' "$OUTR" > "$FX/afterbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterbuild"
+cr "a SHA256SUMS that is not the build's (reordered)" "SHA256SUMS is not the one the build wrote"
+printf 'echo "# edited" >> "%s/v0.1.0/sheepr.rb"\n' "$OUTR" > "$FX/afterbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterbuild"
+cr "the out dir's cask edited" "is not the cask the tag renders"
+: > "$FX/npmcheck.nostamp"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.nostamp"; cr "no npm-check stamp" "npm-check has not passed on"
+: > "$FX/npmcheck.touchpkg"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.touchpkg"; cr "an npm package changed after npm-check" "a file npm-check checked has changed since"
+rm -rf "${OUTR:?}"
 finish
