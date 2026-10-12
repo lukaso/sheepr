@@ -280,9 +280,13 @@ impl Journal {
             return Journal::off("state-unset", "no state directory is set (SHEEPR_STATE, XDG_STATE_HOME or HOME)", required);
         };
         let mut j = Journal::new(required);
-        let Some(boot) = boot_id() else {
-            j.failed("no boot id", None);
-            return j;
+        // its errno kept (review of the slice-4 fixes, P4-5)
+        let boot = match boot_id_or() {
+            Ok(b) => b,
+            Err(e) => {
+                j.failed(&format!("no boot id: {}", std::io::Error::from_raw_os_error(e)), Some(e));
+                return j;
+            }
         };
         let dir = state.join("jobs").join(format!("{boot}-{}", pidns()));
         if let Err(e) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir) {

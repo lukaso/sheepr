@@ -686,6 +686,9 @@ fn require_journal_refuses_a_journal_it_cannot_keep() {
     refused(c, &st, &m2, "the job journal cannot be kept: ", Some("ENOSPC"), "resources");
     let (c, st, _) = run_st(&d, "nostate", &format!("--require-journal {}", cmd(&m3)), &[], false);
     refused(c, &st, &m3, "the job journal cannot be kept: ", None, "sheepr");
+    // no boot id (seam): its errno is kept (review of the slice-4 fixes, P4-5)
+    let (c, st, _) = run_st(&d, "noboot", &format!("--require-journal {}", cmd(&m3)), &[("SHEEPR_TEST_STATE", s.to_str().unwrap()), ("SHEEPR_TEST_BOOT_ID_ERRNO", "EACCES")], false);
+    refused(c, &st, &m3, "the job journal cannot be kept: no boot id", Some("EACCES"), "sheepr");
     // the refusal comes before the root is spawned: with the spawn failing too (seam), the
     // error is still the journal's
     let spawn_seam = if cfg!(target_os = "macos") { "spawn:EAGAIN" } else { "shim-spawn:EAGAIN" };
