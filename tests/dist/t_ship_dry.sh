@@ -70,6 +70,12 @@ cat > "$S/build" <<EOF
 [ -d "\$HOME" ] || echo "NOHOME build" >> "$FX/calls"
 echo "build \$*" >> "$FX/calls"
 [ -e "$FX/onbuild" ] && sh "$FX/onbuild"
+if [ -e "$FX/buildint" ]; then
+  # only in a process group ship leads (the row's own session): never the cell's group
+  [ "\$(/usr/bin/perl -e 'print getpgrp()')" = "\$PPID" ] || { echo "UNSAFE buildint" >> "$FX/calls"; exit 1; }
+  trap 'echo "build got INT" >> "$FX/calls"; exit 0' INT; kill -INT 0; /bin/sleep 5
+fi
+[ -e "$FX/buildhup" ] && { kill -HUP \$PPID; /bin/sleep 1; }
 [ -e "$FX/buildfail" ] && { echo "build: failed (stand-in)" >&2; exit 1; }
 rs=\$1 o=\$5 tg=\$6; v=\${tg#v}; d=\$o/\$tg
 c=\$(cat "$FX/build.other" 2>/dev/null || git -C "\$(dirname "\$rs")/.." rev-parse HEAD)
@@ -106,16 +112,16 @@ case "\$*" in
   *"@tsv"*) [ -e "$FX/relsfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; tr ' ' '\t' < "$FX/rels" ;;
   *".[].tag_name"*) awk '{print \$1}' "$FX/rels" ;;
   *"repos/lukaso/sheepr --jq .permissions.push"*) cat "$FX/repoperm" 2>/dev/null || echo true ;;
-  *"repos/lukaso/homebrew-tap --jq .permissions.push"*) cat "$FX/tapperm" 2>/dev/null || echo true ;;
+  *"repos/lukaso/homebrew-tap --jq .permissions.push"*) [ -e "$FX/tappermfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; cat "$FX/tapperm" 2>/dev/null || echo true ;;
   *"-X PUT repos/lukaso/homebrew-tap/contents/Casks/sheepr.rb"*)
     [ -e "$FX/putfail" ] && { echo "gh: HTTP 409" >&2; exit 1; }
     for a; do case \$a in content=*) printf '%s' "\${a#content=}" | base64 -d > "$FX/tap/sheepr.rb" ;; esac; done
     echo c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff ;;
-  *"homebrew-tap/contents/Casks/sheepr.rb"*) [ -f "$FX/tap/sheepr.rb" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$FX/tap/sheepr.rb" ;;
+  *"homebrew-tap/contents/Casks/sheepr.rb"*) [ -e "$FX/tapreadfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; [ -f "$FX/tap/sheepr.rb" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$FX/tap/sheepr.rb" ;;
   *"releases/tags/"*"--jq .draft, (.assets"*|*"releases/4242 --jq .draft, (.assets"*)
     echo false; i=0; for f in \$(ls "$FX/up"); do i=\$((i+1)); [ "\$f" = sheepr-macos-universal.tar.gz ] && echo \$i; done ;;
   "api -X POST repos/lukaso/sheepr/releases "*) [ -e "$FX/postfail" ] && exit 1; echo 4242 ;;
-  *"uploads.github.com"*) prev=""; for a; do case \$a in *assets\\?name=*) nm=\${a##*name=} ;; esac; [ "\$prev" = --input ] && in=\$a; prev=\$a; done
+  *"uploads.github.com"*) [ -e "$FX/uploadfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; prev=""; for a; do case \$a in *assets\\?name=*) nm=\${a##*name=} ;; esac; [ "\$prev" = --input ] && in=\$a; prev=\$a; done
     mkdir -p "$FX/up"; cp "\$in" "$FX/up/\$nm"; echo 1 ;;
   "api repos/lukaso/sheepr/releases/4242 --jq .assets"*) i=0; for f in \$(ls "$FX/up"); do i=\$((i+1)); echo "\$i \$f"; done ;;
   *"releases/assets/"*) for a; do last=\$a; done; id=\${last##*/}; f=\$(ls "$FX/up" | sed -n "\${id}p"); cat "$FX/up/\$f" ;;
@@ -149,7 +155,8 @@ case \$1 in
     fi
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\n  "error": {\n    "code": "E404"\n  }\n}\n'; echo "npm error code E404" >&2; exit 1 ;;
-  owner) if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
+  owner) [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
   config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/npmrc"; exit 0; } ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     if grep -q "^\$TOK" "$FX/npmrc" 2>/dev/null; then
@@ -159,9 +166,12 @@ case \$1 in
     fi
     echo "npm error code ENEEDAUTH" >&2; exit 1 ;;
   login) [ -e "$FX/loginfail" ] && exit 1; echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
-  logout) [ -e "$FX/logoutfail" ] && exit 1; grep -v "^\$TOK" "$FX/npmrc" > "$FX/npmrc.n" 2>/dev/null; mv "$FX/npmrc.n" "$FX/npmrc"; exit 0 ;;
+  logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
+    [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "$FX/npmrc"; exit 0; }
+    [ -e "$FX/logoutlies" ] && { grep -v "^\$TOK" "$FX/npmrc" > "$FX/npmrc.n" 2>/dev/null; mv "$FX/npmrc.n" "$FX/npmrc"; exit 1; }
+    grep -v "^\$TOK" "$FX/npmrc" > "$FX/npmrc.n" 2>/dev/null; mv "$FX/npmrc.n" "$FX/npmrc"; exit 0 ;;
   publish) p=\$(basename "\$last" | sed 's/^\(.*\)-[0-9][0-9.a-z-]*\.tgz\$/\1/')
-    [ -e "$FX/pubfail.\$p" ] && { echo "npm error code E401" >&2; exit 1; }
+    [ -e "$FX/pubfail.\$p" ] && { echo "npm error code E401" >&2; echo STOP >> "$FX/calls"; exit 1; }
     python3 -c 'import base64, hashlib, sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "\$last" > "$FX/pub.\$p"
     exit 0 ;;
 esac
@@ -215,6 +225,8 @@ fi
 up=\$(cat "$FX/updir" 2>/dev/null || echo "file://$FX/origin.git")
 n=\$#; for a; do [ "\$a" = https://github.com/lukaso/sheepr ] && a=\$up; set -- "\$@" "\$a"; done; shift \$n
 extra="" real=no lie=""
+[ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
+[ "\$1" = fetch ] && [ -e "$FX/fetchfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfailafter" ] && [ -e "$FX/pushtried" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 if [ "\$1" = push ]; then
   case " \$* " in *" --dry-run "*) [ -e "$FX/dryextra" ] && extra=1 ;; *) real=yes; : > "$FX/pushtried"; [ -e "$FX/onpush" ] && [ ! -e "$FX/onpush.done" ] && { : > "$FX/onpush.done"; sh "$FX/onpush"; } ;; esac
@@ -243,7 +255,7 @@ chmod +x "$S/sgit"
 
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
-  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs"
+  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/pipe.rc"
   set -- SR_ASK_RECORD="$FX/asks" SR_SHIP_DRY_BUILD="$S/build" SR_SHIP_DRY_NPMCHECK="$S/npmcheck" SR_SHIP_DRY_NOTIFY="$S/notify" SR_SHIP_DRY_CAFFEINATE="$S/caffeinate" \
     SR_SHIP_DRY_IDENTITY="$S/identity" SR_SHIP_DRY_DOCKER="$S/docker" SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" \
     SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" $( [ "${VERIFIED:-}" = - ] || printf '%s' "SR_PUBLISH_DRY_VERIFIED=${VERIFIED:-$AH}" ) "$@"
@@ -251,10 +263,18 @@ ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whos
 $a" ;; esac; done
   # the assignments as arguments to env, one per line (a value may hold spaces)
   printf '%s\n' "$envs" | sed '/^$/d' > "$FX/envs"
-  (cd "$REPO" && IFS='
-'; no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") > "$FX/o" 2>&1; r_=$?
-  world_reset; return $r_
+  set --; [ -z "${SETSID:-}" ] || set -- /usr/bin/perl -e 'use POSIX; setsid() or die "setsid: $!"; $SIG{INT} = "DEFAULT"; exec @ARGV or die' --
+  if [ -z "${PIPEQ:-}" ]; then
+    (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") > "$FX/o" 2>&1; r_=$?
+  else
+    { (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 2> "$FX/o"; echo $? > "$FX/pipe.rc"; } | sed -n "/$PIPEQ/q"
+    r_=$(cat "$FX/pipe.rc")
+  fi
+  [ -n "${KEEP:-}" ] || world_reset; return $r_
 }
 # what a run changed, kept for the rows (origin's refs, the tap's cask), then put back: origin's main
 # at BASE and no v0.1.0 tag, npm with nothing published, the tap at 0.0.9, no uploads
@@ -362,6 +382,7 @@ done
 # (the fixture's own pushes say --no-follow-tags: push.followTags is on here, and would add v0.1.0)
 git init -q --bare "$FX/origin2.git" && g push -q --no-follow-tags "file://$FX/origin2.git" "$C:refs/heads/main" || exit 3
 echo "file://$FX/origin2.git" > "$FX/updir"; pt_row "origin and github.com/lukaso/sheepr disagree on main" "disagree"; rm -f "$FX/updir"
+grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && grep -qx 'This run made nothing public.' "$OUTR/v0.1.0.ship-next.txt" && pass "  its stop text: this run made nothing public (before A4); run ship again" || fail "  disagree text: $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 # origin's main diverged from the tag's commit
 g branch -q side "$BASE" && (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
   git commit-tree -p "$BASE" -m side "$BASE^{tree}" > "$FX/side") && g push -q -f --no-follow-tags origin "$(cat "$FX/side"):refs/heads/main" || exit 3
@@ -379,9 +400,13 @@ grep -q 'push --dry-run' "$FX/calls" && grep -q '^gh api -X PATCH' "$FX/calls" &
   && pass "an rc tag of this version on github.com/lukaso/sheepr only: ignored (A2, C7's planner), the run completes" || fail "rc tag upstream: $(lastline)"
 # the text: no push, fetch or ls-remote git call in release.sh outside $GITCMD (the pattern: the
 # word git, then a subcommand among them; a planted line is caught)
-gitnet() { grep -n -E '(^|[^A-Za-z_$"])git( -C [^ ]+| -c [^ ]+)* (push|fetch|ls-remote)( |$)' "$1" | grep -v '^[0-9]*: *#'; }
+# (a line that only echoes text for the operator, with no $( in it, is not a call: ship's stop text
+# names `git ls-remote origin ...` for the operator to run)
+gitnet() { grep -n -E '(^|[^A-Za-z_$"])git( -C [^ ]+| -c [^ ]+)* (push|fetch|ls-remote)( |$)' "$1" | grep -v '^[0-9]*: *#' | awk '!/^[0-9]+: *echo "/ || /\$\(/'; }
 [ -z "$(gitnet "$RS")" ] && pass "release.sh makes no push, fetch or ls-remote but through \$GITCMD" || fail "git network calls: $(gitnet "$RS" | head -2 | tr '\n' ' ')"
 printf '  git -C "$root" fetch origin main\n' > "$FX/planted.sh"; [ -n "$(gitnet "$FX/planted.sh")" ] && pass "control: a planted 'git -C \"\$root\" fetch origin main' is caught" || fail "control: the planted line is not caught"
+printf '  echo "$(git -C "$root" fetch origin main)"\n' > "$FX/planted.sh"; [ -n "$(gitnet "$FX/planted.sh")" ] && pass "control: a planted fetch inside an echo's \$( ) is caught" || fail "control: the planted echo line is not caught"
+printf '  echo "  git ls-remote origin refs/tags/$tag"\n' > "$FX/planted.sh"; [ -z "$(gitnet "$FX/planted.sh")" ] && pass "control: a line that echoes an operator's command is not a call" || fail "control: the operator text is counted as a call"
 
 # --- A4 to A8: nothing of the version public; the tap; npm (owners, no session); the build's
 # preconditions, or a finished build's checks; then armed
@@ -390,8 +415,8 @@ nobuild() { ! grep -q '^build ' "$FX/calls" 2>/dev/null && ! grep -q '^notify ' 
 rm -rf "${OUTR:?}"; ship; r=$?
 reached_end3 && pass "a clean pre-flight: A1 to A8 pass" || fail "the clean pre-flight: $(lastline)"
 grep -q '^docker info' "$FX/calls" && grep -q '^identity find-identity -v -p codesigning' "$FX/calls" && pass "no build yet: Docker, the images and the signing identity checked" || fail "the preconditions: $(grep -e '^docker' -e '^identity' "$FX/calls" | tr '\n' ' ')"
-pre_row() { # label want-text: the last run refused before the build, naming want-text
-  [ $r = 1 ] && grep -q "$2" "$FX/o" && nobuild && pass "$1: refused before the build ($2)" || fail "$1: rc=$r $(lastline)"
+pre_row() { # label want-text: the last run refused before the build, naming want-text (before A8: no notification)
+  [ $r = 1 ] && grep -q "$2" "$FX/o" && nobuild && ! grep -q '^notify' "$FX/calls" && pass "$1: refused before the build ($2)" || fail "$1: rc=$r $(grep '^notify' "$FX/calls" | head -1) $(lastline)"
 }
 # A4: anything of the version public
 g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
@@ -403,6 +428,7 @@ done; echo "v0.0.9 false false" > "$FX/rels"
 tapset 0.1.0; rm -rf "${OUTR:?}"; ship; r=$?; pre_row "the tap's cask at 0.1.0" "public"; tapset 0.0.9
 echo "sha512-x" > "$FX/view.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/view.sheepr-linux-x64"; pre_row "sheepr-linux-x64@0.1.0 on npm" "public"
 printf '{\n  "created": "x",\n  "0.1.0": "x"\n}\n' > "$FX/time.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/time.sheepr"; pre_row "0.1.0 in sheepr's npm time record (once unpublished)" "can never be published on npm again"
+grep -qx 'ship does not continue: release a new version.' "$OUTR/v0.1.0.ship-next.txt" && pass "  its stop text: release a new version" || fail "  lost text: $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 : > "$FX/viewfailv.sheepr-darwin-universal"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/viewfailv.sheepr-darwin-universal"; pre_row "the version's npm view failing (not E404; time and latest answer)" "cannot tell whether anything is public"
 : > "$FX/viewfail.sheepr-darwin-universal"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/viewfail.sheepr-darwin-universal"; pre_row "every npm view of a name failing" "cannot tell whether anything is public"
 : > "$FX/relsfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/relsfail"; pre_row "the release list that cannot be read" "cannot tell whether anything is public"
@@ -458,6 +484,7 @@ c_row() { # label want-text: refused, nothing pushed
   [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q 'push --porcelain --atomic --no-follow-tags origin' "$FX/calls" 2>/dev/null && pass "$1: stopped ($2), no push" || fail "$1: rc=$r $(lastline)"
 }
 rm -rf "${OUTR:?}"; : > "$FX/buildfail"; ship; r=$?; rm -f "$FX/buildfail"; c_row "the build fails" "the build failed"
+! grep -q '^npm logout' "$FX/calls" && [ "$(grep -c '^notify failed-build v0.1.0$' "$FX/calls")" = 1 ] && pass "  no logout (no login was tried); one notification, failed-build" || fail "  build failure: logouts $(grep -c '^npm logout' "$FX/calls"), notifications $(grep '^notify' "$FX/calls" | tr '\n' ' ')"
 ! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check" || fail "  npm-check ran"
 rm -rf "${OUTR:?}"; echo 0000000000000000000000000000000000000000 > "$FX/build.other"; ship; r=$?; rm -f "$FX/build.other"; c_row "the build makes another commit's build" "holds no signed build of v0.1.0"
 ! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check (post_build_check first)" || fail "  npm-check ran"
@@ -509,12 +536,13 @@ cat > "$FX/onbuild" <<EOF
 (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t /usr/bin/git tag -f -a v0.1.0 -m moved "$C" >/dev/null)
 EOF
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/onbuild"; g tag -f -a v0.1.0 -m v0.1.0 "$C" >/dev/null; T2=$(g rev-parse v0.1.0)
-[ $r = 1 ] && grep -q 'moved since ship recorded it' "$FX/o" && nopub && pass "the tag moved during the build: refused before the push" || fail "tag moved: rc=$r $(lastline)"
+[ $r = 1 ] && grep -q 'moved since ship recorded it' "$FX/o" && nopub && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "the tag moved during the build: refused before the push; move the build aside" || fail "tag moved: rc=$r $(lastline)"
 T=$T2
 echo other > "$FX/whoami"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoami"
-[ $r = 1 ] && grep -q 'logged in to npm as other' "$FX/o" && nopub && pass "another npm user after the login: stopped, nothing public" || fail "wrong user: rc=$r $(lastline)"
+[ $r = 1 ] && grep -q 'logged in to npm as other' "$FX/o" && nopub && grep -qx 'When the cause above is fixed, run ship again.' "$OUTR/v0.1.0.ship-next.txt" && pass "another npm user after the login: stopped, nothing public" || fail "wrong user: rc=$r $(lastline)"
 : > "$FX/loginfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/loginfail"
-[ $r = 1 ] && grep -q 'npm login failed' "$FX/o" && nopub && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && pass "a failing login: stopped, nothing public, one logout (logged in from the attempt on)" || fail "login fails: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") $(lastline)"
+[ $r = 1 ] && grep -q 'npm login failed' "$FX/o" && nopub && grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && pass "a failing login: stopped, nothing public, one logout (logged in from the attempt on)" || fail "login fails: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") $(lastline)"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
 [ $r = 1 ] && grep -q 'npm whoami failed after the login' "$FX/o" && nopub && pass "whoami failing after the login: stopped, nothing public" || fail "whoami after login: rc=$r $(lastline)"
 cat > "$FX/onbuild" <<EOF
@@ -598,5 +626,207 @@ cat > "$FX/onpush" <<EOF
 EOF
 : > "$FX/lsfailafter"; rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done" "$FX/lsfailafter"
 [ $r = 1 ] && ! grep -q '^push refused$' "$OUTR/.v0.1.0.ship-progress" && grep -q 'cannot be read to tell whether it landed' "$FX/o" && pass "a refused push, then ls-remote failing: not 'push refused' (it cannot tell)" || fail "push refused unread: rc=$r $(tr '\n' ' ' < "$OUTR/.v0.1.0.ship-progress") $(lastline)"
+rm -rf "${OUTR:?}"
+
+# --- the exit handler: the stop text (to its file, then stdout), the logout and the token count, one
+# notification, the worktree, the temp dirs and the lock; signals; caffeinate
+NF=$OUTR/v0.1.0.ship-next.txt
+nots() { grep '^notify ' "$FX/calls" | sed 's/^notify \([^ ]*\) .*/\1/' | tr '\n' ' '; }
+gone() { # the temp dir, the worktree, the lock and the dry HOMEs of the last run are gone
+  [ "$(g worktree list | grep -c .)" = 1 ] && [ ! -e "$OUTR/.ship.lock" ] && [ -z "$(sed -n 's/^release: .*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$FX/o" | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ] \
+    && [ -z "$(sed -n 's/.*\(\/private\/tmp\/sr-ship\.[A-Za-z0-9]*\)\/tree.*/\1/p' "$FX/calls" | sort -u | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ]
+}
+# a success: one logout, then done (the count 0); no next file (an earlier one removed)
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; ship; r=$?
+completed && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && [ "$(ln_ '^npm logout')" -lt "$(ln_ '^notify done')" ] && [ ! -e "$NF" ] && gone \
+  && pass "a success: one logout, then 'done' (the last notification); an earlier next file removed; everything removed" || fail "success: rc=$r nots '$(nots)' next $(ls "$NF" 2>/dev/null) $(lastline)"
+grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.ship-progress")\$" "$FX/calls" && [ "$(grep -c '^caffeinate' "$FX/calls")" = 1 ] \
+  && pass "caffeinate once: -i -w ship's pid" || fail "caffeinate: $(grep caffeinate "$FX/calls" | tr '\n' ' ') pid $(head -1 "$OUTR/.v0.1.0.ship-progress")"
+# a success whose logout leaves the token: no done, one logout-failed, exit 1, npm logout named
+: > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
+[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q 'run npm logout --registry=https://registry.npmjs.org/' "$FX/o" && [ ! -e "$NF" ] && gone \
+  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done), npm logout named" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
+# a failure after the login: one logout, one failed-PHASE; with the token left, one notification naming both
+: > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
+[ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
+  && pass "a failure after the login: one logout, one notification (failed-npm-main)" || fail "failure after login: rc=$r '$(nots)' $(lastline)"
+[ -z "$(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | grep -v -e '^npm logout --registry=https://registry.npmjs.org/$' -e '^npm config get userconfig$' -e '^notify ')" ] \
+  && pass "  after the stop: no read but the logout and the token count (the stop text reads nothing)" || fail "  calls after the stop: $(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | tr '\n' ' ')"
+: > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail" "$FX/pubfail.sheepr"
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/" ] && gone \
+  && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null)'"
+# an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
+# goes on; the token left: logout-failed, everything removed, exit 1
+: > "$FX/logoutint"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/logoutint"
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && gone && pass "an INT during the logout: the handler finishes, logout-failed, exit 1" || fail "INT in logout: rc=$r '$(nots)' $(lastline)"
+# stdout closed during the npm uploads (its reader quits), and the logout leaves the token: the
+# handler finishes; the next file is the stop text and nothing else
+: > "$FX/logoutfail"; rm -rf "${OUTR:?}"; PIPEQ='uploaded (npm scans it'; ship; r=$?; PIPEQ=; rm -f "$FX/logoutfail"
+[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve logout-failed-npm-platform " ] && [ "$(head -1 "$NF")" = "release: ship v0.1.0 stopped at npm-platform: the npm upload of a platform package stopped (above)" ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && gone \
+  && pass "stdout closed during the uploads: the handler finishes, a clean next file, one notification, exit 1" || fail "closed stdout: rc=$r '$(nots)' '$(head -1 "$NF" 2>/dev/null)'"
+# SIGINT: ship in a group of its own, INT at its default; the build stand-in sends INT to the group,
+# handles it and exits 0: ship stops (no later phase), its handler runs
+rm -rf "${OUTR:?}"; : > "$FX/buildint"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/buildint"
+[ $r = 1 ] && grep -q '^build got INT$' "$FX/calls" && ! grep -q '^npmcheck' "$FX/calls" && [ "$(nots)" = "failed-build " ] && gone \
+  && pass "an INT to ship's group during the build: no later phase, failed-build, everything removed" || fail "INT: rc=$r '$(nots)' $(grep -c '^npmcheck' "$FX/calls") npmcheck $(lastline)"
+# HUP during the build: the next file is written
+rm -rf "${OUTR:?}"; : > "$FX/buildhup"; ship; r=$?; rm -f "$FX/buildhup"
+[ $r = 1 ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at build: a signal, or a step that named no cause" ] && grep -qx 'Nothing is public.' "$NF" && ! grep -q '^npmcheck' "$FX/calls" \
+  && pass "a HUP during the build: stopped, the next file written" || fail "HUP: rc=$r '$(head -1 "$NF" 2>/dev/null)'"
+# every phase ship names is a key notify.sh takes (failed-PHASE and logout-failed-PHASE: its dry mode)
+bad=""; for ph in $(sed -n 's/.*[ ;]phase=\([a-z0-9-]*\)[ ;].*/\1/p; s/.*[ ;]phase=\([a-z0-9-]*\)$/\1/p' "$RS" | sort -u); do
+  for k in "failed-$ph" "logout-failed-$ph"; do
+    no_osascript env -i PATH=/usr/bin:/bin SR_NOTIFY_OSASCRIPT="$S/notify" HOME="$FX/ghome" sh "$REPO/scripts/lib/notify.sh" "$k" v0.1.0 2> "$FX/nerr" >/dev/null
+    ! grep -q 'refused' "$FX/nerr" || bad="$bad $k"
+  done
+done
+n_ph=$(sed -n 's/.*[ ;]phase=\([a-z0-9-]*\)[ ;].*/\1/p; s/.*[ ;]phase=\([a-z0-9-]*\)$/\1/p' "$RS" | sort -u | grep -c .)
+[ -z "$bad" ] && [ "$n_ph" -ge 9 ] && pass "every phase name ($n_ph) makes a key notify.sh takes" || fail "phases notify.sh refuses:$bad (found $n_ph)"
+no_osascript env -i PATH=/usr/bin:/bin SR_NOTIFY_OSASCRIPT="$S/notify" HOME="$FX/ghome" sh "$REPO/scripts/lib/notify.sh" failed-Npm v0.1.0 2> "$FX/nerr" >/dev/null
+grep -q refused "$FX/nerr" && pass "control: an upper-case phase is refused by notify.sh" || fail "control: failed-Npm accepted"
+
+# the count decides, not logout's exit code: a logout that fails but removes the token is done
+: > "$FX/logoutlies"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutlies"
+completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && pass "a logout that exits 1 but leaves no token: done, exit 0 (the count decides)" || fail "logout lies: rc=$r '$(nots)'"
+# PIPE: ship's stdout closed, then ship itself writes (A7's line about a finished build): its trap
+# exits 1 (not 141), the handler runs, the next file holds the stop text first
+rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; PIPEQ='checks passed'; ship; r=$?; PIPEQ=
+[ "$r" = 1 ] && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 stopped at preflight: a signal, or a step that named no cause" ] && gone && ! grep -q '^notify' "$FX/calls" \
+  && pass "stdout closed, then ship writes: exit 1, the handler ran, a clean next file, no notification (before A8)" || fail "PIPE: rc=$r '$(head -1 "$NF" 2>/dev/null)'"
+# a stop before A4 passed keeps an earlier run's next file (it cannot vouch that nothing is public)
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; echo https://github.com/someone/sheepr.git > "$FX/pushurl"; ship; r=$?; rm -f "$FX/pushurl"
+[ $r = 1 ] && [ "$(cat "$NF")" = EARLIER ] && grep -qx 'This run made nothing public.' "$FX/o" && pass "a stop before A4 passed: an earlier next file kept; this run 'made nothing public'" || fail "pre-A4 keep: $(head -2 "$NF" | tr '\n' '|')"
+rm -rf "${OUTR:?}"
+# network reads that fail: run ship again (A2's ls-remote, A3's fetch; C3's tap read and write right)
+for sw in lsfail fetchfail; do
+  : > "$FX/$sw"; ship; r=$?; rm -f "$FX/$sw"
+  [ $r = 1 ] && grep -qx 'Run ship again.' "$NF" && pass "$sw: run ship again" || fail "$sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+  rm -rf "${OUTR:?}"
+done
+cat > "$FX/onbuild" <<EOF
+awk '{print} /^  version /{print}' "$FX/tap/sheepr.rb" > "$FX/t2" && mv "$FX/t2" "$FX/tap/sheepr.rb"
+EOF
+ship; r=$?; rm -f "$FX/onbuild"
+[ $r = 1 ] && grep -q 'has not exactly one version line' "$NF" && grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -q aside "$NF" && pass "C3: the tap's cask with two version lines: fix it first, no move aside" || fail "C3 tap lines: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+rm -rf "${OUTR:?}"
+for sw in tapreadfail tappermfail; do
+  printf ': > "%s/%s"\n' "$FX" "$sw" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/$sw"
+  [ $r = 1 ] && grep -qx 'Run ship again.' "$NF" && ! grep -q aside "$NF" && pass "C3 $sw: run ship again, no move aside" || fail "C3 $sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+  rm -rf "${OUTR:?}"
+done
+# stdout closed during the uploads, and a logout that removes the npmrc (the count reads no file):
+# the count is 0 (the handler drains the bytes the closed stdout left before it counts)
+: > "$FX/logoutrm"; rm -rf "${OUTR:?}"; PIPEQ='uploaded (npm scans it'; ship; r=$?; PIPEQ=; rm -f "$FX/logoutrm"
+[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve failed-npm-platform " ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && pass "stdout closed, the npmrc gone after the logout: the count 0, failed-npm-platform" || fail "closed stdout, no npmrc: rc=$r '$(nots)'"
+# a refusal because something is public after A4 passed (a draft made during the build: C5's A4)
+# keeps an earlier run's next file too
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"
+printf "printf 'v0.0.9 false false\\\\nv0.1.0 true false\\\\n' > '%s/rels'\n" "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild"; echo "v0.0.9 false false" > "$FX/rels"
+[ $r = 1 ] && grep -q 'GitHub has a release or a draft v0.1.0' "$FX/o" && [ "$(cat "$NF")" = EARLIER ] && pass "C5's A4 refusal (a draft made during the build): an earlier next file kept" || fail "C5 A4 keep: rc=$r $(head -2 "$NF" | tr '\n' '|')"
+rm -rf "${OUTR:?}"
+# --- what to run after a stop: the fixed text, its file; the steps it names run through their dry
+# entries against the state the stop left (after the operator steps the text names), and complete
+cont() { # run each step the next file names, in order: npm login (the operator's), then each
+         # release.sh entry through its dry entry; RC: the first refused step, or 0
+  RC=0; : > "$FX/cont"; rm -f "$FX/cont.one"
+  while IFS= read -r l; do
+    case $l in
+      *"npm login --registry=https://registry.npmjs.org/") echo "//registry.npmjs.org/:_authToken=npm_dry" >> "$FX/npmrc"; echo login >> "$FX/cont" ;;
+      *"sh scripts/release.sh "*" --out \"$OUTR\" v0.1.0"*)
+        e=$(printf '%s\n' "$l" | sed 's/.*sh scripts\/release\.sh \([a-z-]*\) --out.*/\1/')
+        [ "$e" = "${2:-$e}" ] || continue
+        [ -z "${2:-}" ] || [ ! -e "$FX/cont.one" ] || return
+        [ -z "${2:-}" ] || : > "$FX/cont.one"
+        echo "$e" >> "$FX/cont"; printf 'v0.1.0\nv0.1.0\n' > "$FX/ask"
+        (cd "$REPO" && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+          SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" \
+          SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh scripts/release.sh "__$e-dry" --out "$OUTR" v0.1.0) > "$FX/co" 2>&1 \
+          || { RC=1; echo "refused: $e: $(tail -1 "$FX/co")" >> "$FX/cont"; return; } ;;
+    esac
+  done < "${1:-$NF}"
+}
+done_all() { # the release is complete: the tag on origin, the tap at 0.1.0, four npm versions
+  git --git-dir="$FX/origin.git" rev-parse -q --verify refs/tags/v0.1.0 >/dev/null && grep -q '^  version "0.1.0"$' "$FX/tap/sheepr.rb" \
+    && [ "$(ls "$FX"/pub.* 2>/dev/null | grep -c .)" = 4 ]
+}
+postpush_ok() { ! grep -i -q -e 'nothing is public' -e 'made nothing public' -e 'not public\.' "$NF"; }
+stoprow() { # label: the steps of the next file ran and the release is complete
+  cont; [ $RC = 0 ] && done_all && pass "$1: the steps named ($(tr '\n' ' ' < "$FX/cont")) complete the release" || fail "$1: $(tr '\n' ' ' < "$FX/cont")"
+  world_reset
+}
+# before the push: a content check, a network read, the A4 refusals
+rm -rf "${OUTR:?}"; : > "$FX/npmcheckfail"; ship; r=$?; rm -f "$FX/npmcheckfail"
+grep -qx 'Nothing is public.' "$NF" && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" && pass "npm-check refused: 'Nothing is public', move the build aside, run ship again" || fail "npm-check text: $(tr '\n' '|' < "$NF")"
+mv "$OUTR/v0.1.0" "$FX/aside"; ship; r=$?; rm -rf "${FX:?}/aside"
+completed && pass "  and ship again (the build moved aside) completes" || fail "  ship again: $(lastline)"
+rm -rf "${OUTR:?}"; printf ': > "%s/ownerfail"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/ownerfail"
+grep -qx 'Run ship again.' "$NF" && ! grep -q 'aside' "$NF" && grep -q 'cannot read the owners' "$NF" && pass "C3: npm's owners unreadable: 'Run ship again', no move aside (the first cause kept)" || fail "C3 network text: $(tr '\n' '|' < "$NF")"
+ship; r=$?; completed && pass "  and ship again (the build kept) completes" || fail "  ship again: $(lastline)"
+rm -rf "${OUTR:?}"; printf 'echo stranger > "%s/owner.sheepr"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/owner.sheepr"
+grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -q 'aside' "$NF" && pass "C3: a name another npm user owns: fix it first, no move aside" || fail "C3 fix text: $(tr '\n' '|' < "$NF")"
+rm -rf "${OUTR:?}"; : > "$FX/relsfail"; ship; r=$?; rm -f "$FX/relsfail"
+grep -q 'cannot tell whether anything is public' "$NF" && grep -qx 'Nothing was done. Run ship again.' "$NF" && pass "A4 unreadable: 'cannot tell', run ship again" || fail "A4 unreadable: $(tr '\n' '|' < "$NF")"
+g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
+rm -rf "${OUTR:?}"; ship; r=$?
+grep -qx 'ship does not continue a release of which anything is public.' "$NF" && grep -q 'separate steps of PHASE3.md §5: build --sign, npm-check' "$NF" && ! grep -q 'Never rebuild' "$NF" \
+  && pass "A4, no build: the separate steps of §5" || fail "A4 no build: $(tr '\n' '|' < "$NF")"
+g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
+rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; ship; r=$?
+grep -q "^Never rebuild it: continue from $OUTR/v0.1.0" "$NF" && grep -qx "  sh scripts/release.sh npm-check --out \"$OUTR\" v0.1.0" "$NF" && pass "A4, this build in the out dir: never rebuild, continue from it" || fail "A4 with build: $(tr '\n' '|' < "$NF")"
+# an A4 refusal keeps an earlier run's next file (and shows it); a refused lock writes nothing
+echo EARLIER > "$NF"; g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3; ship; r=$?
+[ "$(cat "$NF")" = EARLIER ] && grep -qx EARLIER "$FX/o" && pass "an A4 refusal keeps an earlier next file, and shows it" || fail "A4 keep: $(head -2 "$NF" | tr '\n' '|')"
+mkdir -p "$OUTR/.ship.lock"; printf 'run 1 x\nstart push\n' > "$OUTR/.v0.1.0.ship-progress"; ship; r=$?; rm -rf "${OUTR:?}/.ship.lock"
+[ $r = 1 ] && [ "$(cat "$NF")" = EARLIER ] && [ "$(tr '\n' '|' < "$OUTR/.v0.1.0.ship-progress")" = "run 1 x|start push|" ] && pass "a ship refused at the lock: the other run's next and progress files left as they are" || fail "lock keep: $(head -1 "$NF")"
+rm -rf "${OUTR:?}"
+# N2: an earlier run's progress file ('start push'), then a diverged main: the diverged text
+mkdir -p "$OUTR"; printf 'run 1 x\nstart push\n' > "$OUTR/.v0.1.0.ship-progress"
+g push -q -f --no-follow-tags origin "$(cat "$FX/side"):refs/heads/main" || exit 3
+ship; r=$?
+grep -q "Tag again on top of origin's main, then run ship." "$NF" && ! grep -q 'push started' "$NF" && [ "$(grep -vc '^run ' "$OUTR/.v0.1.0.ship-progress")" = 0 ] \
+  && pass "an earlier run's 'start push', then a diverged main: the diverged text (each run's own record)" || fail "N2 diverged: $(tr '\n' '|' < "$NF")"
+rm -rf "${OUTR:?}"
+# N4: the push refused: its text
+cat > "$FX/onpush" <<EOF
+/usr/bin/git --git-dir="$FX/origin.git" commit-tree -p "$BASE" -m race "$BASE^{tree}" > "$FX/raced" && /usr/bin/git --git-dir="$FX/origin.git" update-ref refs/heads/main "\$(cat "$FX/raced")"
+EOF
+rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done"
+grep -qx 'Nothing is public: the push was refused, and nothing of it landed.' "$NF" && grep -q "Move $OUTR/v0.1.0 aside" "$NF" && pass "a refused push: 'nothing is public', move aside, tag again" || fail "N4: $(tr '\n' '|' < "$NF")"
+rm -rf "${OUTR:?}"
+# after the push started: each stop point's text, then its steps complete the release
+echo tag > "$FX/pushlie"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pushlie"
+grep -q 'The push started and was not confirmed' "$NF" && grep -qx '  git ls-remote origin refs/tags/v0.1.0' "$NF" && postpush_ok && pass "the push not confirmed: check ls-remote; the steps if it is there" || fail "push unconfirmed: $(tr '\n' '|' < "$NF")"
+stoprow "the push not confirmed (the tag is there)"
+printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush" "$FX/viewfailv.sheepr-linux-arm64"
+[ "$(lastprog)" = "done push" ] && grep -q '^v0.1.0 is pushed; nothing else is public. Run in order:' "$NF" && ! grep -q 'npmjs.com/package' "$NF" && pass "the push done, no upload: publish, npm login, publish-npm (no wait note)" || fail "push done: '$(lastprog)' $(tr '\n' '|' < "$NF")"
+stoprow "the push done, no upload"
+for pk in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do
+  : > "$FX/pubfail.$pk"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pubfail.$pk"
+  grep -q "https://www.npmjs.com/package/$pk shows 0.1.0" "$NF" && grep -q "npm's email to lukasco. A blocked version needs a new version number." "$NF" && grep -q 'GitHub has no release of it' "$NF" && postpush_ok \
+    && pass "a platform upload stopped ($pk): publish, npm login, publish-npm, the wait note and npm's review" || fail "platform stop $pk: $(tr '\n' '|' < "$NF")"
+  stoprow "the platform uploads stopped at $pk"
+done
+: > "$FX/uploadfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/uploadfail"
+grep -q "a draft is not public: delete it on GitHub, then run:" "$NF" && postpush_ok && pass "GitHub stopped with a draft: the three cases named" || fail "draft left: $(tr '\n' '|' < "$NF")"
+rm -rf "${FX:?}/up"   # the operator deletes the draft
+cont "$NF" publish; [ $RC = 0 ] && pass "  the draft deleted: publish completes" || fail "  publish after the draft: $(tr '\n' ' ' < "$FX/cont")"
+cont "$NF" publish-npm; [ $RC = 0 ] && done_all && pass "  then npm login, publish-npm: the release complete" || fail "  publish-npm: $(tr '\n' ' ' < "$FX/cont")"
+world_reset
+: > "$FX/postfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/postfail"
+grep -q '^  neither: run:' "$NF" && pass "N12: GitHub stopped before the POST: 'neither: run publish' among the cases" || fail "N12: $(tr '\n' '|' < "$NF")"
+cont "$NF" publish; [ $RC = 0 ] && cont "$NF" publish-npm && [ $RC = 0 ] && done_all && pass "  publish, then publish-npm: the release complete" || fail "  N12 steps: $(tr '\n' ' ' < "$FX/cont")"
+world_reset
+: > "$FX/putfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/putfail"
+grep -q 'is public on GitHub, but its Homebrew cask is not updated' "$NF" && grep -qx "  sh scripts/release.sh publish-cask --out \"$OUTR\" v0.1.0" "$NF" && postpush_ok && pass "exit 5: publish-cask, npm login, publish-npm" || fail "exit5 text: $(tr '\n' '|' < "$NF")"
+stoprow "exit 5"
+: > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pubfail.sheepr"
+grep -q 'public on GitHub and Homebrew, and npm may hold a part of it' "$NF" && ! grep -q 'release.sh publish ' "$NF" && grep -q 'npmjs.com/package/sheepr shows' "$NF" && postpush_ok \
+  && pass "the main upload refused: npm login, publish-npm only" || fail "main refused: $(tr '\n' '|' < "$NF")"
+stoprow "the main upload refused"
+# N6: a C8 wait that times out (npm still scans a platform package): the review and block text
+printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush"
+[ "$(lastprog)" = "start npm-main" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" && pass "N6: a C8 wait timed out: the review and block text" || fail "N6: '$(lastprog)' $(tr '\n' '|' < "$NF")"
+rm -f "$FX"/processing.*   # npm's scan finished
+stoprow "the C8 wait timed out (then the scan finished)"
 rm -rf "${OUTR:?}"
 finish

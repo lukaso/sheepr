@@ -5,9 +5,10 @@
 #   notify.sh KEY TAG
 #
 # KEY picks the text from the fixed table below; TAG (vX.Y.Z or vX.Y.Z-rc.N, one line) is the only
-# thing put into it, and the phase of failed-PHASE (a letter, then letters, digits and -, at most 32
-# in all). Never a tool's output. The keys: password, password-again, npm-login, npm-approve,
-# npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE.
+# thing put into it, and the phase of failed-PHASE and logout-failed-PHASE (a letter, then letters,
+# digits and -, at most 32 in all). Never a tool's output. The keys: password, password-again,
+# npm-login, npm-approve, npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE,
+# logout-failed-PHASE (a stop and a failed npm logout: one notification names both).
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
@@ -26,6 +27,11 @@ PATH=/usr/bin:/bin; export PATH
 LC_ALL=C; export LC_ALL
 say() { echo "notify: $*" >&2; }
 refuse() { say "refused: $*; nothing shown"; exit 0; }
+phase_ok() { # phase key
+  case $1 in [a-z]*) ;; *) refuse "the key '$2' (a phase starts with a letter)" ;; esac
+  case $1 in *[!a-z0-9-]*) refuse "the key '$2' (a phase is letters, digits and -)" ;; esac
+  [ ${#1} -le 32 ] || refuse "the key '$2' (a phase has at most 32 characters)"
+}
 
 key=${1:-} tag=${2:-}
 tagre='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
@@ -41,11 +47,11 @@ case $key in
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
   logout-failed) text="$tag: npm logout failed. Run npm logout in the terminal" ;;
   failed-*)
-    phase=${key#failed-}
-    case $phase in [a-z]*) ;; *) refuse "the key '$key' (a phase starts with a letter)" ;; esac
-    case $phase in *[!a-z0-9-]*) refuse "the key '$key' (a phase is letters, digits and -)" ;; esac
-    [ ${#phase} -le 32 ] || refuse "the key '$key' (a phase has at most 32 characters)"
+    phase=${key#failed-}; phase_ok "$phase" "$key"
     text="$tag stopped at $phase. The terminal says what to run next" ;;
+  logout-failed-*)
+    phase=${key#logout-failed-}; phase_ok "$phase" "$key"
+    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; it says what to run next" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 

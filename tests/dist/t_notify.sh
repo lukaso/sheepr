@@ -43,7 +43,8 @@ for kv in \
   "done|$T is public on GitHub, Homebrew and npm" \
   "logout-failed|$T: npm logout failed. Run npm logout in the terminal" \
   "failed-push|$T stopped at push. The terminal says what to run next" \
-  "failed-npm-platform|$T stopped at npm-platform. The terminal says what to run next"; do
+  "failed-npm-platform|$T stopped at npm-platform. The terminal says what to run next" \
+  "logout-failed-npm-main|$T stopped at npm-main, and npm logout failed. Run npm logout in the terminal; it says what to run next"; do
   k=${kv%%|*} want=${kv#*|}
   nt "$FX/osa" "$k" "$T"
   [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec")" = "$pre[$want]" ] && pass "$k: the table's text, after --" || fail "$k: rc=$r got '$(cat "$FX/rec" 2>/dev/null)'"
@@ -51,10 +52,14 @@ done
 nt "$FX/osa" failed-abcdefghijabcdefghijabcdefghijab "$T"   # a phase of exactly 32 characters
 [ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab. The terminal says what to run next]" ] \
   && pass "a phase of exactly 32 characters: accepted" || fail "32-character phase: rc=$r $(cat "$FX/err")"
+nt "$FX/osa" logout-failed-abcdefghijabcdefghijabcdefghijab "$T"
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab, and npm logout failed. Run npm logout in the terminal; it says what to run next]" ] \
+  && pass "logout-failed-PHASE: a phase of exactly 32 characters accepted" || fail "logout-failed 32-character phase: rc=$r $(cat "$FX/err")"
 nt "$FX/osa" password v0.1.4-rc.2
 [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[v0.1.4-rc.2: type the notary keychain password in the terminal]" ] && pass "an rc tag is a tag" || fail "rc tag: rc=$r $(cat "$FX/err")"
 # only table texts: an unknown key, a bad phase, a bad or missing tag run nothing
-for k in hello password2 PASSWORD failed- failed-Push "failed-a b" 'failed-$(id)' failed-1a "failed-$(printf 'a\nb')" failed-abcdefghijabcdefghijabcdefghijabc ""; do
+for k in hello password2 PASSWORD failed- failed-Push "failed-a b" 'failed-$(id)' failed-1a "failed-$(printf 'a\nb')" failed-abcdefghijabcdefghijabcdefghijabc "" \
+    logout-failed- logout-failed-Push "logout-failed-a b" logout-failed-1a logout-failed-abcdefghijabcdefghijabcdefghijabc logout-failedx; do
   nt "$FX/osa" "$k" "$T"; l=$(printf '%s' "$k" | tr '\n' '~')   # (a newline shown as ~)
   [ $r = 0 ] && [ "$(calls)" = 0 ] && grep -q 'notify: ' "$FX/err" && pass "key '$l': nothing run, exit 0, said so" || fail "key '$l': rc=$r calls=$(calls)"
 done

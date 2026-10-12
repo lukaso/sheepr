@@ -51,7 +51,7 @@ shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" 
 GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
-die() { echo "release: $*" >&2; [ -z "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }
+die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
 stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
@@ -583,19 +583,19 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   # the tap's cask: exactly one version line, never newer than this tag; this version only as these bytes
   tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$ct/tap.rb" 2> "$ct/tap.err" || {
     grep -q 'HTTP 404' "$ct/tap.err" && die "$TAP has no $CASK (add it by hand once)"
-    die "gh: cannot read $TAP's $CASK ($(head -1 "$ct/tap.err"))"; }
-  [ "$(grep -c '^  version "' "$ct/tap.rb")" = 1 ] || die "$TAP's $CASK has not exactly one version line"
+    stopclass network; die "gh: cannot read $TAP's $CASK ($(head -1 "$ct/tap.err"))"; }
+  [ "$(grep -c '^  version "' "$ct/tap.rb")" = 1 ] || { stopclass fix; die "$TAP's $CASK has not exactly one version line"; }
   tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$ct/tap.rb")
-  rel=$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz") || die "$TAP's $CASK has a version off the grammar ('$tv')"
+  rel=$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz") || { stopclass fix; die "$TAP's $CASK has a version off the grammar ('$tv')"; }
   cask_blob=$(blob_id "$ct/tap.rb") cask_put=yes cask_tap=$tv
   case $rel in
     newer) ;;
     older) cask_put=older; return 0 ;;   # the caller decides: publish skips the cask, publish-cask refuses
     *) cmp -s "$ct/tap.rb" "$ct/cask.rb" && cask_put=no \
-         || die "$TAP's cask is $xyz with sha256 $(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$ct/tap.rb"), but this build's archive is $ah: refused (a swapped asset, or a tap edited by hand)" ;;
+         || { stopclass fix; die "$TAP's cask is $xyz with sha256 $(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$ct/tap.rb"), but this build's archive is $ah: refused (a swapped asset, or a tap edited by hand)"; } ;;
   esac
-  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push) || die "gh: cannot read $TAP"
-  [ "$pp" = true ] || die "this gh login cannot write $TAP"
+  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push) || { stopclass network; die "gh: cannot read $TAP"; }
+  [ "$pp" = true ] || { stopclass fix; die "this gh login cannot write $TAP"; }
 }
 cask_post() { # dir tmp release-path fail: the release is public; the cask put and read back
   ct=$2 rp=$3 f=$4 xyz=${tag#v} ah=$cask_ah   # the hash checked before; the out dir ($1) is not read again
@@ -709,11 +709,11 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
   for p in $SR_NPM_PKGS; do
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
-      grep -q 'E404' "$3/err" && die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER), then run this again; nothing was published"
-      die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); nothing was published"
+      grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER), then run this again; nothing was published"; }
+      stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); nothing was published"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
-      || die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; nothing was published"
+      || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; nothing was published"; }
   done
 }
 # notify KEY: the operator's attention, through $NOTIFY with the tag; it never stops the run. A dry
@@ -932,9 +932,11 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   shipcause=$st/cause shipcls=$st/class; stopclass fix
-  locked=no logged_in=no armed=no phase=preflight oroot=$root wt=""
+  locked=no logged_in=no armed=no pubok=no phase=preflight oroot=$root wt=""
   trap 'ship_exit $?' EXIT
-  trap 'exit 1' INT HUP TERM
+  # PIPE too: a stdout closed during the run otherwise kills the shell after the handler ran, with 141
+  # (bash 3.2 re-raises it; measured 2026-10-12); trapped, the handler's own status stands
+  trap 'exit 1' INT HUP TERM PIPE
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when no ship runs, remove that directory, then run ship again"
   echo $$ > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
@@ -942,6 +944,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
   printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
+  # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
+  shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
   # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
   checks
@@ -958,6 +962,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   ship_target
   ship_pushcheck
   ship_nothing_public   # A4
+  pubok=yes             # from here a stop before the push may say "nothing is public"
   ship_tap              # A5
   ship_npm_ready        # A6
   ship_build_ready      # A7
@@ -985,14 +990,16 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   phase=npm-login; stopclass fix
   notify npm-login
   logged_in=yes
+  stopclass network
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
   who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(head -c 200 "$st/who.err" | tr '\n' ' ')); nothing is public"
+  stopclass fix
   [ "$who" = "$SR_NPM_USER" ] || die "logged in to npm as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), not as $SR_NPM_USER; nothing is public"
   # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
   # exactly A3's refspecs (the recorded object), atomic, no tag followed
   phase=push
   ship_lsr; ship_pushcheck; ship_nothing_public
-  [ "$(git -C "$root" rev-parse -q --verify "refs/tags/$tag")" = "$tagobj" ] || die "the tag $tag moved since ship recorded it ($tagobj); nothing is public"
+  [ "$(git -C "$root" rev-parse -q --verify "refs/tags/$tag")" = "$tagobj" ] || { stopclass content; die "the tag $tag moved since ship recorded it ($tagobj); nothing is public"; }
   set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
   progress "start push"
   if ! tool "$NETC" "$GITCMD" -C "$root" push --porcelain --atomic --no-follow-tags origin "$@" > "$st/push" 2> "$st/push.err"; then
@@ -1152,10 +1159,10 @@ ship_lsr() { # A2's read of the remote refs, again before the push: origin's and
              # sheepr's main and this tag (exactly refs/tags/vTAG and its peeled line; an rc tag of
              # the version is not one) must agree; sets amain (origin's main) and rtag
   for r_ in origin "$UPSTREAM"; do
-    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" || die "git: cannot list the refs of $r_ (ls-remote)"
+    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" || { stopclass network; die "git: cannot list the refs of $r_ (ls-remote)"; }
     awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' "$st/ls.raw" | sort > "$st/ls.$( [ "$r_" = origin ] && echo o || echo u)"
   done
-  cmp -s "$st/ls.o" "$st/ls.u" || die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u"))"
+  cmp -s "$st/ls.o" "$st/ls.u" || { stopclass network; die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u")); a push in between? run ship again"; }
   amain=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.o")
   [ -n "$amain" ] || die "origin has no main"
   rtag=$(awk -v t="refs/tags/$tag" '$2 == t || $2 == t "^{}"' "$st/ls.o")
@@ -1165,12 +1172,12 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
   # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
   [ -z "$rtag" ] || ship_public "the tag is on origin ($(printf '%s' "$rtag" | head -1))"
-  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || die "git: cannot fetch origin's main"
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || { stopclass network; die "git: cannot fetch origin's main"; }
   fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
-  [ "$fh" = "$amain" ] || die "origin's main moved between its read ($amain) and the fetch ($fh)"
+  [ "$fh" = "$amain" ] || { stopclass network; die "origin's main moved between its read ($amain) and the fetch ($fh)"; }
   if git -C "$root" merge-base --is-ancestor "$commit" "$fh"; then pushmain=no
   elif git -C "$root" merge-base --is-ancestor "$fh" "$commit"; then pushmain=yes
-  else die "origin's main ($fh) has diverged from $tag's commit ($commit)"; fi
+  else stopclass diverged; die "origin's main ($fh) has diverged from $tag's commit ($commit)"; fi
   set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
   tool "$NETC" "$GITCMD" -C "$root" push --dry-run --porcelain --atomic --no-follow-tags origin "$@" > "$st/dry" 2> "$st/dry.err" \
     || die "the dry-run push failed ($(head -c 300 "$st/dry.err" | tr '\n' ' '))"
@@ -1182,14 +1189,123 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
 }
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
   trap '' INT HUP TERM PIPE
-  rc=$1
-  # the npm session ship made (in a dry entry its temp HOME still exists here)
-  [ "$logged_in" = no ] || tool "$NPMC" "$NPM" logout --registry="$NPMREG"
+  rc=$1 ok=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
+  # a write to a closed stdout leaves its bytes in the shell's buffer, and bash 3.2 hands them to the
+  # next builtin write with a redirection, or to a $( ) (measured 2026-10-12): one byte to /dev/null
+  # drains them, before each of those here (notify's own stderr line may carry them: the terminal)
+  drain
+  # 1. a stop of a run that holds the lock: what to run next, built from this run's own record, to
+  # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop that cannot vouch
+  # for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before the push) keeps it
+  if [ "$rc" != 0 ] && [ "$locked" = yes ]; then
+    txt=$(ship_stoptext)
+    if [ -f "$nf" ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
+      printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
+      cat "$nf" 2>/dev/null
+    else
+      printf '%s\n' "$txt" > "$nf" 2>/dev/null && wrote=yes
+      printf '%s\n' "$txt" "release: (these steps are also in $nf)"
+    fi
+  fi
+  # 2. the npm session ship made: logout, then the count of login tokens decides, not logout's code
+  # (in a dry entry the temp HOME still exists here)
+  if [ "$logged_in" = yes ]; then
+    tool "$NPMC" "$NPM" logout --registry="$NPMREG"
+    drain; n=$(tokcount)
+  fi
+  if [ "$n" != 0 ]; then
+    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG"
+    echo "release: $lo"
+    drain; [ $wrote = no ] || printf '%s\n' "$lo" >> "$nf" 2>/dev/null
+  fi
+  # 3. one notification, once armed: done only after a count of 0
+  if [ "$armed" = yes ]; then
+    if [ "$ok" = 0 ] && [ "$n" = 0 ]; then notify done
+    elif [ "$ok" = 0 ]; then notify logout-failed
+    elif [ "$n" = 0 ]; then notify "failed-$phase"
+    else notify "logout-failed-$phase"; fi
+  fi
+  [ "$ok" != 0 ] || rm -f "$nf"   # a release done: no steps left
+  # 4. the frozen tree, the temp dirs, the lock (only this run's)
   [ -z "$wt" ] || git -C "$oroot" worktree remove --force "$wt" >/dev/null 2>&1
   rm -rf "${st:?}"
   [ -z "$DRYHOME" ] || rm -rf "$DRYHOME"
   [ "$locked" = yes ] && rm -rf "${out:?}/.ship.lock"
   exit "$rc"
+}
+drain() { printf '\n' > /dev/null 2>&1; }
+# ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started
+# or finished), the stop's class and its cause; no network read. Every command names --out
+ship_stoptext() {
+  last=$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1)
+  cls=$(cat "$shipcls" 2>/dev/null) cause=$(cat "$shipcause" 2>/dev/null)
+  [ -n "$cause" ] || cause="a signal, or a step that named no cause"
+  run="  sh scripts/release.sh" o="--out \"$out\" $tag"
+  login="  npm login --registry=$NPMREG"
+  mainp=""; for p_ in ${SR_NPM_PKGS:-}; do mainp=$p_; done
+  up=$(sed -n 's/^start npm-platform //p' "$shipprog" 2>/dev/null); grep -qx 'start npm-main' "$shipprog" 2>/dev/null && up="$up $mainp"
+  echo "release: ship $tag stopped at $phase: $cause"
+  case $last in
+    '')
+      case $cls in
+        public)
+          echo "ship does not continue a release of which anything is public."
+          if [ -f "$out/$tag/MANIFEST.json" ] && grep -q "^ *\"tag\": \"$tag\"" "$out/$tag/MANIFEST.json" && grep -q "^ *\"commit\": \"${commit:-none}\"" "$out/$tag/MANIFEST.json"; then
+            echo "Never rebuild it: continue from $out/$tag with the separate steps (PHASE3.md §5), in order:"
+            echo "$run npm-check $o"
+            echo "$run publish $o      (publish-cask instead, when the GitHub release is already public)"
+            echo "$login"; echo "$run publish-npm $o"
+          else
+            echo "Continue with the separate steps of PHASE3.md §5: build --sign, npm-check, the push, publish, publish-npm."
+          fi ;;
+        lost) echo "ship does not continue: release a new version." ;;
+        unreadable) echo "Nothing was done. Run ship again." ;;
+        *)
+          if [ $pubok = yes ]; then echo "Nothing is public."; else echo "This run made nothing public."; fi
+          case $cls in
+            network) echo "Run ship again." ;;
+            content) echo "Move $out/$tag aside (never delete it), then run ship again." ;;
+            diverged) [ ! -e "$out/$tag" ] || echo "Move $out/$tag aside (it holds a build of the old commit)."
+              echo "Tag again on top of origin's main, then run ship." ;;
+            *) echo "When the cause above is fixed, run ship again." ;;
+          esac ;;
+      esac
+      return 0 ;;
+    'push refused')
+      echo "Nothing is public: the push was refused, and nothing of it landed."
+      echo "Move $out/$tag aside (it holds a build of the old commit). Tag again on top of origin's main, then run ship."
+      return 0 ;;
+    'start push')
+      echo "The push started and was not confirmed. Check whether $tag is on GitHub:"
+      echo "  git ls-remote origin refs/tags/$tag"
+      echo "If it is not: run ship again. If it is, run in order:"
+      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+    'done push')
+      echo "$tag is pushed; nothing else is public. Run in order:"
+      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+    'start npm-platform '*|'done npm-platform '*)
+      echo "$tag is pushed, and npm may hold a part of it; GitHub has no release of it. Run in order:"
+      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+    'start github')
+      echo "$tag is pushed, and npm may hold a part of it; the GitHub publish stopped. Check GitHub's releases for $tag:"
+      echo "  a draft is not public: delete it on GitHub, then run:"; echo "  $run publish $o"
+      echo "  a public release: run:"; echo "  $run publish-cask $o"
+      echo "  neither: run:"; echo "  $run publish $o"
+      echo "Then:"; echo "$login"; echo "$run publish-npm $o" ;;
+    exit5)
+      echo "$tag is public on GitHub, but its Homebrew cask is not updated, and npm may hold a part of it. Run in order:"
+      echo "$run publish-cask $o"; echo "$login"; echo "$run publish-npm $o" ;;
+    'done github'|'start npm-main')
+      echo "$tag is public on GitHub and Homebrew, and npm may hold a part of it. Run in order:"
+      echo "$login"; echo "$run publish-npm $o" ;;
+    *) echo "$tag is public on GitHub, Homebrew and npm." ;;
+  esac
+  # after an upload: the wait, and npm's review
+  if [ -n "$(printf '%s' "$up" | tr -d ' ')" ]; then
+    for p_ in $up; do echo "If npm still scans $p_@${tag#v}, wait until https://www.npmjs.com/package/$p_ shows ${tag#v} before publish-npm."; done
+    echo "publish-npm skips a version npm already shows with this file."
+    echo "npm may hold a version for review, or block it: look at npm's email to ${SR_NPM_USER:-the owner}. A blocked version needs a new version number."
+  fi
 }
 
 case $sub in
