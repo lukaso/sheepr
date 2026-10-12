@@ -20,6 +20,8 @@
 # one kept aside); 2 usage; 3 a refused SHEEPR_INSTALL_BASE.
 set -u
 SHEEPR_VERSION=
+# the terminating signals its cleanup catches: scripts/lib/sigs.sh's line, written in at render
+SIGS=
 REPO=lukaso/sheepr
 
 say() { echo "sheepr install: $*"; }
@@ -78,7 +80,7 @@ cleanup() {
   rm -rf "$tmp"; [ -n "$stage" ] && rm -rf "$stage"
 }
 trap cleanup EXIT
-trap 'cleanup; exit 1' HUP INT TERM
+trap 'cleanup; exit 1' $SIGS
 
 say "downloading $art ($SHEEPR_VERSION)"
 fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "cannot download SHA256SUMS from $base"

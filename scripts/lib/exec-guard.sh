@@ -37,6 +37,9 @@ case ${BASH_VERSION:-} in
   *) case $- in *p*) ;; *) exec /bin/sh -p "$0" "$@" ;; esac ;;
 esac
 set -u
+# scripts/lib/sigs.sh's list, verbatim (the door is copied as one file: install.sh embeds it, the
+# S7 leg and the cells copy it; tests/dist/t_sigs.sh holds the two equal)
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
 
 usage() { echo "usage: exec-guard.sh check|exec PATH [ARG...]" >&2; exit 2; }
 [ $# -ge 2 ] || usage
@@ -58,7 +61,7 @@ case $target in /*) typed=$target ;; *) typed=$(pwd -P)/$target ;; esac
   tmp=/private/tmp/sr-exec-guard.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   [ -d /private/tmp ] || tmp=/tmp/sr-exec-guard.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   trap 'rm -rf "$tmp"' EXIT
-  trap 'rm -rf "$tmp"; exit 1' HUP INT TERM
+  trap 'rm -rf "$tmp"; exit 1' $SIGS
   mkdir -m 700 "$tmp" || exit 2
   nl='
 '

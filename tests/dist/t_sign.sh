@@ -59,7 +59,9 @@ shim codesign 'case "$*" in
 esac; exit 0'
 shim xcrun 'case "$*" in
   *"notarytool history"*) echo "Successfully received submission history." ;;
-  *"notarytool submit"*) if [ -e "'"$FX"'/reject" ]; then [ -e "'"$FX"'/noid" ] && { echo "{\"status\":\"Invalid\"}"; exit 1; }; echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
+  *"notarytool submit"*) [ -e "'"$FX"'/submitsig" ] && { p=$(printf "%s" "$*" | sed -n "s|.*/private/tmp/sr-sign\.\([0-9][0-9]*\)\..*|\1|p"); echo "$p" > "'"$FX"'/target.pid"
+      kill -$(cat "'"$FX"'/submitsig") "$p"; /bin/sleep 1; echo "submit done" >> "'"$S"'/calls"; }
+    if [ -e "'"$FX"'/reject" ]; then [ -e "'"$FX"'/noid" ] && { echo "{\"status\":\"Invalid\"}"; exit 1; }; echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
     echo "{\"id\":\"00000000-0000-0000-0000-000000000000\",\"status\":\"Accepted\"}" ;;
 esac; exit 0'
 shim spctl 'exit 0'
@@ -167,6 +169,24 @@ seq=$(nkl)
 seq=$(nkl)
 [ $rc = 1 ] && [ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] \
   && pass "a rejection without an id: no second unlock, no password-again" || fail "rejection without an id: rc=$rc $seq"
+
+# 2i. a QUIT (its default runs no EXIT trap), then a USR1 (its default runs it at once, not waiting
+# for the running tool), to sign.sh while notarytool submit runs, the notary keychain unlocked: its
+# trap waits for the tool, its exit relocks the keychain and removes its temp dir; exit 1
+for sg in QUIT USR1; do
+  rm -f "$S/calls" "$S"/env.* "$FX/target.pid"; echo $sg > "$FX/submitsig"; mkdir -p "$FX/dest.s$sg"
+  # QUIT at its default: a background job of a non-interactive sh starts with QUIT and INT ignored,
+  # and a signal ignored at the start cannot be trapped
+  no_osascript /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+    SR_ASK_RECORD="$S/calls" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.s$sg" \
+    > "$FX/out.s$sg" 2>&1 & sp=$!
+  wait $sp; rc=$?; rm -f "$FX/submitsig"; tp=$(cat "$FX/target.pid" 2>/dev/null)
+  waited=$(grep -c '^submit done$' "$S/calls"); ll=$(tail -1 "$S/calls")
+  i=0; while ! grep -q '^submit done$' "$S/calls" && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done   # the tool's own end, before the next row
+  [ $rc = 1 ] && [ "$waited" = 1 ] && [ "$ll" = "security lock-keychain $KC" ] && [ -n "$tp" ] && [ -z "$(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)" ] \
+    && pass "a $sg during notarytool submit: sign.sh waits for it, relocks the notary keychain, removes its temp dir, exit 1" \
+    || fail "$sg in submit: rc=$rc waited=$waited last='$ll' pid '$tp' temp dir: $(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)"
+done
 
 # 3. the requirement comparison refuses a changed marker (a copy of sign.sh's library dir with a
 #    release.conf whose requirement lacks one Developer ID marker)

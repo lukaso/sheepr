@@ -19,6 +19,8 @@ grep -q '^SHEEPR_VERSION=0.1.0$' "$I" && pass "rendered with the version" || fai
 sed -n "/<<'SR_DOOR_EOF'/,/^SR_DOOR_EOF$/p" "$I" | sed '1d;$d' > "$FX/door.embedded"
 cmp -s "$FX/door.embedded" "$SR_ROOT/scripts/lib/exec-guard.sh" \
   && pass "the embedded door is exec-guard.sh, byte for byte" || fail "the embedded door differs from exec-guard.sh"
+[ "$(sed -n '/^write_door()/q;p' "$I" | grep -c -x -F -- "$(grep '^SIGS="' "$SR_ROOT/scripts/lib/sigs.sh")")" = 1 ] \
+  && pass "install.sh's own list is scripts/lib/sigs.sh's, written in at render" || fail "install.sh's SIGS line is not sigs.sh's"
 
 # the server
 mkdir -p "$FX/srv"
@@ -85,4 +87,21 @@ done
 rec=$FX/rec; : > "$rec"
 env PATH="$FX/p" HOME="$H" SHEEPR_INSTALL_BASE="$BASE" SR_EXEC_RECORD="$rec" "$FX/p/sh" "$I" > "$FX/o" 2>&1; r=$?
 [ $r = 1 ] && grep -q curl "$FX/o" && grep -q wget "$FX/o" && nothing && pass "no curl and no wget: refused, both named" || fail "no downloader: rc=$r $(tail -1 "$FX/o")"
+# a QUIT (its default runs no EXIT trap), then a USR1 (its default runs it at once, not waiting for
+# the running tool), to install.sh while curl downloads: it waits for curl, then its temp dir is gone
+mkdir -p "$FX/sigbin"
+cat > "$FX/sigbin/curl" <<EOF
+#!/bin/sh
+i=0; while [ ! -s "$FX/target.pid" ] && [ \$i -lt 100 ]; do /bin/sleep 0.1; i=\$((i + 1)); done
+kill -\$(cat "$FX/sig") \$(cat "$FX/target.pid"); /bin/sleep 1; : > "$FX/curl.done"; exit 1
+EOF
+chmod +x "$FX/sigbin/curl"
+for sg in QUIT USR1; do
+  rm -rf "${FX:?}/itmp"; rm -f "$FX/target.pid" "$FX/curl.done"; mkdir -p "$FX/itmp"; echo $sg > "$FX/sig"
+  /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env HOME="$H" TMPDIR="$FX/itmp" PATH="$FX/sigbin:/usr/bin:/bin" SHEEPR_INSTALL_BASE="$BASE" sh "$I" > "$FX/o" 2>&1 & ip=$!   # QUIT at its default
+  echo $ip > "$FX/target.pid"; wait $ip; rc=$?; waited=no; [ ! -e "$FX/curl.done" ] || waited=yes
+  i=0; while [ ! -e "$FX/curl.done" ] && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done   # the tool's own end, before the next row
+  [ $rc = 1 ] && [ $waited = yes ] && [ -z "$(ls -A "$FX/itmp")" ] && pass "a $sg to install.sh during its download: it waits for curl, then its temp dir is gone (rc $rc)" \
+    || fail "$sg at install.sh: rc=$rc curl done: $(ls "$FX/curl.done" 2>/dev/null) left: $(ls -A "$FX/itmp" | tr '\n' ' ')"
+done
 finish

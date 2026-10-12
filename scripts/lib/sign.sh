@@ -35,6 +35,7 @@
 # signed bundle (the end state of a dry run, whose codesign is a shim).
 set -u
 lib=$(cd "$(dirname "$0")" && pwd -P) || exit 1
+. "$lib/sigs.sh" || exit 1   # SIGS: the signals the relock trap catches
 usage() { echo "usage: sign.sh --bin B --version X.Y.Z --build N --tag T --commit C --dest D [--no-notarize] [--real NONCE --nonce-file F --parent-pid P]" >&2; exit 2; }
 die() { echo "sign: $*" >&2; exit 1; }
 guard() { echo "sign: refused: $*" >&2; exit 3; }
@@ -105,7 +106,7 @@ relock() {
   kc=""; return 1
 }
 trap 'rc=$?; relock; rm -rf "$tmp"; exit $rc' EXIT
-trap 'exit 1' HUP INT TERM
+trap 'exit 1' $SIGS
 mkdir -m 700 "$tmp" || die "cannot make $tmp"
 # the operator's attention before each password prompt (they may have left the desk): the tag tree's
 # notify.sh (a notification and the terminal bell; it always exits 0), through the named environment,

@@ -54,10 +54,6 @@ set -u
 # one collation and one message language for every sort and comparison (the operator's locale sorts
 # "SHA256SUMS" after "install.sh"; measured)
 LC_ALL=C; export LC_ALL
-# the signals every cleanup trap here catches: QUIT's default runs no EXIT trap at all, and the
-# others' defaults run it with the last command's status, not the run's (both measured, bash 3.2 as
-# sh); ship's own parent adds PIPE (below)
-SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
 DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, __publish-npm-dry); never inherited (their EXIT traps remove it)
 # release.sh's own, never inherited and never exported (unset first: a value from the environment
 # would stay exported): shipping (yes only under ship: publish_exec asks no second confirmation and
@@ -73,6 +69,7 @@ unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE S
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
 GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+. "$root/scripts/lib/sigs.sh" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out

@@ -15,6 +15,7 @@
 # and no xattr on anything after extraction.
 set -u
 PATH=/usr/bin:/bin; export PATH
+. "$(dirname "$0")/sigs.sh" || exit 1   # SIGS: the signals the cleanup trap catches
 usage() { echo "usage: archive.sh make APP OUT.tar.gz | archive.sh check ARCHIVE [--signed|--signed-unstapled]" >&2; exit 2; }
 bad() { echo "archive: $*" >&2; exit 1; }
 [ $# -ge 2 ] || usage
@@ -33,7 +34,7 @@ case $1 in
     [ -f "$arc" ] || bad "no archive $arc"
     t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || exit 1
     trap 'rm -rf "$t"' EXIT
-    trap 'rm -rf "$t"; exit 1' HUP INT TERM
+    trap 'rm -rf "$t"; exit 1' $SIGS
     want="Sheepr.app/Contents/Info.plist
 Sheepr.app/Contents/MacOS/sheepr"
     [ $signed != no ] && want="$want

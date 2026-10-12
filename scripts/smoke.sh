@@ -10,6 +10,9 @@
 # TERM or HUP) is killed by that identity. The escapee's session id is not read (macOS `ps` has
 # no session id); its process group, which setsid also changes, is.
 set -u
+# scripts/lib/sigs.sh's list, verbatim (this file runs alone, as the S7 test user's ~/s7-smoke.sh;
+# tests/dist/t_sigs.sh holds the two equal)
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
 SD=${1:-sheepr}
 t=$(mktemp -d "${TMPDIR:-/tmp}/sr-smoke.XXXXXX") || exit 1
 fails=0
@@ -27,7 +30,7 @@ rec() { # record-file -> p, s, g; 0 only if complete (a numeric pid and a start 
 alive() { rec "$1" && [ "$(start "$p")" = "$s" ]; }
 reap() { for f in "$t/e1" "$t/e2"; do alive "$f" && kill -KILL "$p" 2>/dev/null; done; }
 trap 'reap; rm -rf "${t:?}"' EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+trap 'exit 1' $SIGS; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 pgid() { # pid -> its process group (Linux: /proc, which busybox and slim images have; macOS: ps)
   if [ -r "/proc/$1/stat" ]; then sed 's/.*) //' "/proc/$1/stat" | cut -d' ' -f3
   else ps -o pgid= -p "$1" | tr -d ' '; fi
