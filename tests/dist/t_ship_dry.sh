@@ -243,10 +243,14 @@ up=\$(cat "$FX/updir" 2>/dev/null || echo "file://$FX/origin.git")
 n=\$#; for a; do [ "\$a" = https://github.com/lukaso/sheepr ] && a=\$up; set -- "\$@" "\$a"; done; shift \$n
 # only local bare repos: any other remote is refused before git runs (the network is never reached)
 case \$1 in push|fetch|ls-remote)
-  for a; do case \$a in file://*) ;; *://*|*@*:*) echo "SGIT REFUSED \$a" >> "$FX/calls"; echo "sgit: refused \$a (only file:// remotes)" >&2; exit 1 ;; esac; done
-  for u in \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.url 2>/dev/null) \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.pushurl 2>/dev/null); do
-    case \$u in file://*) ;; *) echo "SGIT REFUSED origin \$u" >> "$FX/calls"; echo "sgit: refused origin \$u" >&2; exit 1 ;; esac
-  done ;;
+  for a; do case \$a in
+    file://*) ;;
+    *://*|*@*:*) echo "SGIT REFUSED \$a" >> "$FX/calls"; echo "sgit: refused \$a (only file:// remotes)" >&2; exit 1 ;;
+    origin) # the named remote: its url and push url, in the repo the call names
+      for u in \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.url 2>/dev/null) \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.pushurl 2>/dev/null); do
+        case \$u in file://*) ;; *) echo "SGIT REFUSED origin \$u" >> "$FX/calls"; echo "sgit: refused origin \$u" >&2; exit 1 ;; esac
+      done ;;
+  esac; done ;;
 esac
 extra="" real=no lie=""
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
