@@ -2046,6 +2046,18 @@ fn strict_without_a_boot_id_counts_only_when_a_journal_may_be_missed() {
         let l: Vec<&str> = err.lines().filter(|l| l.contains("cannot read the boot id (ENOENT)")).collect();
         assert!(l.len() == 1 && l[0].contains(sub.to_str().unwrap()) && l[0].contains("(EACCES)") && l[0].ends_with("check its mode."), "an unlistable folder: {err}");
         assert_eq!((code2, err2.as_str()), (Some(0), ""), "its mode put right");
+        // a jobs/ it can list but not search (0400): its entries cannot be looked at, so it is the
+        // folder named (review of the slice-4 fixes, P4-3); before, a silent 0
+        let jobs = locked.join("jobs");
+        let _restore_jobs = Modes(vec![jobs.clone()]);
+        mode(&jobs, 0o400);
+        let (code, err) = strict(&locked, &seam("ENOENT"));
+        mode(&jobs, 0o700);
+        let (code2, err2) = strict(&locked, &seam("ENOENT"));
+        assert_eq!(code, Some(3), "an unsearchable jobs/: {err}");
+        let l: Vec<&str> = err.lines().filter(|l| l.contains("cannot read the boot id (ENOENT)")).collect();
+        assert!(l.len() == 1 && l[0].contains(&format!("{} (EACCES)", jobs.display())) && l[0].ends_with("check its mode."), "an unsearchable jobs/: {err}");
+        assert_eq!((code2, err2.as_str()), (Some(0), ""), "jobs/ put right");
     } else {
         eprintln!("skipped the unlistable folder: root lists a folder of any mode");
     }

@@ -870,7 +870,7 @@ fn no_boot_id(state: &Path, errno: i32, strict: bool) -> i32 {
     let line = match (errno, jobs_hold(&state.join("jobs"))) {
         (libc::ENOENT, Held::Nothing) => return 0,
         (libc::ENOENT, Held::Unlisted(p, e)) => format!(
-            "cannot read the boot id ({}), and cannot list {} ({}) to see whether it holds a journal; nothing was swept; {}",
+            "cannot read the boot id ({}), and cannot read {} ({}) to see whether it holds a journal; nothing was swept; {}",
             name(errno),
             crate::kill::clean(&p.display().to_string()),
             name(e),
@@ -892,7 +892,7 @@ enum Held {
     Nothing,
     /// a journal
     Journal,
-    /// a folder it cannot list (that one, and its errno): a journal cannot be ruled out
+    /// a folder it cannot list or search (that one, and its errno): a journal cannot be ruled out
     Unlisted(PathBuf, i32),
 }
 
@@ -910,8 +910,14 @@ fn jobs_hold(jobs: &Path) -> Held {
             Ok(e) => e.path(),
             Err(e) => return Held::Unlisted(jobs.to_path_buf(), errno(e)),
         };
-        if !std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
-            continue;
+        // an entry it cannot look at (a jobs/ it can list but not search) may be a folder that
+        // holds a journal: `jobs` is then the folder it cannot read (review of the slice-4 fixes,
+        // P4-3); only one that went (ENOENT) is nothing
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Held::Unlisted(jobs.to_path_buf(), errno(e)),
         }
         let files = match std::fs::read_dir(&p) {
             Ok(f) => f,
