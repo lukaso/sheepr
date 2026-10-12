@@ -347,9 +347,11 @@ pub struct Header {
 /// user's regular file (`open_checked`).
 pub fn header(path: &Path) -> Option<Header> {
     let (f, _) = open_checked(path, false).ok()?;
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut &f, &mut text).ok()?;
-    let h = json::parse(text.lines().next()?).ok()?;
+    // the first line only, at most 1 MiB, and lossy: a byte that is not UTF-8 in a later line
+    // never hides the header (review of slice 4, P4)
+    let mut first = Vec::new();
+    std::io::BufRead::read_until(&mut std::io::BufReader::new(std::io::Read::take(&f, 1 << 20)), b'\n', &mut first).ok()?;
+    let h = json::parse(String::from_utf8_lossy(&first).lines().next()?).ok()?;
     if h.get("kind").and_then(Json::str) != Some("header") {
         return None;
     }

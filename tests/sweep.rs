@@ -2187,3 +2187,26 @@ fn the_boot_id_is_read_once_per_sweep() {
     assert!(!err.contains("another boot"), "{err}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of slice 4, P4: the header is the first line, read on its own: a byte that is not UTF-8
+/// in a later line (a command line cut mid-character, say) does not hide it, so another owner's
+/// journal is still another owner's: with a lock error on it (seam), a default strict sweep says
+/// nothing of it and exits 0. The control: the same file under its own owner's strict sweep is
+/// counted (3, "try again").
+#[test]
+fn a_later_bad_byte_does_not_hide_another_owners_header() {
+    let d = scratch("badbyte");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let j = forge(&s, &here, "j-0badb17e", "liveapp", &boot, &pidns, &[], false);
+    let mut bytes = std::fs::read(&j).unwrap();
+    bytes.extend_from_slice(b"{\"v\":1,\"pid\":999997,\"id\":1,\"cmd\":\"\xff\xfe\"}\n");
+    std::fs::write(&j, bytes).unwrap();
+    let seam = [("SHEEPR_TEST_JOURNAL_ERRNO", "lock:ENOLCK:j-0badb17e.journal")];
+    let (code, err) = strict(&s, &seam);
+    let (code2, err2, _) = sheepr_within(&s, &["sweep", "--strict", "--owner", "liveapp"], &seam, 30);
+    assert_eq!((code, naming(&err, "j-0badb17e").len()), (Some(0), 0), "{err}");
+    assert_eq!(code2, Some(3), "control: {err2}");
+    assert!(err2.contains("(ENOLCK); try again"), "control: {err2}");
+    let _ = std::fs::remove_dir_all(&d);
+}
