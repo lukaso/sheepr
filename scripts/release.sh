@@ -52,6 +52,10 @@ GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipp
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
+# next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
+# (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
+# the remedy around it
+next_hint() { if [ "$shipping" = yes ]; then printf '%s' "${2:-}"; else printf '%s' "$1"; fi; }
 stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
@@ -434,8 +438,8 @@ publish_check() { # dir
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
   trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
   private_manifest "$d" "$pt"
-  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest; run release.sh npm-check $tag first"
-  files_ok "$d" || die "a file npm-check checked has changed since (above); run release.sh npm-check $tag again"
+  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
+  files_ok "$d" || die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"
   [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; nothing is published"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
     || die "the archive verify judged is not the stamped manifest's (it changed since); nothing is published"
@@ -502,7 +506,7 @@ publish_exec() { # dir
       false) echo "release: the publish request failed, but $tag is public (the release reads draft: false)"
         [ $cask = no ] || cask_post "$d" "$pt" "releases/$id" cask_fail
         return 0 ;;
-      true) die "gh: cannot publish the draft $id; it is still a draft. Publish it on GitHub (Releases, the draft $tag, Publish release), or delete the draft and run publish again" ;;
+      true) die "gh: cannot publish the draft $id; it is still a draft.$(next_hint " Publish it on GitHub (Releases, the draft $tag, Publish release), or delete the draft and run publish again")" ;;
       *) die "gh: cannot publish the draft $id, and cannot read whether it is public: check it on GitHub" ;;
     esac
   fi
@@ -558,7 +562,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
 # file is read back at the commit the write made.
 TAP=lukaso/homebrew-tap CASK=Casks/sheepr.rb ARCHIVE=sheepr-macos-universal.tar.gz
 cask_fail() { # publish's failure after the PATCH: the release is public, its cask is not done (5)
-  echo "release: $tag is public, but its Homebrew cask is not updated: $*. Run: sh scripts/release.sh publish-cask --out \"$out\" $tag" >&2; exit 5
+  echo "release: $tag is public, but its Homebrew cask is not updated: $*.$(next_hint " Run: sh scripts/release.sh publish-cask --out \"$out\" $tag")" >&2; exit 5
 }
 blob_id() { { printf 'blob %d\0' "$(wc -c < "$1" | tr -d ' ')"; cat "$1"; } | shasum -a 1 | cut -d' ' -f1; }   # git's id of a file's bytes
 cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and cask_blob, or refuses (1)
@@ -688,7 +692,7 @@ npm_visible() {
       [ "$got" = "$3" ] && return 0
       die "$1@$2 is on npm with another file ($got) than ${4:-the one just published}; nothing after it is published"
     fi
-    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(sed -n 's/^npm error code \(.*\)$/\1/p' "$pc/err" | head -1 | grep . || echo "exit $r, an empty answer")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}; once it shows, run publish-npm again (it skips a version already there with this file). A blocked version needs a new version number. Nothing after it is published"
+    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(sed -n 's/^npm error code \(.*\)$/\1/p' "$pc/err" | head -1 | grep . || echo "exit $r, an empty answer")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}$(next_hint "; once it shows, run publish-npm again (it skips a version already there with this file)"). A blocked version needs a new version number. Nothing after it is published"
     sleep "$NPM_WAIT_STEP"; w=$((w + NPM_WAIT_STEP))
   done
 }
@@ -709,7 +713,7 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
   for p in $SR_NPM_PKGS; do
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
-      grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER), then run this again; nothing was published"; }
+      grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); nothing was published"; }
       stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); nothing was published"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
@@ -737,20 +741,20 @@ publish_npm_exec() { # dir
   trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' HUP INT TERM
   chmod 700 "$pc" || die "cannot make $pc private"
   private_manifest "$d" "$pc"; m=$MAN
-  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest; run release.sh npm-check $tag first"
+  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
   mf() { sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$m" | head -1; }
   [ "$(mf tag)" = "$tag" ] && [ "$(mf mode)" = signed ] && [ "$(mf control)" = false ] \
     || die "the manifest is not $tag's signed build, or it is a control build"
   lc=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}") || die "no local tag $tag"
   [ "$(mf commit)" = "$lc" ] || die "the manifest's commit $(mf commit) is not $tag's ($lc)"
   # every file npm-check checked, before the first npm call (each is checked again just before its upload)
-  files_ok "$d" || die "a file npm-check checked has changed since (above); nothing is published. Run release.sh npm-check $tag again"
+  files_ok "$d" || die "a file npm-check checked has changed since (above); nothing is published.$(next_hint " Run release.sh npm-check $tag again")"
   # who may publish, before any view or upload: npm must say the user is release.conf's (measured,
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?): run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again; nothing was published ($(head -c 200 "$pc/err" | tr '\n' ' '))"
-  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}: run npm login as that user, then publish-npm again; nothing was published"
+    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); nothing was published ($(head -c 200 "$pc/err" | tr '\n' ' '))"
+  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); nothing was published"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
@@ -790,7 +794,7 @@ publish_npm_exec() { # dir
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
-      || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out: run publish-npm again (it skips a version already there with this file). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}, wait, then run publish-npm again. A blocked version needs a new version number. Nothing after it is published"
+      || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out$(next_hint ": run publish-npm again (it skips a version already there with this file)" " may be the cause"). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}$(next_hint ", wait, then run publish-npm again"). A blocked version needs a new version number. Nothing after it is published"
     if [ "$npm_part" = platform ]; then
       progress "done npm-platform $p"
       echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"
@@ -800,7 +804,7 @@ publish_npm_exec() { # dir
     echo "release: $p@$nv published, and npm shows this file"
   done
   if [ "$npm_part" = platform ]; then echo "release: the platform packages of $tag are uploaded; npm shows each one after its scan"
-  else echo "release: the four npm packages of $tag are on npm. Next: npm logout, and the token check (PHASE3.md §5)"; fi
+  else echo "release: the four npm packages of $tag are on npm.$(next_hint " Next: npm logout, and the token check (PHASE3.md §5)")"; fi
 }
 # the entries set their tools with plain assignments: an assignment before a function call is
 # exported, and stays, under the system's sh (measured)
@@ -872,7 +876,7 @@ npm_check() { # dir
   npy same "$dt" "$d/sheepr-macos-universal.tar.gz" || die "the darwin package's bundle is not the release archive's bundle (above)"
   stamp_line "$d" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
   rm -rf "$nt"; trap - EXIT
-  echo "release: the npm tarballs of $tag check out (NPM-CHECKED written); publish comes next, then publish-npm"
+  echo "release: the npm tarballs of $tag check out (NPM-CHECKED written)$(next_hint "; publish comes next, then publish-npm")"
 }
 
 # --- verify: the three facts, from the archive, by the real tools (PHASE3.md §1.2) --------------

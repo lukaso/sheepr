@@ -99,6 +99,8 @@ echo "npmcheck \$*" >> "$FX/calls"
 d=\$1; tg=\$(basename "\$d")
 [ -e "$FX/npmcheck.swap" ] && echo ' ' >> "\$d/MANIFEST.json"
 printf '%s %s\n' "\$tg" "\$(shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
+[ ! -e "$FX/npmcheck.badstamp" ] || echo "\$tg 0000" > "\$d/NPM-CHECKED"
+[ ! -e "$FX/npmcheck.touch" ] || echo x >> "\$d/sheepr-linux-x86_64"
 EOF
 chmod +x "$S/npmcheck"
 # gh's stand-in: A4's release list (tag, draft, prerelease: $FX/rels), the repos' write rights, the
@@ -125,8 +127,8 @@ case "\$*" in
     mkdir -p "$FX/up"; cp "\$in" "$FX/up/\$nm"; echo 1 ;;
   "api repos/lukaso/sheepr/releases/4242 --jq .assets"*) i=0; for f in \$(ls "$FX/up"); do i=\$((i+1)); echo "\$i \$f"; done ;;
   *"releases/assets/"*) for a; do last=\$a; done; id=\${last##*/}; f=\$(ls "$FX/up" | sed -n "\${id}p"); cat "$FX/up/\$f" ;;
-  *"PATCH"*) [ -e "$FX/patchfail" ] && exit 1; [ -e "$FX/patch5" ] && : > "$FX/notpublished" ;;
-  *"--jq .draft"*) echo false ;;
+  *"PATCH"*) [ -e "$FX/patchfail" ] && exit 1; [ -e "$FX/stilldraft" ] && exit 1; [ -e "$FX/patch5" ] && : > "$FX/notpublished" ;;
+  *"--jq .draft"*) if [ -e "$FX/stilldraft" ]; then echo true; else echo false; fi ;;
 esac
 exit 0
 EOF
@@ -156,6 +158,7 @@ case \$1 in
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\n  "error": {\n    "code": "E404"\n  }\n}\n'; echo "npm error code E404" >&2; exit 1 ;;
   owner) [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    [ -e "$FX/owner404.\$3" ] && { echo "npm error code E404" >&2; exit 1; }
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
   config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/npmrc"; exit 0; } ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
@@ -828,5 +831,42 @@ printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush
 [ "$(lastprog)" = "start npm-main" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" && pass "N6: a C8 wait timed out: the review and block text" || fail "N6: '$(lastprog)' $(tr '\n' '|' < "$NF")"
 rm -f "$FX"/processing.*   # npm's scan finished
 stoprow "the C8 wait timed out (then the scan finished)"
+rm -rf "${OUTR:?}"
+
+# --- next_hint: under ship, no message but the stop text names an entry to run next; the remedies stay
+hint_free() { # the lines of the run's output that are not the stop text name no entry to run next
+  if [ -f "$NF" ]; then grep -v -x -F -f "$NF" "$FX/o"; else cat "$FX/o"; fi \
+    | grep -e 'release\.sh \(publish\|npm-check\)' -e 'publish-npm again' -e 'publish again' -e 'this again' -e 'Next:' -e 'comes next' -e 'Run: ' > "$FX/hints"
+  [ ! -s "$FX/hints" ]
+}
+hint_row() { # label want-text
+  [ $r != 0 ] && grep -q "$2" "$FX/o" && hint_free && pass "under ship, $1: '$2', and no other entry named" || fail "$1: rc=$r $(head -2 "$FX/hints" 2>/dev/null | tr '\n' '|') $(lastline)"
+}
+rm -rf "${OUTR:?}"; : > "$FX/npmcheck.badstamp"; ship; r=$?; rm -f "$FX/npmcheck.badstamp"; hint_row "C3's stamp check" "npm-check has not passed on"
+rm -rf "${OUTR:?}"; : > "$FX/npmcheck.touch"; ship; r=$?; rm -f "$FX/npmcheck.touch"; hint_row "C3's file check" "a file npm-check checked has changed since"
+rm -rf "${OUTR:?}"; : > "$FX/stilldraft"; ship; r=$?; rm -f "$FX/stilldraft"; hint_row "the release still a draft" "it is still a draft"
+rm -rf "${OUTR:?}"; : > "$FX/putfail"; ship; r=$?; rm -f "$FX/putfail"; hint_row "the cask refused (exit 5)" "its Homebrew cask is not updated"
+printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"
+hint_row "a C8 wait timed out" "held the version for review or blocked it"
+grep -q 'A blocked version needs a new version number' "$FX/o" && pass "  npm's review and blocking text kept (N5)" || fail "  the review text is gone"
+rm -rf "${OUTR:?}"; : > "$FX/owner404.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404.sheepr-linux-x64"; hint_row "a name not on npm (A6)" "reserve the name first (publish a 0.0.0 placeholder as lukasco)"
+printf 'cd "%s/v0.1.0" && echo x > NPM-CHECKED\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's stamp check" "npm-check has not passed on"
+printf 'echo x >> "%s/v0.1.0/sheepr-linux-x86_64"\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's file check" "a file npm-check checked has changed since"
+printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed (not logged in to npm?); nothing was published"
+printf 'echo other > "%s/whoami"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoami"; hint_row "C6's whoami another user" "but the packages belong to lukasco; nothing was published"
+: > "$FX/pubfail.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"; hint_row "an upload refused" "A browser login or 2FA approval that failed or timed out may be the cause"
+rm -rf "${OUTR:?}"; ship; r=$?
+completed && hint_free && pass "under ship, a success names no next entry (no 'Next:')" || fail "success hints: $(head -2 "$FX/hints" | tr '\n' '|')"
+# npm-check runs only in the real ship (its dry stand-in stands in): its last line, by text
+grep -qF 'echo "release: the npm tarballs of $tag check out (NPM-CHECKED written)$(next_hint "; publish comes next, then publish-npm")"' "$RS" \
+  && pass "npm-check's 'publish comes next' goes through next_hint (text)" || fail "npm-check's last line"
+# control: the sweep's pattern catches a planted next-entry line
+printf 'release: x; run release.sh npm-check v0.1.0 first\n' > "$FX/o"; rm -f "$NF"; hint_free && fail "control: the planted line is not caught" || pass "control: a planted 'run release.sh npm-check' line is caught"
+# N5: the CHANGELOG's remedy kept under ship (a tag whose entry is undated)
+br=$(g symbolic-ref --short HEAD) && g checkout -q --detach "$C" && sed -i.b 's/^## 0\.1\.0 (20[0-9-]*)$/## 0.1.0 (not yet released)/' "$REPO/CHANGELOG.md" && rm -f "$REPO/CHANGELOG.md.b" \
+  && g commit -qam undated && g tag -f -a v0.1.0 -m undated HEAD >/dev/null || exit 3
+rm -rf "${OUTR:?}"; ship; r=$?
+g checkout -q "$br" && g update-ref refs/tags/v0.1.0 "$T" && [ "$(g rev-parse v0.1.0)" = "$T" ] && [ -z "$(g status --porcelain)" ] || exit 3
+[ $r = 1 ] && grep -q 'fix it, commit, and tag again' "$FX/o" && pass "under ship, an undated CHANGELOG: its remedy kept (fix it, commit, and tag again)" || fail "N5 changelog: rc=$r $(lastline)"
 rm -rf "${OUTR:?}"
 finish
