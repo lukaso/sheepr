@@ -42,18 +42,18 @@ for kv in \
   "npm-approve-next|$T: npm may ask again: approve the next npm upload in the browser" \
   "done|$T is public on GitHub, Homebrew and npm" \
   "logout-failed|$T: npm logout failed. Run npm logout in the terminal" \
-  "failed-push|$T stopped at push. The terminal says what to run next" \
-  "failed-npm-platform|$T stopped at npm-platform. The terminal says what to run next" \
-  "logout-failed-npm-main|$T stopped at npm-main, and npm logout failed. Run npm logout in the terminal; it says what to run next"; do
+  "failed-push|$T stopped at push. What to run next is in $T.ship-next.txt" \
+  "failed-npm-platform|$T stopped at npm-platform. What to run next is in $T.ship-next.txt" \
+  "logout-failed-npm-main|$T stopped at npm-main, and npm logout failed. Run npm logout in the terminal; what to run next is in $T.ship-next.txt"; do
   k=${kv%%|*} want=${kv#*|}
   nt "$FX/osa" "$k" "$T"
   [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec")" = "$pre[$want]" ] && pass "$k: the table's text, after --" || fail "$k: rc=$r got '$(cat "$FX/rec" 2>/dev/null)'"
 done
 nt "$FX/osa" failed-abcdefghijabcdefghijabcdefghijab "$T"   # a phase of exactly 32 characters
-[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab. The terminal says what to run next]" ] \
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab. What to run next is in $T.ship-next.txt]" ] \
   && pass "a phase of exactly 32 characters: accepted" || fail "32-character phase: rc=$r $(cat "$FX/err")"
 nt "$FX/osa" logout-failed-abcdefghijabcdefghijabcdefghijab "$T"
-[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab, and npm logout failed. Run npm logout in the terminal; it says what to run next]" ] \
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab, and npm logout failed. Run npm logout in the terminal; what to run next is in $T.ship-next.txt]" ] \
   && pass "logout-failed-PHASE: a phase of exactly 32 characters accepted" || fail "logout-failed 32-character phase: rc=$r $(cat "$FX/err")"
 nt "$FX/osa" password v0.1.4-rc.2
 [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[v0.1.4-rc.2: type the notary keychain password in the terminal]" ] && pass "an rc tag is a tag" || fail "rc tag: rc=$r $(cat "$FX/err")"

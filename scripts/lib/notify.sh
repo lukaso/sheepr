@@ -48,10 +48,10 @@ case $key in
   logout-failed) text="$tag: npm logout failed. Run npm logout in the terminal" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase. The terminal says what to run next" ;;
+    text="$tag stopped at $phase. What to run next is in $tag.ship-next.txt" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; it says what to run next" ;;
+    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; what to run next is in $tag.ship-next.txt" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 
