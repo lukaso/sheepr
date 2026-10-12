@@ -271,6 +271,8 @@ pub fn open(path: &Path) -> Result<Journal, Skip> {
         None => Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)),
     };
     lock.map_err(|e| Skip::of(Stage::Lock, e))?;
+    // (the debug trace: each lock taken, by file name)
+    crate::note(format!("lock {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
     seam_vanish("lock", path);
     // the name must still be the file this lock is on (a clean end unlinks before it unlocks):
     // gone (ENOENT) or another file there is a job that just ended; any other error of the stat
@@ -791,6 +793,8 @@ pub fn auto(owner: &str, quiet: bool) {
         let r = if other { Err(Skip::Live) } else { open_fenced(&f) };
         let s = match r {
             Ok(j) => {
+                // debug seam: hold here, while this pass holds that journal's lock
+                crate::seam_hold("SHEEPR_TEST_HOLD_AUTO_LOCKED");
                 drop(j); // its lock, let go
                 dead.push(f);
                 continue;
@@ -822,8 +826,6 @@ pub fn auto(owner: &str, quiet: bool) {
         crate::status::add_note(&format!("auto-sweep skipped: {why}; it may be a running job's journal, so nothing was signalled"));
         return;
     }
-    // debug seam: hold here, once every journal of this pass was read (none is held now)
-    crate::seam_hold("SHEEPR_TEST_HOLD_AUTO_PASS");
     let (mut swept, mut killed) = (0usize, 0usize);
     for f in dead {
         if start.elapsed() > std::time::Duration::from_millis(200) {

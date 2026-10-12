@@ -665,53 +665,34 @@ fn another_owners_live_job_keeps_its_member_from_the_auto_sweep() {
 }
 
 /// Review of slice 4, P3-1: the auto-sweep never takes the lock of another owner's journal (its
-/// header is read first, as `sweep` does), so a `sweep --owner liveapp --strict` that runs while a
-/// default run's pass holds (seam, after it opened the journals) still finds liveapp's stale
-/// journal unlocked: it sweeps it (the decoy ends, the journal goes, exit 0). Before, the pass held
-/// that lock and the strict sweep took the job for a live one (exit 0, the decoy alive).
+/// header is read first, as `sweep` does). A default run's pass holds (seam) the first time it
+/// holds a lock of its own, before it lets go of it: its own dead journal `j-22cc0000` at HEAD;
+/// liveapp's `j-11ab0000`, which sorts first, wherever another owner's journal is locked. In that
+/// hold a `sweep --owner liveapp --strict` still finds liveapp's stale journal unlocked: it sweeps
+/// it (the decoy ends, the journal goes, exit 0); taken for a live one, the decoy would stay. The
+/// trace has a line per lock the pass took: its own journal's (the control: the seam and the
+/// trace work), never liveapp's.
 #[test]
 fn the_auto_sweep_never_locks_another_owners_journal() {
     let d = scratch("otherlock");
     let s = state(&d);
+    let (here, boot, pidns) = this_boot(&d, &s);
     let mr = d.join("decoy");
     let _left = Leftovers(vec![mr.clone()], vec![]);
-    // this boot's folder and header values, from a short job's journal kept by a seam
-    let probe = state(&d.join("probe"));
-    let _ = Command::new(sheepr()).args(["run", "--", "/bin/sh", "-c", "exit 0"]).env("SHEEPR_TEST_STATE", &probe).env("SHEEPR_TEST_KEEP_JOURNAL", "1").status();
-    let pj = journals(&probe).pop().expect("a kept journal");
-    let h = json::parse(std::fs::read_to_string(&pj).unwrap().lines().next().unwrap()).unwrap();
-    let hf = |k: &str| h.get(k).and_then(Json::str).unwrap().to_string();
-    let here = s.join("jobs").join(pj.parent().unwrap().file_name().unwrap());
-    std::fs::create_dir_all(&here).unwrap();
-    for p in [s.join("jobs"), here.clone()] {
-        std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-    }
     let mut mc = Command::new(fixture()).arg("sigcount").arg(&mr).spawn().unwrap();
     assert!(wait_until(10, || !records(&mr).is_empty()), "the decoy started");
     let m = records(&mr)[0];
-    let uid = unsafe { libc::getuid() };
-    let lj = here.join("j-11ab0000.journal");
-    std::fs::write(
-        &lj,
-        format!(
-            "{{\"v\":1,\"kind\":\"header\",\"job\":\"j-11ab0000\",\"boot\":\"{}\",\"pidns\":\"{}\",\"owner\":\"liveapp\",\"uid\":{uid},\"sup\":{{\"pid\":999999,\"id\":{}}},\"argv\":\"sheepr run\"}}\n{{\"v\":1,\"pid\":{},\"id\":{},\"ppid\":1,\"pid_id\":null,\"puniq\":null,\"cmd\":\"decoy\"}}\n",
-            hf("boot"),
-            hf("pidns"),
-            1u64 << 40,
-            m.0,
-            m.1
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&lj, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
-    let (ready, release) = (d.join("ready"), d.join("release"));
+    let lj = forge_dead(&here, "j-11ab0000", "liveapp", &boot, &pidns, &[m]);
+    forge_dead(&here, "j-22cc0000", "default", &boot, &pidns, &[]);
+    let (ready, release, trace) = (d.join("ready"), d.join("release"), d.join("trace"));
     let _go = GoOnDrop(release.clone());
     let mut held = Outer(
         Command::new(sheepr())
             .args(["run", "--", "/bin/sh", "-c", "exit 0"])
             .env("SHEEPR_TEST_STATE", &s)
-            .env("SHEEPR_TEST_HOLD_AUTO_PASS", &release)
+            .env("SHEEPR_TEST_HOLD_AUTO_LOCKED", &release)
             .env("SHEEPR_TEST_READY_FILE", &ready)
+            .env("SHEEPR_TEST_TRACE", &trace)
             .spawn()
             .unwrap(),
     );
@@ -722,10 +703,13 @@ fn the_auto_sweep_never_locks_another_owners_journal() {
     let _ = held.0.wait();
     common::send_child(&mut mc, libc::SIGKILL);
     let _ = mc.wait();
-    assert!(in_pass, "the default run's pass never held (the row proves nothing)");
+    let t = std::fs::read_to_string(&trace).unwrap_or_default();
+    assert!(in_pass, "the default run's pass never held a lock (the row proves nothing)");
+    assert!(t.lines().any(|l| l == "lock j-22cc0000.journal"), "control: the pass's own lock is not in the trace:\n{t}");
     assert_eq!(st.code(), Some(0));
     assert!(gone, "the strict sweep of liveapp did not end its stale job: the default pass held its lock");
     assert!(!lj.exists(), "liveapp's swept journal is still there");
+    assert!(!t.lines().any(|l| l == "lock j-11ab0000.journal"), "the default pass locked liveapp's journal:\n{t}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
