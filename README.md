@@ -206,7 +206,7 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   `not-started` when it never ran. `root_code` is its exit code when it exited and
   `root_signal` the number of the signal that ended it; the other one is null. Both are null
   when the command never ran, and when sheepr did not see how it ended (then `root` is
-  `signaled`). When `trigger` is set, they say how the command ended while the job was being
+  `signaled`; for example with `--mode root-disclaim` when a TERM or a limit ends the job). When `trigger` is set, they say how the command ended while the job was being
   ended: by itself (it exited just as the TERM came, or while it had time to end), by your
   signal (a TERM to the whole process group reaches the command too), or by sheepr's kill. They
   are not the command's own result for the job.

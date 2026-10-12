@@ -1018,9 +1018,9 @@ fn a_root_the_scan_cannot_see_never_holds_sheeprs_end() {
 }
 
 /// #17, round 3 N2 (macOS `--mode root-disclaim`): the recorder keys on the root's pid there
-/// too: a root that exits 3 is "exited" with `root_code` 3. Its TERM path does not reap the root
-/// (stated), so a TERM from outside reads "signaled" with both fields null and `trigger` "term"
-/// (it read "not-started" before).
+/// too: a root that exits 3 is "exited" with `root_code` 3. Its TERM or limit path (every trigger)
+/// does not reap the root (stated), so a TERM from outside reads "signaled" with both fields null
+/// and `trigger` "term" (it read "not-started" before), and so does a timeout (exit 124).
 #[cfg(target_os = "macos")]
 #[test]
 fn root_disclaim_records_the_root_s_end() {
@@ -1039,6 +1039,14 @@ fn root_disclaim_records_the_root_s_end() {
     assert_eq!(field(&termed, "trigger").and_then(Json::str), Some("term"));
     assert_eq!(field(&termed, "root").and_then(Json::str), Some("signaled"), "{:?}", termed.status);
     assert!(both_null(&termed), "{:?}", termed.status);
+    // a limit takes the same path as TERM (the whole-batch review, P3-2): "signaled", both null,
+    // exit 124, trigger "timeout"
+    let timed = run(&d, "timeout", &format!("--mode root-disclaim --timeout 0.3s -- /bin/sleep {m}"), &[], |_| {});
+    kill_marked(&m);
+    assert_eq!(timed.code, Some(124), "{:?}", timed.status);
+    assert_eq!(field(&timed, "trigger").and_then(Json::str), Some("timeout"), "{:?}", timed.status);
+    assert_eq!(field(&timed, "root").and_then(Json::str), Some("signaled"), "{:?}", timed.status);
+    assert!(both_null(&timed), "{:?}", timed.status);
     let _ = std::fs::remove_dir_all(&d);
 }
 

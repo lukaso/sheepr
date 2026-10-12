@@ -32,7 +32,7 @@
 //! (`root-after-kill unseen` in the debug trace), a macOS root killed while still suspended
 //! (`kill_suspended_root`: a TERM before sheepr's CONT, or `--require-journal`'s refusal; it is
 //! reaped there, outside the recorder, and its end records nothing), and `--mode root-disclaim`'s
-//! TERM path, which does not reap the root. Under a trigger they are the root's end whoever caused it: its own end
+//! TERM or limit path (every trigger), which does not reap the root. Under a trigger they are the root's end whoever caused it: its own end
 //! (an exit as the TERM was taken, or during the grace), the caller's signal (a TERM to the whole
 //! process group reaches the root too), or sheepr's kill; not the command's own verdict on the
 //! job.
