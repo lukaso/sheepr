@@ -869,4 +869,12 @@ rm -rf "${OUTR:?}"; ship; r=$?
 g checkout -q "$br" && g update-ref refs/tags/v0.1.0 "$T" && [ "$(g rev-parse v0.1.0)" = "$T" ] && [ -z "$(g status --porcelain)" ] || exit 3
 [ $r = 1 ] && grep -q 'fix it, commit, and tag again' "$FX/o" && pass "under ship, an undated CHANGELOG: its remedy kept (fix it, commit, and tag again)" || fail "N5 changelog: rc=$r $(lastline)"
 rm -rf "${OUTR:?}"
+
+# --- the docs: a pushed tag is never deleted (no `push --delete`, `push -d` or deletion refspec
+# `:refs/tags/` in PHASE3.md, README.md or release.sh)
+tagdel() { grep -n -E -e 'push +(--delete|-d)( |$)' -e '(^|[] "'"'"'`(])\+?:refs/tags/' "$@"; }
+[ -z "$(tagdel "$SR_ROOT/PHASE3.md" "$SR_ROOT/README.md" "$RS")" ] && pass "no tag deletion in PHASE3.md, README.md or release.sh" || fail "tag deletion: $(tagdel "$SR_ROOT/PHASE3.md" "$SR_ROOT/README.md" "$RS" | cut -c1-120 | tr '\n' '|')"
+printf '%s\n' 'delete it with `git push --delete origin v0.1.0`' '  git push -d origin v0.1.0' '  git push origin :refs/tags/v0.1.0' > "$FX/planted.md"
+[ "$(tagdel "$FX/planted.md" | grep -c .)" = 3 ] && pass "control: the three planted deletions are caught" || fail "control: caught $(tagdel "$FX/planted.md" | grep -c .) of 3"
+printf '%s\n' '  set -- "$tagobj:refs/tags/$tag"' > "$FX/planted.md"; [ -z "$(tagdel "$FX/planted.md")" ] && pass "control: a push refspec of the tag object is not a deletion" || fail "control: the push refspec is counted"
 finish

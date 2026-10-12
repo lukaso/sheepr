@@ -15,22 +15,41 @@
 #   release.sh ship [--out DIR] vTAG                  the whole release of a final tag in one run, the
 #                                                     human steps grouped (the operator; the ship plan)
 #
+# ship (PHASE3.md §5): asks for the tag once, then, in one run: the pre-flight (the checks; this
+# release.sh is the tag's; origin is lukaso/sheepr and a dry-run push of main and the tag passes;
+# nothing of the version is public on GitHub, the tap or npm, and it is newer than each one's
+# latest; the tap and npm's owners; no npm session ship did not make; the build's preconditions),
+# the build when $out/vTAG does not exist (the keychain password), npm-check, every check publish
+# makes, npm login (the browser), the push, the platform packages, publish with the cask, the main
+# package, npm logout and the token count. It reads its helpers from a detached worktree of the tag;
+# one ship per out dir ($out/.ship.lock, never taken over); the Mac stays awake (caffeinate) until it
+# ends; notifications (scripts/lib/notify.sh) announce each human step and the end. It refuses an
+# rc tag (an rc, and a backport, use the separate entries), and anything of the version already
+# public. After a stop it prints what to run next, built from its own record ($out/.vTAG.ship-progress),
+# and writes it to $out/vTAG.ship-next.txt (a refusal because something is public, or one before
+# that check, keeps an earlier run's file); a release done removes it. It takes nothing from the
+# environment: `__ship-dry` (the cells) takes its stand-ins from SR_SHIP_DRY_BUILD, SR_SHIP_DRY_NPMCHECK,
+# SR_SHIP_DRY_NOTIFY, SR_SHIP_DRY_CAFFEINATE, SR_SHIP_DRY_IDENTITY, SR_SHIP_DRY_DOCKER and
+# SR_PUBLISH_DRY_GH, _GIT, _NPM, _CURL and _VERIFIED, each checked as a stand-in.
+#
 # The checks (check, build): the tag is vX.Y.Z or vX.Y.Z-rc.N; the tree is clean (no change, no
 # untracked file); HEAD is the tag's commit; the tag's Cargo.toml and Cargo.lock say X.Y.Z; the tag's
 # scripts/release.conf SR_BUILD_COUNTER is above the previous tag's (the highest tag below this
 # one, an -rc sorting before its final).
 #
-# `build --sign`, `publish`, `publish-cask` and `publish-npm` refuse under the test environment (any SHEEPR_TEST_* variable) and
-# without a terminal (stdin and /dev/tty); `publish`, `publish-cask` and `publish-npm` also read the typed tag from
-# /dev/tty, their human confirmation before anything goes public. That is a guard against mistakes
+# `build --sign`, `publish`, `publish-cask`, `publish-npm` and `ship` refuse under the test environment (any SHEEPR_TEST_* variable) and
+# without a terminal (stdin and /dev/tty); `publish`, `publish-cask`, `publish-npm` and `ship` also read the typed tag from
+# /dev/tty, their human confirmation before anything goes public (`publish` asks twice, `ship` once). That is a guard against mistakes
 # only: a pty passes it (PHASE3.md §1.2). `build --sign` asks for no tag, and its Developer ID
 # signing runs with no prompt in both modes: the gate against an unattended Apple submission is the
 # notary keychain's own password, asked for by sign.sh's unlock (D2 step 3); `--no-notarize` (a
 # marked control, never submitted) has no human input at all.
 #
-# Exit codes: 0 done; 1 a check failed or a step failed; 2 usage; 3 refused in a test environment;
-# 4 refused without a terminal (or the typed tag did not match); 5 (publish) the release is public
-# but its Homebrew cask is not updated: `release.sh publish-cask --out DIR vTAG` does that step alone.
+# Exit codes: 0 done; 1 a check failed or a step failed (ship: also a release done whose npm logout
+# left a login token); 2 usage; 3 refused in a test environment; 4 refused without a terminal (or
+# the typed tag did not match); 5 (publish) the release is public but its Homebrew cask is not
+# updated: `release.sh publish-cask --out DIR vTAG` does that step alone (ship stops there with 1
+# and names it).
 set -u
 # one collation and one message language for every sort and comparison (the operator's locale sorts
 # "SHA256SUMS" after "install.sh"; measured)

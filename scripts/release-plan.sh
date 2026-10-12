@@ -1,6 +1,7 @@
 #!/bin/sh
 # The publish planner (PHASE3.md §1.2). Pure: it reads files and the local git, and prints the
-# exact GitHub calls `release.sh publish` makes, or refuses.
+# exact GitHub calls `release.sh publish` makes (also inside `release.sh ship`, after its push), or
+# refuses.
 #
 #   release-plan.sh --out DIR [--manifest FILE] --tag vTAG --remote LSREMOTE --releases RELEASES
 #   release-plan.sh --validate PLAN
