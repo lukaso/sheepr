@@ -58,7 +58,10 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   `error_source` `resources` for a full disk). When the journal fails while the
   job runs (a write fails, or its file is removed or replaced), sheepr ends the job: exit 125 and `trigger` `"journal"`, a value only this option
   gives; a failure while the job is already ending (during the kill, with a TERM, a limit or the
-  command's own end, at the `--leave-strays` mark) does not, and is one stderr line. It cannot be used with `--mode root-disclaim`, and on macOS it refuses a caller that
+  command's own end, at the `--leave-strays` mark) does not, and is one stderr line. Stated: a
+  journal emptied in place is not caught, and a filesystem that numbers files by name (FUSE
+  without `use_ino`, such as sshfs) can make a journal look replaced: with the option that ends
+  the job, and with or without it the journal is left after the job's end. It cannot be used with `--mode root-disclaim`, and on macOS it refuses a caller that
   blocks SIGCONT. On macOS a SIGCONT from outside in the moment before the journal line can run
   the command before sheepr kills it (stated). Without the option nothing changes
   ([#16](https://github.com/lukaso/sheepr/issues/16)).
@@ -71,6 +74,15 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   ([#15](https://github.com/lukaso/sheepr/issues/15)).
 - `sweep`, `run`, `strays`, `doctor`, `kill`: a FIFO (or another file that is not a regular one)
   named like a journal no longer makes them wait for ever; `sweep` says "not a journal; remove it".
+- `sweep`, also without `--strict` (its exit codes do not change): each line about a journal it
+  could not sweep now ends with what to do (remove it, check its mode, try again, check how
+  another user's file got there, wait for the process that holds the job); a symbolic link or a
+  socket named like a journal is "not a journal"; another owner's journal is no longer said by a
+  default sweep, also when its header names another boot (that owner's `sweep --owner` says it);
+  without a boot id, a line says so when a journal may be missed.
+- The sweep before each `run`: it no longer opens or locks another owner's journals (a
+  `sweep --owner` running meanwhile finds its own stale jobs), and when a journal that may be a
+  running job's cannot be read at all, it signals nothing that pass and says why in `notes`.
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.

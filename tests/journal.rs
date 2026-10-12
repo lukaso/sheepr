@@ -790,8 +790,9 @@ fn require_journal_ends_the_job_when_its_journal_dies() {
 }
 
 /// Plan §3: --require-journal with --mode root-disclaim (which keeps no journal) is refused
-/// before anything runs: 125, source "usage", the command never ran. On macOS the refusal names
-/// the combination; Linux has no root-disclaim mode, so there it is the unknown mode, and never
+/// before the command runs: 125, source "usage", the command never ran. On macOS the refusal names
+/// the combination, at parse time (before anything runs); Linux has no root-disclaim mode, so
+/// there it is the unknown mode, refused after the auto-sweep as without the option, and never
 /// "cannot be used with" (review of slice 3, P4).
 #[test]
 fn require_journal_with_root_disclaim_is_a_usage_error() {

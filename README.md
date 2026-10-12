@@ -224,7 +224,11 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   the job: exit 125, `trigger` `journal`. It does not end the job
   when the job is already ending: a journal that fails during the kill, in the same moment as a
   TERM, a limit or the command's own end (those end the job as usual), or when sheepr marks the
-  journal for `--leave-strays`; then one stderr line names the failure. Without the option, a
+  journal for `--leave-strays`; then one stderr line names the failure. Not caught: a journal
+  emptied in place while the job runs (it is still the same file), and on a filesystem that
+  numbers its files by name (FUSE without `use_ino`, such as sshfs) a journal can look replaced
+  when it is not: with the option the job then ends, and with or without it the journal is left
+  after the job's end. Without the option, a
   journal that cannot be kept only costs the cleanup after a killed sheepr, and the job runs.
   Not with `--mode root-disclaim`; on macOS, not when the caller blocks SIGCONT. A limit on
   macOS: sheepr starts the command paused and resumes it only after its journal line, but a
@@ -244,7 +248,8 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   Something it could not sweep is one stderr line that names the file and what clears it, and
   does not change the exit code, unless you pass `--strict`: then `sweep` exits 3 when one of
   these is left (125 still wins over 3):
-  - a file that holds no job, or that is not a journal at all (a folder, a FIFO, a link): remove it;
+  - a file that holds no job, or that is not a journal at all (a folder, a FIFO, a socket, a
+    symbolic link): remove it;
   - a journal it may not open: check its mode;
   - a journal it could not open, lock or read for another reason (for example too many open
     files, or a lock a network disk refuses): try again;
@@ -254,7 +259,8 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   - no boot id, while a journal may be there: try again.
 
   Never counted, and never a reason for 3: a running job (its journal is locked), a job that
-  ended while `sweep` looked, a job kept with `--leave-strays`, another owner's job, and a
+  ended while `sweep` looked, a job kept with `--leave-strays`, another owner's job (whatever is
+  wrong with it, a default sweep says nothing of it; that owner's `sweep --owner` does), and a
   journal of another boot or pid namespace (that one is still said). A journal whose lock fails
   for another reason is never swept: it may be a running job's, and the sweep before each `run`
   and `kill` take it for one, as before.

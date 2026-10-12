@@ -20,8 +20,10 @@
 //! Reading a journal is a phase-2 source: the sweep takes the wall's token first (PHASE2.md §0.1),
 //! and does nothing under the phase-1 opt-out.
 //!
-//! Exit codes: 0 done, also when there is nothing to sweep: no state directory, no boot id, the
-//! phase-1 opt-out, or a journal folder "not found" (any other error on the way to it refuses);
+//! Exit codes: 0 done, also when there is nothing to sweep: no state directory, no boot id that is
+//! not there (ENOENT) while no folder of `jobs/` holds a journal (else one line, and 3 under
+//! `--strict`), the phase-1 opt-out, or a journal folder "not found" (any other error on the way
+//! to it refuses);
 //! 1 refused: the state directory or its journal folder is not safe, cannot be reached or cannot
 //! be listed, sheepr cannot follow its own chain of parent processes, or (Linux, checked first)
 //! no /proc of its own pid namespace is mounted; 2 usage error; 125 a job's kill deadline passed
