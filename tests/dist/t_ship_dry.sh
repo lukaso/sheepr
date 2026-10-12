@@ -299,7 +299,7 @@ world_reset() {
   git --git-dir="$FX/origin.git" for-each-ref --format='%(objectname) %(refname)' > "$FX/origin.after"
   cp "$FX/tap/sheepr.rb" "$FX/tap.after" 2>/dev/null || : > "$FX/tap.after"
   git --git-dir="$FX/origin.git" update-ref refs/heads/main "$BASE" && git --git-dir="$FX/origin.git" update-ref -d refs/tags/v0.1.0 2>/dev/null
-  rm -rf "$FX"/pub.* "$FX/up" "$FX"/processing.* "$FX/pushtried"; tapset 0.0.9
+  rm -rf "$FX"/pub.* "$FX/up" "$FX"/processing.* "$FX/pushtried"; rm -f "$FX/origin.git/hooks/pre-receive"; tapset 0.0.9
   cp "$FX/npmrc" "$FX/npmrc.after" 2>/dev/null || : > "$FX/npmrc.after"
   [ ! -f "$FX/npmrc" ] || { grep -v '_authToken=npm_dry$' "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"; }
 }
@@ -573,7 +573,7 @@ cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYST
   /usr/bin/git --git-dir="$FX/origin.git" commit-tree -p "$BASE" -m race "$BASE^{tree}" > "$FX/raced" && /usr/bin/git --git-dir="$FX/origin.git" update-ref refs/heads/main "\$(cat "$FX/raced")"
 EOF
 rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done"
-[ $r = 1 ] && grep -q '^push refused$' "$OUTR/.v0.1.0.ship-progress" && ! grep -q 'refs/tags/v0.1.0' "$FX/origin.after" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
+[ $r = 1 ] && grep -q '^push refused: main moved$' "$OUTR/.v0.1.0.ship-progress" && ! grep -q 'refs/tags/v0.1.0' "$FX/origin.after" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
   && pass "main moved at the real push: the atomic push refused, nothing moved (ls-remote), 'push refused' recorded, no upload" || fail "push race: rc=$r $(tr '\n' ' ' < "$OUTR/.v0.1.0.ship-progress" 2>/dev/null) $(lastline)"
 rm -rf "${OUTR:?}"
 # during the build: a release of the version appears on GitHub (C5's A4), the tag reaches origin (C5's
@@ -592,7 +592,7 @@ rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/onbuild"
 # "push refused"
 for lk in tag main; do   # (not k: ship() uses it)
   echo $lk > "$FX/pushlie"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pushlie"
-  [ $r = 1 ] && ! grep -q '^push refused$' "$OUTR/.v0.1.0.ship-progress" && grep -q 'shows a part of it' "$FX/o" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
+  [ $r = 1 ] && ! grep -q '^push refused' "$OUTR/.v0.1.0.ship-progress" && grep -q 'shows a part of it' "$FX/o" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
     && pass "a failed push that landed its $lk: not 'push refused' (it shows a part), no upload" || fail "push lie $lk: rc=$r $(tr '\n' ' ' < "$OUTR/.v0.1.0.ship-progress") $(lastline)"
 done
 # after the push, github.com/lukaso/sheepr must show the tag at the recorded object and main at or
@@ -642,7 +642,27 @@ cat > "$FX/onpush" <<EOF
 /usr/bin/git --git-dir="$FX/origin.git" commit-tree -p "$BASE" -m race "$BASE^{tree}" > "$FX/raced" && /usr/bin/git --git-dir="$FX/origin.git" update-ref refs/heads/main "\$(cat "$FX/raced")"
 EOF
 : > "$FX/lsfailafter"; rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done" "$FX/lsfailafter"
-[ $r = 1 ] && ! grep -q '^push refused$' "$OUTR/.v0.1.0.ship-progress" && grep -q 'cannot be read to tell whether it landed' "$FX/o" && pass "a refused push, then ls-remote failing: not 'push refused' (it cannot tell)" || fail "push refused unread: rc=$r $(tr '\n' ' ' < "$OUTR/.v0.1.0.ship-progress") $(lastline)"
+[ $r = 1 ] && ! grep -q '^push refused' "$OUTR/.v0.1.0.ship-progress" && grep -q 'cannot be read to tell whether it landed' "$FX/o" && pass "a refused push, then ls-remote failing: not 'push refused' (it cannot tell)" || fail "push refused unread: rc=$r $(tr '\n' ' ' < "$OUTR/.v0.1.0.ship-progress") $(lastline)"
+rm -rf "${OUTR:?}"
+
+# the push refused, nothing landed: why, from origin's main after it. Unmoved (the remote's own
+# rules: a pre-receive hook): fix the cause, run ship again; moved on past the commit: run ship again
+# (the race above, main moved elsewhere: move the build aside, tag again)
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+EOF
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done"
+[ $r = 1 ] && [ "$(lastprog)" = "push refused: main unmoved" ] && grep -qx 'When the cause above is fixed, run ship again.' "$OUTR/v0.1.0.ship-next.txt" \
+  && ! grep -q -e aside -e 'Tag again' "$OUTR/v0.1.0.ship-next.txt" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
+  && pass "a push refused by the remote's rules, main unmoved: fix the cause, run ship again (no move aside, no new tag)" || fail "pre-receive: rc=$r '$(lastprog)' $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
+cat > "$FX/onpush" <<EOF
+cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \\
+  /usr/bin/git push -q --no-follow-tags "file://$FX/origin.git" "$C:refs/heads/tmp" && /usr/bin/git --git-dir="$FX/origin.git" commit-tree -p "$C" -m on "$C^{tree}" > "$FX/past" \\
+  && /usr/bin/git --git-dir="$FX/origin.git" update-ref refs/heads/main "\$(cat "$FX/past")" && /usr/bin/git --git-dir="$FX/origin.git" update-ref -d refs/heads/tmp
+EOF
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX/onpush.done"
+[ $r = 1 ] && [ "$(lastprog)" = "push refused: main holds it" ] && grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && ! grep -q -e aside -e 'Tag again' "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "a push refused because main moved on past the commit: run ship again" || fail "main past: rc=$r '$(lastprog)' $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 rm -rf "${OUTR:?}"
 
 # --- the exit handler: the stop text (to its file, then stdout), the logout and the token count, one

@@ -1040,7 +1040,16 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
       || die "the push failed, and the refs of $UPSTREAM cannot be read to tell whether it landed ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
     if ! awk -v t="refs/tags/$tag" '$2 == t {f = 1} END {exit !f}' "$st/ls.push" \
        && { [ $pushmain = no ] || ! awk -v c="$commit" '$2 == "refs/heads/main" && $1 == c {f = 1} END {exit !f}' "$st/ls.push"; }; then
-      progress "push refused"
+      # why, from main as the remote shows it now (C5 read it as $amain): unmoved (the remote's own
+      # rules refused it), moved on past the commit, or moved elsewhere
+      um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
+      if [ -n "$um" ] && [ "$um" = "$amain" ]; then why="main unmoved"
+      else
+        tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main 2>/dev/null \
+          || die "the push was refused and origin's main moved, but it cannot be fetched to tell where ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
+        if [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null; then why="main holds it"; else why="main moved"; fi
+      fi
+      progress "push refused: $why"
       die "the push was refused, and nothing of it landed ($(head -c 300 "$st/push.err" | tr '\n' ' ')); nothing is public"
     fi
     die "the push failed, but $UPSTREAM shows a part of it ($(tr '\t\n' ' ;' < "$st/ls.push"))"
@@ -1307,7 +1316,15 @@ ship_stoptext() {
           esac ;;
       esac
       return 0 ;;
-    'push refused')
+    'push refused: main unmoved')
+      echo "Nothing is public: the push was refused, and nothing of it landed; origin's main did not move."
+      echo "When the cause above is fixed, run ship again."
+      return 0 ;;
+    'push refused: main holds it')
+      echo "Nothing is public: the push was refused, and nothing of it landed; origin's main moved on, and holds $tag's commit."
+      echo "Run ship again."
+      return 0 ;;
+    'push refused'*)
       echo "Nothing is public: the push was refused, and nothing of it landed."
       echo "Move $out/$tag aside (it holds a build of the old commit). Tag again on top of origin's main, then run ship."
       return 0 ;;
