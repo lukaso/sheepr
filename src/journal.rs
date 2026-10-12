@@ -118,6 +118,12 @@ fn joined(args: &[OsString]) -> Vec<u8> {
     v
 }
 
+/// Where the boot id is read from, as a line names it.
+#[cfg(target_os = "linux")]
+pub const BOOT_ID_SOURCE: &str = "/proc/sys/kernel/random/boot_id";
+#[cfg(target_os = "macos")]
+pub const BOOT_ID_SOURCE: &str = "the sysctl kern.bootsessionuuid";
+
 #[cfg(target_os = "linux")]
 fn read_boot_id() -> Result<String, i32> {
     let s = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;

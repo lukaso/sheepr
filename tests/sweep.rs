@@ -2022,9 +2022,33 @@ fn strict_without_a_boot_id_counts_only_when_a_journal_may_be_missed() {
     assert!(oj.exists(), "the old boot's folder is left");
     let (code, err) = sweep_said_with(&old, &[], &seam("ENOENT"));
     assert_eq!((code, err.lines().filter(|l| l.contains(line)).count()), (Some(0), 1), "without --strict: {err}");
-    let (code, err) = strict(&fresh, &seam("EACCES"));
-    assert_eq!(code, Some(3), "EACCES: {err}");
-    assert!(err.contains("cannot read the boot id (EACCES); nothing was swept; try again"), "EACCES: {err}");
+    // the action follows the errno (review of slice 4, P4): a permission error is not "try again"
+    for (e, action) in [("EACCES", "check the permissions of"), ("EPERM", "check the permissions of"), ("EIO", "try again")] {
+        let (code, err) = strict(&fresh, &seam(e));
+        assert_eq!(code, Some(3), "{e}: {err}");
+        let l: Vec<&str> = err.lines().filter(|l| l.contains(&format!("cannot read the boot id ({e}); nothing was swept; {action}"))).collect();
+        assert_eq!(l.len(), 1, "{e}: {err}");
+        assert_eq!(l[0].contains("try again"), action == "try again", "{e}: {err}");
+    }
+    // a folder of jobs/ it cannot list is the cause: the line names it, and says to check its
+    // mode; its mode put right, the sweep (still without a boot id) finds no journal: 0
+    if unsafe { libc::geteuid() } != 0 {
+        let locked = state(&d.join("locked"));
+        let sub = locked.join("jobs").join(zero);
+        std::fs::create_dir_all(&sub).unwrap();
+        mode(&locked.join("jobs"), 0o700);
+        let _restore = Modes(vec![sub.clone()]);
+        mode(&sub, 0o000);
+        let (code, err) = strict(&locked, &seam("ENOENT"));
+        mode(&sub, 0o700);
+        let (code2, err2) = strict(&locked, &seam("ENOENT"));
+        assert_eq!(code, Some(3), "an unlistable folder: {err}");
+        let l: Vec<&str> = err.lines().filter(|l| l.contains("cannot read the boot id (ENOENT)")).collect();
+        assert!(l.len() == 1 && l[0].contains(sub.to_str().unwrap()) && l[0].contains("(EACCES)") && l[0].ends_with("check its mode."), "an unlistable folder: {err}");
+        assert_eq!((code2, err2.as_str()), (Some(0), ""), "its mode put right");
+    } else {
+        eprintln!("skipped the unlistable folder: root lists a folder of any mode");
+    }
     for (n, s) in [("old", &old), ("fresh", &fresh)] {
         let (code, err) = strict(s, &[]);
         assert_eq!((code, err.as_str()), (Some(0), ""), "{n}: tried again");

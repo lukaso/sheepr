@@ -844,13 +844,25 @@ pub(crate) const USAGE: &str = "sheepr sweep [--owner NAME] [--strict]";
 /// `sweep` without a boot id (`errno`): it cannot tell which folder is this boot's, so it sweeps
 /// nothing, and leaves the old boot folders as they are. That is nothing to sweep when the boot id
 /// is not there (ENOENT) and no folder of `jobs/` holds a journal; otherwise a journal may be
-/// missed: one line, counted by `--strict` (issue #15).
+/// missed: one line, counted by `--strict` (issue #15). The action follows the cause (review of
+/// slice 4, P4): a permission error on the boot id is not "try again", and a folder it cannot list
+/// is named, with its own errno's action.
 fn no_boot_id(state: &Path, errno: i32, strict: bool) -> i32 {
-    if errno == libc::ENOENT && !any_journal(&state.join("jobs")) {
-        return 0;
-    }
-    let name = crate::steps::errno_name(errno).map_or_else(|| format!("errno {errno}"), String::from);
-    say!("sheepr: cannot read the boot id ({name}); nothing was swept; try again.");
+    let name = |e: i32| crate::steps::errno_name(e).map_or_else(|| format!("errno {e}"), String::from);
+    let denied = |e: i32| matches!(e, libc::EACCES | libc::EPERM);
+    let line = match (errno, jobs_hold(&state.join("jobs"))) {
+        (libc::ENOENT, Held::Nothing) => return 0,
+        (libc::ENOENT, Held::Unlisted(p, e)) => format!(
+            "cannot read the boot id ({}), and cannot list {} ({}) to see whether it holds a journal; nothing was swept; {}",
+            name(errno),
+            crate::kill::clean(&p.display().to_string()),
+            name(e),
+            if denied(e) { "check its mode" } else { "try again" }
+        ),
+        (e, _) if denied(e) => format!("cannot read the boot id ({}); nothing was swept; check the permissions of {}", name(e), crate::journal::BOOT_ID_SOURCE),
+        (e, _) => format!("cannot read the boot id ({}); nothing was swept; try again", name(e)),
+    };
+    say!("sheepr: {line}.");
     if strict {
         3
     } else {
@@ -858,25 +870,45 @@ fn no_boot_id(state: &Path, errno: i32, strict: bool) -> i32 {
     }
 }
 
-/// Whether a folder of `jobs` (not through a symlink) holds a journal, or cannot be read to rule
-/// it out; a `jobs` that is not there holds none.
-fn any_journal(jobs: &Path) -> bool {
+/// What the folders of `jobs` hold, for a sweep without a boot id.
+enum Held {
+    Nothing,
+    /// a journal
+    Journal,
+    /// a folder it cannot list (that one, and its errno): a journal cannot be ruled out
+    Unlisted(PathBuf, i32),
+}
+
+/// Whether a folder of `jobs` (not through a symlink) holds a journal; a `jobs` that is not there
+/// holds none.
+fn jobs_hold(jobs: &Path) -> Held {
+    let errno = |e: std::io::Error| e.raw_os_error().unwrap_or(libc::EIO);
     let rd = match std::fs::read_dir(jobs) {
         Ok(rd) => rd,
-        Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Held::Nothing,
+        Err(e) => return Held::Unlisted(jobs.to_path_buf(), errno(e)),
     };
     for e in rd {
-        let Ok(e) = e else { return true };
-        let p = e.path();
+        let p = match e {
+            Ok(e) => e.path(),
+            Err(e) => return Held::Unlisted(jobs.to_path_buf(), errno(e)),
+        };
         if !std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
             continue;
         }
-        let Ok(files) = std::fs::read_dir(&p) else { return true };
-        if files.into_iter().any(|f| f.map_or(true, |f| f.path().extension().is_some_and(|x| x == "journal"))) {
-            return true;
+        let files = match std::fs::read_dir(&p) {
+            Ok(f) => f,
+            Err(e) => return Held::Unlisted(p, errno(e)),
+        };
+        for f in files {
+            match f {
+                Ok(f) if f.path().extension().is_some_and(|x| x == "journal") => return Held::Journal,
+                Ok(_) => {}
+                Err(e) => return Held::Unlisted(p, errno(e)),
+            }
         }
     }
-    false
+    Held::Nothing
 }
 
 pub fn main(args: &[OsString]) -> i32 {
