@@ -291,7 +291,11 @@ $a" ;; esac; done
   dryhomes "$FX/o"
   [ -n "${KEEP:-}" ] || world_reset; return $r_
 }
-# the dry HOMEs a run named (its stdout: a PIPEQ run's went to the pipe), for the last row
+# this cell's own leaked phase dirs: publish's and publish-npm's private copies name the fixture
+fxleaks() { for d in /private/tmp/sr-npmpub.* /private/tmp/sr-publish.*; do [ -d "$d" ] && grep -rqs -F -- "$FX" "$d" && echo "$d"; done; }
+# the dry HOMEs the last run named are gone, and no phase dir of this cell is left
+leakfree() { [ -z "$(fxleaks)" ] && [ -z "$(sed -n 's/.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$FX/o" | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ]; }
+# the dry HOMEs a run named (a phase's go to stderr, so a PIPEQ run's are read too), for the last row
 dryhomes() { sed -n 's/.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$1" >> "$FX/dryhomes"; }
 # what a run changed, kept for the rows (origin's refs, the tap's cask), then put back: origin's main
 # at BASE and no v0.1.0 tag, npm with nothing published, the tap at 0.0.9, no uploads
@@ -699,8 +703,8 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 # stdout closed during the npm uploads (its reader quits), and the logout leaves the token: the
 # handler finishes; the next file is the stop text and nothing else
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; PIPEQ='uploaded (npm scans it'; ship; r=$?; PIPEQ=; rm -f "$FX/logoutfail"
-[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve logout-failed-npm-platform " ] && [ "$(head -1 "$NF")" = "release: ship v0.1.0 stopped at npm-platform: the npm upload of a platform package stopped (above)" ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && gone \
-  && pass "stdout closed during the uploads: the handler finishes, a clean next file, one notification, exit 1" || fail "closed stdout: rc=$r '$(nots)' '$(head -1 "$NF" 2>/dev/null)'"
+[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve logout-failed-npm-platform " ] && [ "$(head -1 "$NF")" = "release: ship v0.1.0 stopped at npm-platform: the npm upload of a platform package stopped (above)" ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && gone && leakfree \
+  && pass "stdout closed during the uploads: the handler finishes, a clean next file, one notification, exit 1, no temp dir left" || fail "closed stdout: rc=$r '$(nots)' '$(head -1 "$NF" 2>/dev/null)'"
 # SIGINT: ship in a group of its own, INT at its default; the build stand-in sends INT to the group,
 # handles it and exits 0: ship stops (no later phase), its handler runs
 rm -rf "${OUTR:?}"; : > "$FX/buildint"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/buildint"
@@ -772,7 +776,7 @@ done
 # stdout closed during the uploads, and a logout that removes the npmrc (the count reads no file):
 # the count is 0 (the handler drains the bytes the closed stdout left before it counts)
 : > "$FX/logoutrm"; rm -rf "${OUTR:?}"; PIPEQ='uploaded (npm scans it'; ship; r=$?; PIPEQ=; rm -f "$FX/logoutrm"
-[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve failed-npm-platform " ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && pass "stdout closed, the npmrc gone after the logout: the count 0, failed-npm-platform" || fail "closed stdout, no npmrc: rc=$r '$(nots)'"
+[ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve failed-npm-platform " ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && leakfree && pass "stdout closed, the npmrc gone after the logout: the count 0, failed-npm-platform, no temp dir left" || fail "closed stdout, no npmrc: rc=$r '$(nots)'"
 # a refusal because something is public after A4 passed (a draft made during the build: C5's A4)
 # keeps an earlier run's next file too
 rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"
@@ -961,5 +965,5 @@ grep -qx -F '  else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_H
 # tag off the grammar are refused before ship's own exit handler is set)
 n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .)
 left_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)
-[ -z "$left_dh" ] && [ "$n_dh" -ge 100 ] && pass "none of the $n_dh dry HOMEs this cell's runs named is left" || fail "dry HOMEs left ($(printf '%s\n' "$left_dh" | grep -c .) of $n_dh): $(printf '%s\n' "$left_dh" | tr '\n' ' ')"
+[ -z "$left_dh" ] && [ "$n_dh" -ge 100 ] && [ -z "$(fxleaks)" ] && pass "none of the $n_dh dry HOMEs this cell's runs named is left, nor a phase dir naming it" || fail "dry HOMEs left ($(printf '%s\n' "$left_dh" | grep -c .) of $n_dh): $(printf '%s\n' "$left_dh" | tr '\n' ' ') phase dirs: $(fxleaks | tr '\n' ' ')"
 finish

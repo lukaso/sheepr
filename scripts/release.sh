@@ -1090,7 +1090,7 @@ drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase'
   [ "$dryentry" = yes ] || return 0
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
-  echo "release: (a phase) a temp HOME, $DRYHOME"
+  echo "release: (a phase) a temp HOME, $DRYHOME" >&2   # stderr: a closed stdout cannot hide it
 }
 # shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
 # the real one (the build needs the terminal, cargo and Docker as the operator has them)
