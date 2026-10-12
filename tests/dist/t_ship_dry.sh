@@ -238,6 +238,13 @@ if [ "\$1 \$2" = "remote get-url" ]; then
 fi
 up=\$(cat "$FX/updir" 2>/dev/null || echo "file://$FX/origin.git")
 n=\$#; for a; do [ "\$a" = https://github.com/lukaso/sheepr ] && a=\$up; set -- "\$@" "\$a"; done; shift \$n
+# only local bare repos: any other remote is refused before git runs (the network is never reached)
+case \$1 in push|fetch|ls-remote)
+  for a; do case \$a in file://*) ;; *://*|*@*:*) echo "SGIT REFUSED \$a" >> "$FX/calls"; echo "sgit: refused \$a (only file:// remotes)" >&2; exit 1 ;; esac; done
+  for u in \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.url 2>/dev/null) \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.pushurl 2>/dev/null); do
+    case \$u in file://*) ;; *) echo "SGIT REFUSED origin \$u" >> "$FX/calls"; echo "sgit: refused origin \$u" >&2; exit 1 ;; esac
+  done ;;
+esac
 extra="" real=no lie=""
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 [ "\$1" = fetch ] && [ -e "$FX/fetchfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
@@ -289,6 +296,7 @@ $a" ;; esac; done
     r_=$(cat "$FX/pipe.rc")
   fi
   dryhomes "$FX/o"
+  [ ! -s "$FX/pathcalls" ] || fail "a PATH tool was called in a ship run: $(head -2 "$FX/pathcalls" | tr '\n' ' ')"
   [ -n "${KEEP:-}" ] || world_reset; return $r_
 }
 # this cell's own leaked phase dirs: publish's and publish-npm's private copies name the fixture
@@ -428,6 +436,11 @@ gitnet() { grep -n -E '(^|[^A-Za-z_$"])git( -C [^ ]+| -c [^ ]+)* (push|fetch|ls-
 printf '  git -C "$root" fetch origin main\n' > "$FX/planted.sh"; [ -n "$(gitnet "$FX/planted.sh")" ] && pass "control: a planted 'git -C \"\$root\" fetch origin main' is caught" || fail "control: the planted line is not caught"
 printf '  echo "$(git -C "$root" fetch origin main)"\n' > "$FX/planted.sh"; [ -n "$(gitnet "$FX/planted.sh")" ] && pass "control: a planted fetch inside an echo's \$( ) is caught" || fail "control: the planted echo line is not caught"
 printf '  echo "  git ls-remote origin refs/tags/$tag"\n' > "$FX/planted.sh"; [ -z "$(gitnet "$FX/planted.sh")" ] && pass "control: a line that echoes an operator's command is not a call" || fail "control: the operator text is counted as a call"
+
+# the stand-in git reaches local bare repos only: a planted https remote is refused before git runs
+rm -f "$FX/calls"; env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" "$S/sgit" ls-remote https://127.0.0.1:9/x > /dev/null 2>&1; r=$?
+[ $r != 0 ] && grep -q '^SGIT REFUSED https://127.0.0.1:9/x$' "$FX/calls" && pass "the stand-in git refuses a remote that is not file:// (a planted https URL)" || fail "sgit and an https URL: rc=$r $(tail -1 "$FX/calls" 2>/dev/null)"
+env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" "$S/sgit" ls-remote "file://$FX/origin.git" > /dev/null 2>&1 && pass "control: the stand-in git takes a file:// remote" || fail "control: sgit refused file://"
 
 # --- A4 to A8: nothing of the version public; the tap; npm (owners, no session); the build's
 # preconditions, or a finished build's checks; then armed
