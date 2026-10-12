@@ -410,6 +410,8 @@ man_hash() { # dir file -> the file's sha256 in MANIFEST.json (empty if it is no
 private_manifest() { # dir tmp: copy the output dir's MANIFEST.json into tmp (0700) and read it from there on
   cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || die "no MANIFEST.json in $1"
   MAN=$2/MANIFEST.json
+  # under ship: the manifest ship checked after the build (C1), and no other
+  [ -z "$ship_mh" ] || [ "$(shasum -a 256 "$MAN" | cut -d' ' -f1)" = "$ship_mh" ] || { stopclass content; die "the manifest in $1 is not the one ship checked after the build (it changed)"; }
 }
 files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its hash (npm-check's files)
   fs=$(sed -n 's/.*"name": "\([^"]*\)", "sha256": "[0-9a-f]\{64\}".*/\1/p' "${MAN:-$1/MANIFEST.json}")
@@ -958,7 +960,31 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   ship_npm_ready        # A6
   ship_build_ready      # A7
   armed=yes             # A8: from here a stop notifies
-  die "ship's phases after the pre-flight are not built yet; nothing was done"
+  # B. the build, when there is none: the frozen tree's release.sh, a direct child (sign.sh checks
+  # that its own parent is `release.sh build --sign`); it asks for the notary keychain's password
+  if [ ! -e "$out/$tag" ]; then
+    phase=build; stopclass fix
+    shipcall "$SHIP_BUILD" "$root/scripts/release.sh" build --sign --out "$out" "$tag" || die "the build failed (above); nothing is public"
+  fi
+  # C0. the build's checks, on every path; C1. its manifest's hash, which every later phase's
+  # private copy must have (the npm bytes and the GitHub bytes are one build)
+  phase=checks
+  post_build_check "$out/$tag"
+  ship_mh=$(shasum -a 256 "$out/$tag/MANIFEST.json" | cut -d' ' -f1)
+  # C2. npm-check (its own traps: a subshell)
+  phase=npm-check; stopclass content
+  ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"
+  # C3. every check publish makes before a write, but the remote tag's (no remote tag yet): verify
+  # binds the archive it judged, so it runs in the same subshell as publish_check
+  phase=checks
+  ( drysub; $SHIP_VERIFY "$out/$tag" && publish_check "$out/$tag" ) || die "the checks before publishing refused (above)"
+  die "ship's phases after the checks before the push are not built yet; nothing was done"
+}
+drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase's own trap removes it)
+  [ "$dryentry" = yes ] || return 0
+  DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' HUP INT TERM
+  echo "release: (a phase) a temp HOME, $DRYHOME"
 }
 # shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
 # the real one (the build needs the terminal, cargo and Docker as the operator has them)

@@ -58,9 +58,40 @@ standin() { # name body
 standin notify 'exit 0'
 standin caffeinate 'exit 0'
 standin identity 'echo "  1) 1E3722600BE155B5134D6CCBFEF916BBC8372854 \"Developer ID Application: X (P7UM972E39)\""; echo "     1 valid identities found"'
-standin npmcheck 'exit 1'
-standin build 'exit 1'
 standin curl 'exit 1'
+# the build's stand-in: called as `<release.sh> build --sign --out OUT TAG`; makes the finished
+# build in OUT/TAG (as mkbuild does) at the frozen tree's commit ($FX/build.other: another commit),
+# or fails ($FX/buildfail); $FX/onbuild runs first (a script)
+cat > "$S/build" <<EOF
+#!/bin/sh
+[ -d "\$HOME" ] || echo "NOHOME build" >> "$FX/calls"
+echo "build \$*" >> "$FX/calls"
+[ -e "$FX/onbuild" ] && sh "$FX/onbuild"
+[ -e "$FX/buildfail" ] && { echo "build: failed (stand-in)" >&2; exit 1; }
+rs=\$1 o=\$5 tg=\$6; v=\${tg#v}; d=\$o/\$tg
+c=\$(cat "$FX/build.other" 2>/dev/null || git -C "\$(dirname "\$rs")/.." rev-parse HEAD)
+mkdir -p "\$d" || exit 1
+for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh sheepr-\$v.tgz sheepr-darwin-universal-\$v.tgz sheepr-linux-arm64-\$v.tgz sheepr-linux-x64-\$v.tgz; do echo "\$f \$d" > "\$d/\$f"; done
+(cd "\$d" && shasum -a 256 sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh > SHA256SUMS)
+{ printf '{\n  "v": 1,\n  "tag": "%s",\n  "commit": "%s",\n  "mode": "signed",\n  "control": false,\n  "files": [\n' "\$tg" "\$c"
+  sep=""; for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh sheepr-\$v.tgz sheepr-darwin-universal-\$v.tgz sheepr-linux-arm64-\$v.tgz sheepr-linux-x64-\$v.tgz; do
+    printf '%s    {"name": "%s", "sha256": "%s"}' "\$sep" "\$f" "\$(shasum -a 256 "\$d/\$f" | cut -d' ' -f1)"; sep=",
+"; done; printf '\n  ]\n}\n'; } > "\$d/MANIFEST.json"
+sh "\$(dirname "\$rs")/lib/render-cask.sh" "\$v" "\$(shasum -a 256 "\$d/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)" "\$d/sheepr.rb"
+EOF
+chmod +x "$S/build"
+# npm-check's stand-in: writes the stamp for the manifest it is given ($FX/npmcheckfail: refuses;
+# $FX/npmcheck.swap: changes the manifest and stamps the changed one)
+cat > "$S/npmcheck" <<EOF
+#!/bin/sh
+[ -d "\$HOME" ] || echo "NOHOME npmcheck" >> "$FX/calls"
+echo "npmcheck \$*" >> "$FX/calls"
+[ -e "$FX/npmcheckfail" ] && { echo "npm-check: refused (stand-in)" >&2; exit 1; }
+d=\$1; tg=\$(basename "\$d")
+[ -e "$FX/npmcheck.swap" ] && echo ' ' >> "\$d/MANIFEST.json"
+printf '%s %s\n' "\$tg" "\$(shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
+EOF
+chmod +x "$S/npmcheck"
 # gh's stand-in: A4's release list (tag, draft, prerelease: $FX/rels), the repos' write rights, the
 # tap's cask ($FX/tap/sheepr.rb), and publish's own calls (as t_publish_dry's stand-in answers them)
 mkdir -p "$FX/tap"
@@ -192,7 +223,7 @@ ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whos
   rm -f "$FX/calls" "$FX/pathcalls"
   set -- SR_SHIP_DRY_BUILD="$S/build" SR_SHIP_DRY_NPMCHECK="$S/npmcheck" SR_SHIP_DRY_NOTIFY="$S/notify" SR_SHIP_DRY_CAFFEINATE="$S/caffeinate" \
     SR_SHIP_DRY_IDENTITY="$S/identity" SR_SHIP_DRY_DOCKER="$S/docker" SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" \
-    SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" "$@"
+    SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" $( [ "${VERIFIED:-}" = - ] || printf '%s' "SR_PUBLISH_DRY_VERIFIED=${VERIFIED:-$AH}" ) "$@"
   envs=""; for a; do case $a in *=*) k=${a%%=*}; case " ${NO:-} " in *" $k "*) continue ;; esac; envs="$envs
 $a" ;; esac; done
   # the assignments as arguments to env, one per line (a value may hold spaces)
@@ -202,6 +233,8 @@ $a" ;; esac; done
     $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") > "$FX/o" 2>&1
 }
 nopath() { [ ! -s "$FX/pathcalls" ]; }
+# the archive hash verify (dry) judges: the build stand-in's archive for $OUTR/v0.1.0
+AH=$(printf 'sheepr-macos-universal.tar.gz %s\n' "$OUTR/v0.1.0" | shasum -a 256 | cut -d' ' -f1)
 
 # --- the walls: each stand-in is checked as release.sh's standins checks one; a real tool, or none,
 # is refused before any call
@@ -317,7 +350,7 @@ printf '  git -C "$root" fetch origin main\n' > "$FX/planted.sh"; [ -n "$(gitnet
 
 # --- A4 to A8: nothing of the version public; the tap; npm (owners, no session); the build's
 # preconditions, or a finished build's checks; then armed
-reached_end3() { grep -q "ship's phases after the pre-flight are not built yet" "$FX/o"; }
+reached_end3() { grep -q "ship's phases after the pre-flight are not built yet" "$FX/o" || grep -q "ship's phases after the checks before the push are not built yet" "$FX/o"; }
 nobuild() { ! grep -q '^build ' "$FX/calls" 2>/dev/null && ! grep -q '^notify ' "$FX/calls" 2>/dev/null; }
 rm -rf "${OUTR:?}"; ship; r=$?
 reached_end3 && pass "a clean pre-flight: A1 to A8 pass" || fail "the clean pre-flight: $(lastline)"
@@ -373,5 +406,40 @@ rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; mkbuild "$OUTR/v0.1.0-co
 reached_end3 && pass "a control build beside it (\$out/v0.1.0-control): allowed" || fail "control sibling: $(lastline)"
 rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; mkdir -p "$OUTR/v0.1.0/sub"; cp "$OUTR/v0.1.0/MANIFEST.json" "$OUTR/v0.1.0/sub/"; sed -i.b 's/"control": false/"control": true/' "$OUTR/v0.1.0/sub/MANIFEST.json"; rm -f "$OUTR/v0.1.0/sub/MANIFEST.json.b"
 ship; r=$?; pre_row "a control manifest inside the release dir" "control build's manifest lies inside"
+rm -rf "${OUTR:?}"
+
+# --- B and C0 to C3: the build (the frozen tree's release.sh, when there is none), its checks on
+# every path, the manifest's hash, npm-check, and verify with publish_check in one subshell
+reached_c3() { grep -q "ship's phases after the checks before the push are not built yet" "$FX/o"; }
+taps() { grep -c 'api -H Accept: application/vnd.github.raw repos/lukaso/homebrew-tap/contents' "$FX/calls"; }
+rm -rf "${OUTR:?}"; ship; r=$?
+[ "$(grep -c '^build ' "$FX/calls")" = 1 ] && grep -q "^build $WTP/scripts/release.sh build --sign --out $OUTR v0.1.0\$" "$FX/calls" \
+  && pass "no build yet: the build child once, exactly <frozen tree>/scripts/release.sh build --sign --out OUT TAG" || fail "the build call: $(grep '^build' "$FX/calls" | tr '\n' ' ')"
+grep -q "^npmcheck $OUTR/v0.1.0\$" "$FX/calls" && reached_c3 && [ "$(taps)" = 2 ] && pass "npm-check, then verify and publish_check (the tap read again): the checks before the push pass" || fail "C2/C3: taps=$(taps) $(lastline)"
+grep -q '^NOHOME' "$FX/calls" && fail "a stand-in ran without its HOME: $(grep '^NOHOME' "$FX/calls" | sort -u | tr '\n' ' ')" || pass "every stand-in call had its temp HOME"
+rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; rm -f "$OUTR/v0.1.0/NPM-CHECKED"; ship; r=$?
+! grep -q '^build ' "$FX/calls" && reached_c3 && pass "a finished build: not built again; npm-check and the checks run on it" || fail "finished build: $(lastline)"
+c_row() { # label want-text: refused, nothing pushed
+  [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q 'push --porcelain --atomic --no-follow-tags origin' "$FX/calls" 2>/dev/null && pass "$1: stopped ($2), no push" || fail "$1: rc=$r $(lastline)"
+}
+rm -rf "${OUTR:?}"; : > "$FX/buildfail"; ship; r=$?; rm -f "$FX/buildfail"; c_row "the build fails" "the build failed"
+! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check" || fail "  npm-check ran"
+rm -rf "${OUTR:?}"; echo 0000000000000000000000000000000000000000 > "$FX/build.other"; ship; r=$?; rm -f "$FX/build.other"; c_row "the build makes another commit's build" "holds no signed build of v0.1.0"
+! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check (post_build_check first)" || fail "  npm-check ran"
+rm -rf "${OUTR:?}"; : > "$FX/npmcheckfail"; ship; r=$?; rm -f "$FX/npmcheckfail"; c_row "npm-check refuses" "npm-check refused"
+rm -rf "${OUTR:?}"; VERIFIED=-; ship; r=$?; VERIFIED=; c_row "verify judges no archive" "the checks before publishing refused"
+[ "$(taps)" = 1 ] && ! grep -q 'verify has not judged' "$FX/o" && pass "  and publish_check does not run (verify && publish_check)" || fail "  publish_check ran: taps=$(taps) $(grep -c 'verify has not judged' "$FX/o")"
+rm -rf "${OUTR:?}"; VERIFIED=0000000000000000000000000000000000000000000000000000000000000000; ship; r=$?; VERIFIED=; c_row "verify judged another archive" "verify judged"
+rm -rf "${OUTR:?}"; : > "$FX/npmcheck.swap"; ship; r=$?; rm -f "$FX/npmcheck.swap"; c_row "the manifest changed after the build's checks (npm-check stamped the changed one)" "not the one ship checked"
+# the frozen tree: the checkout's helpers replaced during the build write a marker if run; none runs
+cat > "$FX/onbuild" <<EOF
+for h in scripts/lib/cask-version.sh scripts/lib/render-cask.sh scripts/lib/npm-same.py scripts/release-plan.sh; do
+  cp "$REPO/\$h" "$FX/keep.\$(basename "\$h")"; printf '#!/bin/sh\necho CHECKOUT-HELPER >> "%s/marker"\nexit 1\n' "$FX" > "$REPO/\$h"
+done
+EOF
+rm -rf "${OUTR:?}"; rm -f "$FX/marker"; ship; r=$?; rm -f "$FX/onbuild"
+for h in scripts/lib/cask-version.sh scripts/lib/render-cask.sh scripts/lib/npm-same.py scripts/release-plan.sh; do cp "$FX/keep.$(basename "$h")" "$REPO/$h"; done
+[ -z "$(g status --porcelain)" ] || fail "the checkout's helpers were not put back"
+reached_c3 && [ ! -e "$FX/marker" ] && pass "the checkout's helpers replaced during the build: none of them runs (the frozen tree's do)" || fail "frozen tree: marker=$(cat "$FX/marker" 2>/dev/null | head -1) $(lastline)"
 rm -rf "${OUTR:?}"
 finish
