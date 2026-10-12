@@ -73,8 +73,12 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   user's file got there, wait for the process that holds a job to end. A running job, a job that
   ended meanwhile, a kept job, another owner's job and another boot's journal never count
   ([#15](https://github.com/lukaso/sheepr/issues/15)).
-- `sweep`, `run`, `strays`, `doctor`, `kill`: a FIFO (or another file that is not a regular one)
-  named like a journal no longer makes them wait for ever; `sweep` says "not a journal; remove it".
+- `sweep`, `run`, `strays`, `doctor`, `kill` (`kill PID`, `kill j-…`, `kill --dry-run PID`) and
+  `ps j-…`: a FIFO (or another file that is not a regular one) named like a journal no longer
+  makes them wait for ever; `sweep` says "not a journal; remove it".
+- `kill j-…`: its refusals give the new reasons (for example "not a journal; remove it", "could
+  not open it (EACCES); check its mode"), as `sweep` does. Only the `sheepr:` at the start of a
+  message is a stable interface.
 - `sweep`, also without `--strict` (its exit codes do not change): each line about a journal it
   could not sweep now ends with what to do (remove it, check its mode, try again, check how
   another user's file got there, wait for the process that holds the job), except a journal of
@@ -83,7 +87,10 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   default sweep, also when its header names another boot (that owner's `sweep --owner` says it);
   without a boot id, a line says so when a journal may be missed.
 - The sweep before each `run`: it no longer locks another owner's journals (it reads them
-  without the lock, so a `sweep --owner` running meanwhile finds its own stale jobs), it holds one
+  without the lock, so a `sweep --owner` running meanwhile finds its own stale jobs), and it now
+  leaves alone what another owner's journal names, also a dead job's (fail safe: for example in
+  nested runs with two owners whose sheeprs were both killed, each owner's processes are left to
+  that owner's sweep); it holds one
   journal open at a time (many dead journals no longer use up its file descriptors), and when a
   journal that may be a running job's cannot be read at all, it signals nothing that pass, says
   why in `notes`, and says it in one stderr line (not with `--quiet`) that names the file and

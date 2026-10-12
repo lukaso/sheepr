@@ -1372,8 +1372,9 @@ fn pre_root(a: &Args, sig: &crate::Signals) -> Result<Pre, Before> {
             initial,
         );
         unsafe { libc::sigprocmask(libc::SIG_SETMASK, &held, std::ptr::null_mut()) };
-        // no journal is left (plan §3): its members were never journaled, so a kept one would
-        // name nothing for `sweep`
+        // no journal is left (plan §3), also after a kill that missed its deadline (said by
+        // `kill_failed`): the refusal's kill journals no member, though a sweep could still reach
+        // this tree from the header's supervisor (the `puniq` closure); stated
         journal.into_inner().finish(true);
         if let Err(e) = result {
             let _ = crate::kill_failed(e);

@@ -276,7 +276,8 @@ pub fn disable() {
 }
 
 /// The kill report (PLAN.md §10.4) for a job whose root ended as `root_status` (None: ended
-/// by a TERM from outside or a cap) and whose kill ended `clean` (no deadline, no internal error).
+/// by a TERM from outside, a cap or the timeout, or under --require-journal a dead journal) and
+/// whose kill ended `clean` (no deadline, no internal error).
 /// Nothing is printed when nothing was killed. `--quiet` keeps only the degraded line.
 pub fn report(root_status: Option<crate::Reaped>, clean: bool) {
     // debug seam: the phase-1 hint cells count every stderr line, and the report is not theirs

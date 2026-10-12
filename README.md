@@ -215,7 +215,8 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   `error_source` says whose failure it is: `command` (the command could not be run: not found,
   not executable), `resources` (the machine was out of processes, memory, file descriptors or
   disk space: trying again later, or freeing some, may help), `usage` (a usage error, or an
-  option refused here), or `sheepr` (sheepr itself failed). When two things fail in one run,
+  option refused here), or `sheepr` (sheepr itself failed, or could not do its job in this
+  environment: the caller's signal mask, the state directory). When two things fail in one run,
   `error` is the first, and the others are in `notes` as `also: …`; an internal error is never
   only a note. A run that ends before its command runs always says why: an `error`, or `trigger`
   `term` when a TERM ended it.

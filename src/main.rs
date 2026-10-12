@@ -1765,7 +1765,8 @@ pub fn self_stop(sig: c_int) {
 /// a kill that did not end clean means 125; a root that died of INT or HUP, when sheepr also
 /// got that signal, means death by that signal (so a shell loop stops on ctrl-C); otherwise the
 /// root's exit code. `status` is the root's end as the event loop's wait saw it, None when a
-/// TERM or a cap ended the job. A lost wait (`Reaped::Lost`) exits 125 with `error` naming it.
+/// TERM, a cap or the timeout ended the job, or under --require-journal a dead journal (exit
+/// 125, `trigger` "journal"). A lost wait (`Reaped::Lost`) exits 125 with `error` naming it.
 /// The `root` field, `root_code` and `root_signal` come from the recorder (#17), never from here.
 pub fn finish(status: Option<Reaped>, result: Result<(), KillError>, ints: &mut Interrupts, sig: &Signals) -> i32 {
     ints.drain_pending(sig);

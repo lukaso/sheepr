@@ -709,7 +709,7 @@ fn absent(dir: &Path) -> bool {
 
 /// The journals in `dir`, sorted. A folder that cannot be listed (or a listing that fails part
 /// way) is an error, never an empty list (issue #15). A journal file that cannot be read is not:
-/// `open` makes it `Skip::Unreadable` later, which is said.
+/// `open` classifies it later (`Skip`), and the caller says it.
 fn journals(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let cannot = |e: std::io::Error| format!("cannot list {}: {e}", dir.display());
     let mut v = Vec::new();
