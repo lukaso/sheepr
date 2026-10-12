@@ -881,7 +881,8 @@ grep -q 'public on GitHub and Homebrew, and npm may hold a part of it' "$NF" && 
 stoprow "the main upload refused"
 # N6: a C8 wait that times out (npm still scans a platform package): the review and block text
 printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush"
-[ "$(lastprog)" = "start npm-main" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" && pass "N6: a C8 wait timed out: the review and block text" || fail "N6: '$(lastprog)' $(tr '\n' '|' < "$NF")"
+[ "$(lastprog)" = "done github" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" \
+  && grep -q 'npmjs.com/package/sheepr-linux-x64 shows' "$NF" && ! grep -q 'npmjs.com/package/sheepr shows' "$NF" && pass "N6: a C8 wait timed out: the review and block text; no wait line for the main package (never uploaded)" || fail "N6: '$(lastprog)' $(tr '\n' '|' < "$NF")"
 rm -f "$FX"/processing.*   # npm's scan finished
 stoprow "the C8 wait timed out (then the scan finished)"
 rm -rf "${OUTR:?}"

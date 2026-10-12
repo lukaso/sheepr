@@ -813,7 +813,7 @@ publish_npm_exec() { # dir
     if [ "$npm_part" = platform ]; then [ $asked = yes ] || { notify npm-approve; asked=yes; }
     elif [ $waited = yes ] && [ "$p" = "$mainp" ]; then notify npm-approve-again
     elif [ $waited = yes ]; then notify npm-approve-next; fi
-    [ "$npm_part" != platform ] || progress "start npm-platform $p"
+    case $npm_part in platform) progress "start npm-platform $p" ;; main) progress "start npm-main" ;; esac   # right before the upload
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
@@ -1076,7 +1076,6 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   esac
   # C8. npm, the main package: once npm shows the three, uploaded and waited for
   phase=npm-main
-  progress "start npm-main"
   ( drysub; NETC=$NPMC npm_part=main; publish_npm_exec "$out/$tag" ) || die "the npm upload of the main package stopped (above)"
   progress "done npm-main"
   # C9. done: the handler logs out
