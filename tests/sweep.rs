@@ -2222,3 +2222,50 @@ fn a_later_bad_byte_does_not_hide_another_owners_header() {
     assert!(err2.contains("(ENOLCK); try again"), "control: {err2}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of the slice-4 fixes, P4-4: `kill PID` reads each journal for the pid's journaled
+/// subtree without its lock, and locks only the one that names the target, so a `sweep --owner
+/// liveapp --strict` that runs while the kill holds over its reads (seam) still finds liveapp's
+/// stale journal unlocked and sweeps it (its decoy ends, the journal goes). Before, the kill
+/// locked every journal in turn, and the strict sweep took the stale job for a live one (0, the
+/// decoy alive). The kill still ends its own target.
+#[test]
+fn kill_of_a_pid_never_locks_another_journal() {
+    let d = scratch("killnolock");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let (mut c1, x, _r1) = decoy(&d, "stale");
+    let (mut c2, t, _r2) = decoy(&d, "target");
+    let j = forge(&s, &here, "j-0aa00000", "liveapp", &boot, &pidns, &[x], false);
+    let (ready, release) = (d.join("ready"), d.join("release"));
+    let _go = GoOnDrop(release.clone());
+    let mut k = Command::new(sheepr())
+        .args(["kill", &t.0.to_string()])
+        .env("SHEEPR_TEST_STATE", &s)
+        .env("SHEEPR_TEST_DEADLINE_MS", "2000")
+        .env("SHEEPR_TEST_HOLD_SUBTREE", &release)
+        .env("SHEEPR_TEST_READY_FILE", &ready)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let held = wait_until(15, || ready.exists());
+    let (code, err) = strict_owner(&s, "liveapp");
+    let x_gone = wait_until(5, || !common::alive(x));
+    std::fs::write(&release, b"").unwrap();
+    let kc = k.wait().unwrap().code();
+    let t_gone = wait_until(5, || !common::alive(t));
+    end_decoy(&mut c1);
+    end_decoy(&mut c2);
+    assert!(held, "the kill never held over its journal reads (the row proves nothing)");
+    assert_eq!(code, Some(0), "{err}");
+    assert!(x_gone && !j.exists(), "liveapp's stale job was not swept: the kill held its lock: {err}");
+    assert_eq!(kc, Some(0));
+    assert!(t_gone, "the kill did not end its own target");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `sheepr sweep --strict --owner OWNER` with this state, within 30 s; (exit code, stderr).
+fn strict_owner(s: &Path, owner: &str) -> (Option<i32>, String) {
+    let (code, text, _) = sheepr_within(s, &["sweep", "--strict", "--owner", owner], &[], 30);
+    (code, text)
+}

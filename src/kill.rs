@@ -766,12 +766,20 @@ fn job_target(prefix: &str, dry_run: bool, ps: bool) -> Result<JobTarget, i32> {
 /// If a dead job's journal names the target (pid and identity), add the target's own subtree by
 /// the journal's lineage: lines whose parent (pid and identity) is in the subtree, and on macOS
 /// lines whose `puniq` is the identity of one in it. Returns the journal, open and locked, so no
-/// sweep takes it meanwhile.
+/// sweep takes it meanwhile; every other journal is read without its lock.
 /// Err(pid): the subtree holds `pid`, this process or one of its ancestors: the kill is refused
 /// whole, as the sweep skips such a job whole (never a signal to the caller).
 fn journal_subtree(t: i32, tid: u64, proved: &mut Proved) -> Result<Option<crate::sweep::Journal>, i32> {
     let files = journal_files();
     for f in files {
+        // read without its lock: only the journal that names the target is locked (a `sweep
+        // --owner X` running meanwhile finds X's stale journal unlocked; review of the slice-4
+        // fixes, P4-4)
+        let named = crate::sweep::peek(&f).contains(&(t, tid));
+        crate::seam_hold("SHEEPR_TEST_HOLD_SUBTREE");
+        if !named {
+            continue;
+        }
         let Ok(j) = crate::sweep::open_fenced(&f) else { continue }; // a live job's is locked
         if !j.members.iter().any(|m| m.pid == t && m.id == tid) {
             continue;
