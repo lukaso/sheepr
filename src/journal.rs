@@ -137,12 +137,28 @@ fn read_boot_id() -> Result<String, i32> {
     (!s.is_empty()).then_some(s).ok_or(libc::EINVAL)
 }
 
-/// This boot's id, or the errno that kept it (EINVAL for an empty one). Debug seam
-/// SHEEPR_TEST_BOOT_ID_ERRNO=<errno> (a name or a number): there is none, with that errno.
+/// This boot's id, or the errno that kept it (EINVAL for an empty one), read once per process:
+/// every reader then judges every journal by the same answer (a second read that fails, as EMFILE
+/// can on Linux, never makes this boot's journal another boot's; review of slice 4, P4). Debug
+/// seam SHEEPR_TEST_BOOT_ID_ERRNO=<errno> (a name or a number): there is none, with that errno.
 pub fn boot_id_or() -> Result<String, i32> {
+    static ID: std::sync::OnceLock<Result<String, i32>> = std::sync::OnceLock::new();
+    ID.get_or_init(read_once).clone()
+}
+
+fn read_once() -> Result<String, i32> {
     if cfg!(debug_assertions) {
         if let Some(e) = std::env::var("SHEEPR_TEST_BOOT_ID_ERRNO").ok().and_then(|v| crate::steps::errno_of(&v)) {
             return Err(e);
+        }
+        // debug seam SHEEPR_TEST_BOOT_ID_FAIL_AFTER=<n>[:<errno>]: every read after the n-th fails
+        // (EIO when left out)
+        static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if let Ok(v) = std::env::var("SHEEPR_TEST_BOOT_ID_FAIL_AFTER") {
+            let (n, e) = v.split_once(':').map_or((v.as_str(), None), |(n, e)| (n, Some(e)));
+            if n.parse::<usize>().is_ok_and(|n| READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= n) {
+                return Err(e.and_then(crate::steps::errno_of).unwrap_or(libc::EIO));
+            }
         }
     }
     read_boot_id()

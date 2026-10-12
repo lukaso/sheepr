@@ -2142,3 +2142,24 @@ fn a_stat_error_after_the_lock_is_counted_and_never_gone() {
     assert!(gone && !j.exists(), "tried again: the job is swept");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of slice 4, P4: the boot id is read once per sweep, so every journal is judged by the
+/// same answer: with a seam that fails every read after the first (as EMFILE can, on Linux, while
+/// a sweep holds journals open), this boot's dead job is still swept (exit 0, its decoy ends, no
+/// "another boot" line). Before, each journal's open read it again and took this boot's journal
+/// for another boot's.
+#[test]
+fn the_boot_id_is_read_once_per_sweep() {
+    let d = scratch("bootonce");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let (mut c, p, _r) = decoy(&d, "decoy");
+    let j = forge(&s, &here, "j-b0071d00", "default", &boot, &pidns, &[p], false);
+    let (code, err) = strict(&s, &[("SHEEPR_TEST_BOOT_ID_FAIL_AFTER", "1:EMFILE")]);
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(gone && !j.exists(), "this boot's dead job was not swept: {err}");
+    assert!(!err.contains("another boot"), "{err}");
+    let _ = std::fs::remove_dir_all(&d);
+}
