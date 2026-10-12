@@ -74,6 +74,8 @@ pub struct Journal {
 pub enum Stage {
     Open,
     Lock,
+    /// the check, after the lock, that the name still names the locked file
+    Stat,
     Read,
 }
 
@@ -82,6 +84,7 @@ impl Stage {
         match self {
             Stage::Open => "open",
             Stage::Lock => "lock",
+            Stage::Stat => "stat",
             Stage::Read => "read",
         }
     }
@@ -135,7 +138,7 @@ impl Skip {
     /// other lock error (fail safe, PLAN.md §3.5: the class `sweep --strict` counts a lock error
     /// in is for its exit code and its line only, round 3's N7).
     pub fn live(&self) -> bool {
-        matches!(self, Skip::Live | Skip::Gone | Skip::Counted(Cause::Error(Stage::Lock, _)))
+        matches!(self, Skip::Live | Skip::Gone | Skip::Counted(Cause::Error(Stage::Lock | Stage::Stat, _)))
     }
 
     /// The cause and what clears it, for a skip `sweep --strict` counts; None for one it does not
@@ -167,7 +170,7 @@ impl Skip {
     }
 }
 
-/// Debug seam SHEEPR_TEST_JOURNAL_ERRNO=<open|lock|read>:<errno>:<file name>: that step on that
+/// Debug seam SHEEPR_TEST_JOURNAL_ERRNO=<open|lock|stat|read>:<errno>:<file name>: that step on that
 /// journal fails with that errno (a name or a number), and the call is not made. It is traced
 /// (`seam: <step> <errno> <file name>`) when it fires.
 fn seam_errno(stage: Stage, path: &Path) -> Option<i32> {
@@ -267,10 +270,17 @@ pub fn open(path: &Path) -> Result<Journal, Skip> {
     };
     lock.map_err(|e| Skip::of(Stage::Lock, e))?;
     seam_vanish("lock", path);
-    // the name must still be the file this lock is on (a clean end unlinks before it unlocks)
-    match std::fs::symlink_metadata(path) {
+    // the name must still be the file this lock is on (a clean end unlinks before it unlocks):
+    // gone (ENOENT) or another file there is a job that just ended; any other error of the stat
+    // is counted, and is a live job's for the auto-sweep and `kill` (review of slice 4, P4)
+    let named = match seam_errno(Stage::Stat, path) {
+        Some(e) => Err(e),
+        None => std::fs::symlink_metadata(path).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO)),
+    };
+    match named {
         Ok(m) if m.ino() == meta.ino() && m.dev() == meta.dev() => {}
-        _ => return Err(Skip::Gone),
+        Ok(_) | Err(libc::ENOENT) => return Err(Skip::Gone),
+        Err(e) => return Err(Skip::Counted(Cause::Error(Stage::Stat, e))),
     }
     let mut text = Vec::new();
     match seam_errno(Stage::Read, path) {
@@ -1075,6 +1085,10 @@ mod cause_tests {
             assert_eq!(text(&Skip::of(Stage::Read, e)), format!("could not read it ({}); try again", crate::steps::errno_name(e).unwrap()));
         }
         assert_eq!(text(&Skip::of(Stage::Lock, libc::ENOLCK)), "could not lock it (ENOLCK); try again");
+        // the stat after the lock (review of slice 4, P4): counted, and a live job's for the
+        // auto-sweep and `kill`
+        assert_eq!(text(&Skip::Counted(Cause::Error(Stage::Stat, libc::EIO))), "could not stat it (EIO); try again");
+        assert!(Skip::Counted(Cause::Error(Stage::Stat, libc::EIO)).live());
         for (e, n) in [(libc::EACCES, "EACCES"), (libc::EPERM, "EPERM")] {
             assert_eq!(text(&Skip::of(Stage::Open, e)), format!("could not open it ({n}); check its mode"));
             assert_eq!(text(&Skip::of(Stage::Read, e)), format!("could not read it ({n}); check its mode"));

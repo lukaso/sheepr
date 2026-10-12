@@ -2110,3 +2110,35 @@ fn kill_job_takes_a_lock_error_for_a_live_job() {
     assert!(gone && !j.exists(), "control: the job is swept");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Review of slice 4, P4: after the lock, the name is checked against the locked file: only a name
+/// that is gone (ENOENT) or names another file is a job that just ended. Any other error of that
+/// stat (seam: EIO) is counted by `sweep --strict` ("could not stat it (EIO); try again", the job
+/// and its journal left), and `kill` of the job still takes it for a live job's (busy, exit 1,
+/// nothing signalled). Tried again without the seam, the strict sweep sweeps the job (0).
+#[test]
+fn a_stat_error_after_the_lock_is_counted_and_never_gone() {
+    let d = scratch("staterr");
+    let (here, boot, pidns) = folder(&d);
+    let s = state(&d);
+    let (mut c, p, r) = decoy(&d, "decoy");
+    let j = forge(&s, &here, "j-57a70000", "default", &boot, &pidns, &[p], false);
+    let seam = [("SHEEPR_TEST_JOURNAL_ERRNO", "stat:EIO:j-57a70000.journal")];
+    let (code, err) = strict(&s, &seam);
+    let (kcode, kerr, _) = sheepr_within(&s, &["kill", "j-57a70000"], &seam, 30);
+    let (alive, n) = (common::alive(p), counted(&r));
+    let kept = j.exists();
+    let (code2, err2) = strict(&s, &[]);
+    let gone = wait_until(5, || !common::alive(p));
+    end_decoy(&mut c);
+    assert_eq!(code, Some(3), "{err}");
+    let l = naming(&err, "j-57a70000.journal");
+    assert!(l.len() == 1 && l[0].contains("could not stat it (EIO); try again"), "{err}");
+    assert!(!err.contains("remove"), "{err}");
+    assert_eq!(kcode, Some(1), "kill: {kerr}");
+    assert!(kerr.contains("busy"), "kill: {kerr}");
+    assert!(alive && n == 0 && kept, "the job was touched: alive {alive}, {n} signal(s), journal kept {kept}");
+    assert_eq!(code2, Some(0), "tried again: {err2}");
+    assert!(gone && !j.exists(), "tried again: the job is swept");
+    let _ = std::fs::remove_dir_all(&d);
+}
