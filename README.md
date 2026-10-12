@@ -103,7 +103,9 @@ A `run` with `--no-sweep` skips both, and a `run` stops sweeping jobs after 200 
 after 50 ms more), so when many were left, it can take more than one run. When a journal it
 cannot read may belong to a running job (another user's file, one with no read permission), that
 sweep ends nothing, and the run says so in one stderr line (not with `--quiet`); this repeats on
-every run until the file is removed or fixed, and `sheepr sweep` says what to do.
+every run until the file is removed or fixed, and `sheepr sweep` says what to do. Its other stops
+before any dead job is swept (a state folder it may not use, a folder it cannot list, a chain of
+parent processes it cannot follow) are notes in the `--status-fd` line only.
 
 On macOS a running job costs some CPU: sheepr checks your processes four times a second to find
 the ones that escaped. Measured on a busy Mac (about 1000 of your processes, load average 16): about 1.5% of one CPU
@@ -216,7 +218,8 @@ that is an absolute path, else in `~/.local/state/sheepr`; delete that directory
   not executable), `resources` (the machine was out of processes, memory, file descriptors or
   disk space: trying again later, or freeing some, may help), `usage` (a usage error, or an
   option refused here), or `sheepr` (sheepr itself failed, or could not do its job in this
-  environment: the caller's signal mask, the state directory). When two things fail in one run,
+  environment: for example the caller's signal mask, the state directory, or on Linux a missing
+  /proc). When two things fail in one run,
   `error` is the first, and the others are in `notes` as `also: …`; an internal error is never
   only a note. A run that ends before its command runs always says why: an `error`, or `trigger`
   `term` when a TERM ended it.

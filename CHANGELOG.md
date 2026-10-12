@@ -73,12 +73,14 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   user's file got there, wait for the process that holds a job to end. A running job, a job that
   ended meanwhile, a kept job, another owner's job and another boot's journal never count
   ([#15](https://github.com/lukaso/sheepr/issues/15)).
-- `sweep`, `run`, `strays`, `doctor`, `kill` (`kill PID`, `kill j-…`, `kill --dry-run PID`) and
-  `ps j-…`: a FIFO (or another file that is not a regular one) named like a journal no longer
-  makes them wait for ever; `sweep` says "not a journal; remove it".
-- `kill j-…`: its refusals give the new reasons (for example "not a journal; remove it", "could
-  not open it (EACCES); check its mode"), as `sweep` does. Only the `sheepr:` at the start of a
-  message is a stable interface.
+- Every subcommand that reads journals (`sweep`, `run`, `strays`, `doctor`, and `kill` and `ps`
+  with a pid or a job id, also `--dry-run` and `--json`): a FIFO (or another file that is not a
+  regular one) named like a journal no longer makes them wait for ever; `sweep` says "not a
+  journal; remove it".
+- `kill j-…`: when it read the journal's header but then cannot open, lock or read the journal,
+  its refusal gives the new reason, as `sweep` does (for example "could not read it (EIO); try
+  again"); a journal whose header it cannot read gives the same refusal as before. Only the
+  `sheepr:` at the start of a message is a stable interface.
 - `sweep`, also without `--strict` (its exit codes do not change): each line about a journal it
   could not sweep now ends with what to do (remove it, check its mode, try again, check how
   another user's file got there, wait for the process that holds the job), except a journal of
@@ -96,7 +98,9 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
   why in `notes`, and says it in one stderr line (not with `--quiet`) that names the file and
   `sheepr sweep`. This repeats on every run until the file is removed or fixed (for example a
   root-owned journal left by `sudo sheepr run`); before, such a file was only noted and the dead
-  jobs were swept.
+  jobs were swept. Its other stops before any dead job is swept (a state folder it may not use, a
+  folder it cannot list, a chain of parent processes it cannot follow) are still notes in the
+  status line only, not stderr lines.
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.

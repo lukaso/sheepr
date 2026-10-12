@@ -1117,12 +1117,14 @@ fn require_journal_says_a_journal_removed_as_the_job_ends() {
     for (name, opt) in [("req", true), ("ctl", false)] {
         let s = state(&d.join(name));
         let mk = marker();
-        let (ready, release, err) = (d.join(format!("{name}.ready")), d.join(format!("{name}.release")), d.join(format!("{name}.err")));
+        let (ready, release, err, trapped) = (d.join(format!("{name}.ready")), d.join(format!("{name}.release")), d.join(format!("{name}.err")), d.join(format!("{name}.trapped")));
         let flags: &[&str] = if opt { &["--require-journal"] } else { &[] };
+        // the root marks that it ignores TERM, and the TERM is sent only then (a TERM before its
+        // trap would end it, and the kill would never freeze)
         let mut c = Command::new(sheepr())
             .arg("run")
             .args(flags)
-            .args(["--grace", "0.2", "--", "/bin/sh", "-c", &format!("trap '' TERM; exec /bin/sleep {mk}")])
+            .args(["--grace", "0.2", "--", "/bin/sh", "-c", &format!("trap '' TERM; : > \"{}\"; exec /bin/sleep {mk}", trapped.display())])
             .env("SHEEPR_TEST_STATE", &s)
             .env("SHEEPR_TEST_HOLD_AFTER_FREEZE", &release)
             .env("SHEEPR_TEST_READY_FILE", &ready)
@@ -1147,6 +1149,7 @@ fn require_journal_says_a_journal_removed_as_the_job_ends() {
             }
             std::fs::read_to_string(j).unwrap_or_default().contains("\"root\":true")
         });
+        let ignores = wait_for(&trapped, 10);
         common::send_child(&mut c, libc::SIGTERM);
         let froze = wait_for(&ready, 20);
         if let Some(j) = &j {
@@ -1157,7 +1160,7 @@ fn require_journal_says_a_journal_removed_as_the_job_ends() {
         common::kill_marked(&[&mk]);
         let e = std::fs::read_to_string(&err).unwrap_or_default();
         let said = e.lines().filter(|l| l.contains("was removed")).count();
-        assert!(named && froze, "{name}: the journal named the root {named}, the kill froze {froze} (the row proves nothing)");
+        assert!(named && ignores && froze, "{name}: the journal named the root {named}, the root ignores TERM {ignores}, the kill froze {froze} (the row proves nothing)");
         assert_eq!(said, usize::from(opt), "{name}: stderr:\n{e}");
         assert!(!e.contains("the job runs"), "{name}: stderr:\n{e}");
     }
