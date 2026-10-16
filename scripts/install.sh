@@ -20,8 +20,6 @@
 # one kept aside); 2 usage; 3 a refused SHEEPR_INSTALL_BASE.
 set -u
 SHEEPR_VERSION=
-# the terminating signals its cleanup catches: scripts/lib/sigs.sh's line, written in at render
-SIGS=
 REPO=lukaso/sheepr
 
 say() { echo "sheepr install: $*"; }
@@ -80,6 +78,7 @@ cleanup() {
   rm -rf "$tmp"; [ -n "$stage" ] && rm -rf "$stage"
 }
 trap cleanup EXIT
+# the signals: scripts/lib/sigs.sh's list, which lib/render-install.sh writes in for the variable
 trap 'cleanup; exit 1' $SIGS
 
 say "downloading $art ($SHEEPR_VERSION)"

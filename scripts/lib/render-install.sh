@@ -1,7 +1,9 @@
 #!/bin/sh
-# Render install.sh for a release (PHASE3.md S3): write the version in, and embed the exec door
-# (scripts/lib/exec-guard.sh, verbatim) and the release ID and requirement from release.conf, so the
-# installer's door is the tested door, not a second copy.
+# Render install.sh for a release (PHASE3.md S3): write the version in, write scripts/lib/sigs.sh's
+# list in place of each $SIGS in install.sh's own lines (a trap line must name its signals as words,
+# and zsh, which install.sh may be piped to, does not split a variable into words), and embed the
+# exec door (scripts/lib/exec-guard.sh, verbatim, its own list with it) and the release ID and
+# requirement from release.conf, so the installer's door is the tested door, not a second copy.
 #   render-install.sh SRC VERSION OUT
 set -u
 [ $# -eq 3 ] || { echo "usage: render-install.sh SRC VERSION OUT" >&2; exit 2; }
@@ -9,16 +11,18 @@ src=$1 ver=$2 outf=$3
 lib=$(cd "$(dirname "$0")" && pwd -P) || exit 1
 printf '%s\n' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || { echo "render-install: bad version $ver" >&2; exit 2; }
 grep -q '^SR_DOOR_EOF$' "$lib/exec-guard.sh" && { echo "render-install: the door holds the heredoc end marker" >&2; exit 1; }
-[ "$(grep -c '^: @@SR_DOOR@@$' "$src")" = 1 ] && [ "$(grep -c '^SHEEPR_VERSION=$' "$src")" = 1 ] && [ "$(grep -c '^SIGS=$' "$src")" = 1 ] || { echo "render-install: $src lacks its markers" >&2; exit 1; }
-sigs=$(grep '^SIGS="' "$lib/sigs.sh")
-[ "$(printf '%s\n' "$sigs" | grep -c .)" = 1 ] || { echo "render-install: sigs.sh has not one SIGS line" >&2; exit 1; }
+[ "$(grep -c '^: @@SR_DOOR@@$' "$src")" = 1 ] && [ "$(grep -c '^SHEEPR_VERSION=$' "$src")" = 1 ] && grep -q '[$]SIGS' "$src" || { echo "render-install: $src lacks its markers" >&2; exit 1; }
+# only a bare $SIGS is written in: a quoted one, ${SIGS} or a SIGS= line would be left as it is
+grep -E -q '"[$]SIGS|[$][{]SIGS|(^|[^A-Za-z0-9_])SIGS=' "$src" && { echo "render-install: $src names SIGS in a form it does not write in" >&2; exit 1; }
+sigs=$(sed -n 's/^SIGS="\([A-Z0-9 ]*\)"$/\1/p' "$lib/sigs.sh")
+[ "$(grep -c '^SIGS=' "$lib/sigs.sh")" = 1 ] && [ -n "$sigs" ] || { echo "render-install: sigs.sh has not one SIGS line of signal names" >&2; exit 1; }
 conf=$(grep -E '^SR_RELEASE_(ID|REQUIREMENT)=' "$lib/../release.conf")
 [ "$(printf '%s\n' "$conf" | grep -c .)" = 2 ] || { echo "render-install: release.conf lacks the release ID or requirement" >&2; exit 1; }
 {
   while IFS= read -r line; do
     case $line in
       'SHEEPR_VERSION=') echo "SHEEPR_VERSION=$ver" ;;
-      'SIGS=') printf '%s\n' "$sigs" ;;
+      *'$SIGS'*) printf '%s\n' "$line" | sed "s/[$]SIGS/$sigs/g" ;;
       ': @@SR_DOOR@@')
         echo 'write_door() { # dir: the exec door (scripts/lib/exec-guard.sh) and its release.conf'
         echo '  mkdir -p "$1/lib" || return 1'

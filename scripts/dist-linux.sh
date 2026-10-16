@@ -12,13 +12,20 @@
 #   - a checksum mismatch: refused, nothing installed;
 #   - the README's Docker snippet (its RUN line, run by this /bin/sh with stand-ins for curl and
 #     uname): on aarch64 and x86_64 the right file, its hash checked, executable; a wrong hash and an
-#     arch with no build fail.
+#     arch with no build fail;
+#   - install.sh's signal cleanup (scripts/install-sig-rows.sh) under this image's /bin/sh (busybox
+#     ash in Alpine, dash in slim) and its bash if it has one: an INT, a QUIT and a USR1 during the
+#     download: install.sh waits for curl, exits 1, its temp dir is gone, nothing on stderr.
 set -u
 fails=0
 ok() { echo "ok: $*"; }
 bad() { echo "FAIL: $*"; fails=$((fails + 1)); }
 art=sheepr-linux-$(uname -m)
 [ -f "/srv/$art" ] || { echo "FAIL: no /srv/$art"; exit 1; }
+# install.sh's signal cleanup, first (no curl is added yet; the rows' stand-in comes first anyway)
+sh_list=/bin/sh; [ -x /bin/bash ] && sh_list="$sh_list /bin/bash"
+mkdir -p /tmp/isig && sh /scripts/install-sig-rows.sh /tmp/isig /srv/install.sh $sh_list > /tmp/isig.out 2>&1
+cat /tmp/isig.out; fails=$((fails + $(grep -c -v '^ok: ' /tmp/isig.out)))
 serve() { # dir -> sets PORT, SP; log in dir.log
   rm -f "$1.port"
   /tgt/debug/sr-fixture serve "$1" "$1.port" 2>"$1.log" & SP=$!

@@ -64,8 +64,9 @@ sites() { # file -> "SITES n", then one line per EXIT trap with no $SIGS trap be
       print "SITES " n + 0
     }' "$1"
 }
-listed() { # file -> 0 if it gets the list: it reads sigs.sh, has the render marker, or the verbatim line
-  grep -q -E '^[^#]*\. +".*sigs\.sh"' "$1" || grep -qx 'SIGS=' "$1" || grep -qxF "$line" "$1"
+listed() { # file -> 0 if it gets the list: it reads sigs.sh, is scripts/install.sh (the list is
+  # written into its trap lines at render: t_install.sh), or has the verbatim line
+  grep -q -E '^[^#]*\. +".*sigs\.sh"' "$1" || [ "$1" = "$SR_ROOT/scripts/install.sh" ] || grep -qxF "$line" "$1"
 }
 sweep() { # dir -> violations on stdout, the site count in $FX/nsites
   : > "$FX/nsites.l"
@@ -73,7 +74,7 @@ sweep() { # dir -> violations on stdout, the site count in $FX/nsites
     sites "$f" > "$FX/s.out"
     n=$(sed -n 's/^SITES //p' "$FX/s.out"); echo "$n" >> "$FX/nsites.l"
     grep -v '^SITES ' "$FX/s.out"
-    [ "$n" = 0 ] || listed "$f" || echo "$f: has an EXIT trap but does not get the list (sigs.sh, the render marker, or its verbatim line)"
+    [ "$n" = 0 ] || listed "$f" || echo "$f: has an EXIT trap but does not get the list (sigs.sh, the render, or its verbatim line)"
     grep -n -E "^[^#]*trap +('[^']*'|\"[^\"]*\"|[a-z_]+) +(HUP|INT|TERM|QUIT)( |;|$)" "$f" | grep -v -E "trap +'exit 1(29|30|43)' +(HUP|INT|TERM)" | sed "s|^|$f: a literal signal list: |"
     grep -n '^ *SIGS=' "$f" | grep -v -x -F -e "$(grep -n -x -F -- "$line" "$f" | head -1)" | grep -v ':SIGS=$' | sed "s|^|$f: another SIGS: |"
   done
