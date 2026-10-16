@@ -2,11 +2,15 @@
 # Every cleanup trap of the release catches one list of terminating signals (scripts/lib/sigs.sh):
 #   - the list: every signal `kill -l` names whose default ends /bin/sh without its EXIT trap
 #     (measured on each run: QUIT and PROF) is on it;
-#   - the sweep: each EXIT cleanup trap in scripts/ has a trap on $SIGS beside it (within five
-#     lines), never a literal list; each file with one reads the list from sigs.sh, or has it
-#     written in when it is rendered (install.sh), or carries sigs.sh's SIGS line verbatim
-#     (exec-guard.sh, copied as one file; smoke.sh and s7-clean-user.sh, which the S7 test user
-#     runs alone); the sites are counted, and planted files that break each rule are caught;
+#   - the sweep (tests/lib/sigsweep.py, which reads each shell file as the shell does: a comment, a
+#     quoted string or a heredoc holds no trap): each EXIT cleanup trap in scripts/ starts by
+#     holding the list off (`trap '' $SIGS`, itself or first in the function it calls), and has a
+#     trap beside it (within five lines) with an action, on $SIGS unquoted; no literal list; no
+#     other SIGS= line; each file with one reads the list from sigs.sh, or is scripts/install.sh
+#     (the list is written into its trap lines at render: t_install), or carries sigs.sh's SIGS
+#     line verbatim (exec-guard.sh, copied as one file; smoke.sh and s7-clean-user.sh, which the
+#     S7 test user runs alone); the sites are counted; a planted file per rule breaks that rule
+#     alone and must get exactly its tag, and four good files must pass;
 #   - for each script here that a row can stop where its cleanup must run (npm-pack.sh at npm pack,
 #     smoke.sh at `SHEEPR --version`, s7-clean-user.sh's tools at its download and its channel at
 #     its manifest read): a QUIT (whose default runs no EXIT trap) and a USR1 (whose default runs
@@ -47,50 +51,45 @@ case " $silent " in *" QUIT "*) qf=yes ;; *) qf=no ;; esac
 [ $qf = yes ] && [ "$trm" = "143:exit-trap+" ] && pass "control: the scan finds QUIT, and TERM runs the EXIT trap" || fail "control: QUIT found: $qf, TERM: $trm"
 [ -n "$silent" ] && [ -z "$miss" ] && pass "every signal whose default skips the EXIT trap ($silent ) is on the list" || fail "skip the EXIT trap but not on the list:$miss (found:$silent )"
 
-# --- the sweep
-sites() { # file -> "SITES n", then one line per EXIT trap with no $SIGS trap beside it
-  awk -v f="$1" -v q="'" '
-    { L[NR] = $0 }
-    END {
-      for (i = 1; i <= NR; i++) {
-        s = L[i]; if (s ~ /^[ \t]*#/) continue
-        if (s ~ /trap - EXIT/) continue
-        if (s ~ /trap .*EXIT/ || index(s, q " EXIT") > 0) {
-          n++; ok = 0
-          for (j = i; j <= i + 5 && j <= NR; j++) if (index(L[j], "$SIGS") > 0) ok = 1
-          if (!ok) print f ":" i ": an EXIT trap with no trap on $SIGS beside it"
-        }
-      }
-      print "SITES " n + 0
-    }' "$1"
+# --- the sweep (tests/lib/sigsweep.py reads each shell file as the shell does; its rules: near,
+# ignore, listed, other, literal)
+sweep() { # dir [rendered-file] -> violations, then "SITES n"
+  python3 -I "$SR_ROOT/tests/lib/sigsweep.py" "$1" "$line" "${2:-$SR_ROOT/scripts/install.sh}"
 }
-listed() { # file -> 0 if it gets the list: it reads sigs.sh, is scripts/install.sh (the list is
-  # written into its trap lines at render: t_install.sh), or has the verbatim line
-  grep -q -E '^[^#]*\. +".*sigs\.sh"' "$1" || [ "$1" = "$SR_ROOT/scripts/install.sh" ] || grep -qxF "$line" "$1"
+sweep "$SR_ROOT/scripts" > "$FX/sw.out" 2>&1; swrc=$?
+ns=$(sed -n 's/^SITES //p' "$FX/sw.out"); v=$(grep -v '^SITES ' "$FX/sw.out")
+[ $swrc = 0 ] && [ -z "$v" ] && [ "${ns:-0}" -ge 20 ] \
+  && pass "every EXIT cleanup trap in scripts/ ($ns) starts by holding off \$SIGS, has a trap on \$SIGS beside it, from the one list" \
+  || fail "the sweep (rc $swrc, $ns sites): $(printf '%s\n' "$v" | head -5 | tr '\n' '|')"
+# the controls: one planted file per rule, each breaking that rule alone (the tags it gets must be
+# exactly the expected ones), and good files that must pass (an inline cleanup, one in a function,
+# the verbatim line, and a file the render writes into)
+S1=". \"\$(dirname \"\$0\")/sigs.sh\""
+EX="trap 'trap \"\" \$SIGS; rm -rf x' EXIT"
+SG="trap 'exit 1' \$SIGS"
+plant() { # name expected-tags lines...
+  pn=$1 pe=$2; shift 2
+  rm -rf "${FX:?}/plant/$pn"; mkdir -p "$FX/plant/$pn"; printf '#!/bin/sh\n' > "$FX/plant/$pn/f.sh"
+  for pl; do printf '%s\n' "$pl" >> "$FX/plant/$pn/f.sh"; done
+  rf=$SR_ROOT/scripts/install.sh; [ "$pn" = rendered ] && rf=$FX/plant/$pn/f.sh
+  sweep "$FX/plant/$pn" "$rf" > "$FX/pl.out" 2>&1
+  got=$(grep -v '^SITES ' "$FX/pl.out" | cut -d' ' -f1 | sort -u | tr '\n' ' ' | sed 's/ $//')
+  [ "$got" = "$pe" ] && [ "$(sed -n 's/^SITES //p' "$FX/pl.out")" = 1 ] \
+    && pass "control $pn: the sweep says '${pe:-nothing}'" || fail "control $pn: expected '${pe:-nothing}', got '$got' ($(tr '\n' '|' < "$FX/pl.out"))"
 }
-sweep() { # dir -> violations on stdout, the site count in $FX/nsites
-  : > "$FX/nsites.l"
-  for f in $(grep -rl -e 'EXIT' "$1" | sort); do
-    sites "$f" > "$FX/s.out"
-    n=$(sed -n 's/^SITES //p' "$FX/s.out"); echo "$n" >> "$FX/nsites.l"
-    grep -v '^SITES ' "$FX/s.out"
-    [ "$n" = 0 ] || listed "$f" || echo "$f: has an EXIT trap but does not get the list (sigs.sh, the render, or its verbatim line)"
-    grep -n -E "^[^#]*trap +('[^']*'|\"[^\"]*\"|[a-z_]+) +(HUP|INT|TERM|QUIT)( |;|$)" "$f" | grep -v -E "trap +'exit 1(29|30|43)' +(HUP|INT|TERM)" | sed "s|^|$f: a literal signal list: |"
-    grep -n '^ *SIGS=' "$f" | grep -v -x -F -e "$(grep -n -x -F -- "$line" "$f" | head -1)" | grep -v ':SIGS=$' | sed "s|^|$f: another SIGS: |"
-  done
-  awk '{ s += $1 } END { print s + 0 }' "$FX/nsites.l" > "$FX/nsites"
-}
-v=$(sweep "$SR_ROOT/scripts"); ns=$(cat "$FX/nsites")
-[ -z "$v" ] && [ "$ns" -ge 20 ] && pass "every EXIT cleanup trap in scripts/ ($ns) traps \$SIGS beside it, from the one list" || fail "the sweep ($ns sites): $(printf '%s\n' "$v" | head -5 | tr '\n' '|')"
-# the controls: planted files break each rule
-mkdir -p "$FX/plant"
-printf '#!/bin/sh\n. "$(dirname "$0")/sigs.sh"\ntrap %s EXIT\ntrap %s HUP INT TERM\n' "'rm -rf x'" "'exit 1'" > "$FX/plant/a.sh"
-printf '#!/bin/sh\ntrap %s EXIT\ntrap %s $SIGS\n' "'rm -rf x'" "'exit 1'" > "$FX/plant/b.sh"
-printf '#!/bin/sh\n. "$(dirname "$0")/sigs.sh"\ntrap %s EXIT\n:\n:\n:\n:\n:\n:\ntrap %s $SIGS\n' "'rm -rf x'" "'exit 1'" > "$FX/plant/c.sh"
-for pf in a b c; do
-  rm -rf "$FX/p1"; mkdir -p "$FX/p1"; cp "$FX/plant/$pf.sh" "$FX/p1/"
-  [ -n "$(sweep "$FX/p1")" ] && pass "control: the sweep catches planted file $pf" || fail "control: planted file $pf passes the sweep"
-done
+plant good "" "$S1" "$EX" "$SG"
+plant goodfn "" "$S1" 'cl() { # the cleanup' "  trap '' \$SIGS" '  rm -rf x' '}' 'trap cl EXIT' "trap 'cl; exit 1' \$SIGS"
+plant verbatim "" "$line" "$EX" "$SG"
+plant rendered "" "$EX" "$SG"
+plant commented near "$S1" "$EX" "# $SG"
+plant quoted near "$S1" "$EX" "trap 'exit 1' \"\$SIGS\""
+plant emptyaction near "$S1" "$EX" "trap '' \$SIGS"
+plant far near "$S1" "$EX" : : : : : : "$SG"
+plant noignore ignore "$S1" "trap 'rm -rf x' EXIT" "$SG"
+plant noignorefn ignore "$S1" 'cl() {' '  rm -rf x' "  trap '' \$SIGS" '}' 'trap cl EXIT' "trap 'cl; exit 1' \$SIGS"
+plant unlisted listed "$EX" "$SG"
+plant bare other "$S1" 'SIGS=' "$EX" "$SG"
+plant literal literal "$S1" "$EX" "$SG" "trap 'exit 1' HUP INT TERM"
 
 # --- the rows: a stand-in tool sends the signal to the script's pid ($FX/target.pid), takes 1 s,
 # marks itself done and fails

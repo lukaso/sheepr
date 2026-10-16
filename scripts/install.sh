@@ -72,6 +72,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-install.XXXXXX") || die "no temp dir"
 stage="" old="" app=""
 # on any exit or signal: if the old app was moved aside and no app is in place, put it back first
 cleanup() {
+  trap '' $SIGS   # a second signal must not cut the cleanup short (the list: written in at render)
   if [ -n "$old" ] && [ -e "$old" ] && [ -n "$app" ] && [ ! -e "$app" ]; then
     mv "$old" "$app" 2>/dev/null || { echo "sheepr install: the old app is at $old" >&2; stage=""; }
   fi

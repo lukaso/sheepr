@@ -29,7 +29,7 @@ rec() { # record-file -> p, s, g; 0 only if complete (a numeric pid and a start 
 }
 alive() { rec "$1" && [ "$(start "$p")" = "$s" ]; }
 reap() { for f in "$t/e1" "$t/e2"; do alive "$f" && kill -KILL "$p" 2>/dev/null; done; }
-trap 'reap; rm -rf "${t:?}"' EXIT
+trap 'trap "" $SIGS; reap; rm -rf "${t:?}"' EXIT
 trap 'exit 1' $SIGS; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 pgid() { # pid -> its process group (Linux: /proc, which busybox and slim images have; macOS: ps)
   if [ -r "/proc/$1/stat" ]; then sed 's/.*) //' "/proc/$1/stat" | cut -d' ' -f3

@@ -7,7 +7,8 @@
 #   - the order: sign, requirement; then announce, lock, unlock (the notary keychain's password),
 #     profile check, submit, and the notary keychain locked again right after the last notarytool
 #     call, before staple, spctl, the door and the archive (the new binary never runs while it is
-#     unlocked); a failed lock is loud and fails the build;
+#     unlocked); a failed lock is loud and fails the build; a signal during notarytool submit
+#     relocks and removes the temp dir, and a second signal during that relock does not cut it short;
 #   - notarytool only with --keychain-profile sheepr-notary and --keychain <the notary keychain
 #     file under HOME>, never a password, key or Apple ID; no other tool gets a keychain path;
 #   - a failed unlock stops the build before any notarytool call, and the keychain is locked; a
@@ -68,7 +69,9 @@ shim spctl 'exit 0'
 shim ditto 'for a; do last=$a; done; : > "$last"; exit 0'
 shim security 'case "$*" in *find-identity*) echo "     0 valid identities found" ;;
   unlock-keychain*) { [ -e "'"$FX"'/unlock.fail" ] || { [ -e "'"$FX"'/unlock.fail2" ] && [ "$(grep -c "^security unlock-keychain" "'"$S"'/calls")" -ge 2 ]; }; } && { echo "security: SecKeychainUnlock: The user name or passphrase you entered is not correct." >&2; exit 51; } ;;
-  lock-keychain*) [ -e "'"$FX"'/lock.fail" ] && [ "$(grep -c "^security lock-keychain" "'"$S"'/calls")" -ge 2 ] && { echo "security: lock failed" >&2; exit 50; } ;;
+  lock-keychain*) [ -e "'"$FX"'/locksig" ] && [ -s "'"$FX"'/target.pid" ] && [ ! -e "'"$FX"'/locksent" ] && { : > "'"$FX"'/locksent"
+      kill -$(cat "'"$FX"'/locksig") $(cat "'"$FX"'/target.pid"); /bin/sleep 1; echo "lock done" >> "'"$S"'/calls"; }
+    [ -e "'"$FX"'/lock.fail" ] && [ "$(grep -c "^security lock-keychain" "'"$S"'/calls")" -ge 2 ] && { echo "security: lock failed" >&2; exit 50; } ;;
 esac; exit 0'
 KC=$FX/home/Library/Keychains/sheepr-notary.keychain-db
 mkdir -p "${KC%/*}"; : > "$KC"
@@ -187,6 +190,25 @@ for sg in QUIT USR1; do
     && pass "a $sg during notarytool submit: sign.sh waits for it, relocks the notary keychain, removes its temp dir, exit 1" \
     || fail "$sg in submit: rc=$rc waited=$waited last='$ll' pid '$tp' temp dir: $(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)"
 done
+
+# 2j. a second signal while the exit locks the notary keychain again (a USR1 during notarytool
+# submit, then a QUIT or a USR1 from the lock-keychain stand-in): the cleanup holds further signals
+# off, so the lock ends, the lock is the last keychain call, and the temp dir is gone; exit 1
+for sg in QUIT USR1; do
+  rm -f "$S/calls" "$S"/env.* "$FX/target.pid" "$FX/locksent"; echo USR1 > "$FX/submitsig"; echo $sg > "$FX/locksig"; mkdir -p "$FX/dest.l$sg"
+  no_osascript /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+    SR_ASK_RECORD="$S/calls" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.l$sg" \
+    > "$FX/out.l$sg" 2>&1 & sp=$!
+  wait $sp; rc=$?; rm -f "$FX/submitsig" "$FX/locksig"; tp=$(cat "$FX/target.pid" 2>/dev/null)
+  i=0; while ! grep -q '^lock done$' "$S/calls" && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done   # the stand-in's own end, before the next row
+  kc=$(grep -e '^security lock-keychain' -e '^security unlock-keychain' "$S/calls" | tail -1)
+  [ $rc = 1 ] && [ -e "$FX/locksent" ] && grep -q '^lock done$' "$S/calls" && [ "$kc" = "security lock-keychain $KC" ] && [ -n "$tp" ] \
+    && [ -z "$(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)" ] \
+    && pass "a $sg while the exit locks the keychain again: the lock ends, the keychain stays locked, the temp dir is gone, exit 1" \
+    || fail "$sg in the exit's lock: rc=$rc sent: $(ls "$FX/locksent" 2>/dev/null) last keychain call: '$kc' pid '$tp' temp dir: $(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)"
+  rm -rf "${FX:?}/dest.l$sg"
+done
+rm -f "$FX/locksent"
 
 # 3. the requirement comparison refuses a changed marker (a copy of sign.sh's library dir with a
 #    release.conf whose requirement lacks one Developer ID marker)

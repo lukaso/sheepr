@@ -105,7 +105,8 @@ relock() {
   echo "sign: could not lock the notary keychain $kc; lock it now: security lock-keychain $kc" >&2
   kc=""; return 1
 }
-trap 'rc=$?; relock; rm -rf "$tmp"; exit $rc' EXIT
+# a second signal during the cleanup (the lock above all) is held off: it must not cut it short
+trap 'rc=$?; trap "" $SIGS; relock; rm -rf "$tmp"; exit $rc' EXIT
 trap 'exit 1' $SIGS
 mkdir -m 700 "$tmp" || die "cannot make $tmp"
 # the operator's attention before each password prompt (they may have left the desk): the tag tree's

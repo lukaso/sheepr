@@ -33,7 +33,7 @@ case $1 in
     [ $# -eq 3 ] && case $3 in --signed) signed=yes ;; --signed-unstapled) signed=unstapled ;; *) usage ;; esac
     [ -f "$arc" ] || bad "no archive $arc"
     t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || exit 1
-    trap 'rm -rf "$t"' EXIT
+    trap 'trap "" $SIGS; rm -rf "$t"' EXIT
     trap 'rm -rf "$t"; exit 1' $SIGS
     want="Sheepr.app/Contents/Info.plist
 Sheepr.app/Contents/MacOS/sheepr"

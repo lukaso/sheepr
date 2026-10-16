@@ -60,7 +60,7 @@ case $target in /*) typed=$target ;; *) typed=$(pwd -P)/$target ;; esac
   # trap that knows it (only SIGKILL can leave it behind)
   tmp=/private/tmp/sr-exec-guard.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   [ -d /private/tmp ] || tmp=/tmp/sr-exec-guard.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-  trap 'rm -rf "$tmp"' EXIT
+  trap 'trap "" $SIGS; rm -rf "$tmp"' EXIT
   trap 'rm -rf "$tmp"; exit 1' $SIGS
   mkdir -m 700 "$tmp" || exit 2
   nl='

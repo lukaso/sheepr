@@ -13,7 +13,7 @@ nv=$1 arc=$2 la=$3 lx=$4 launcher=$5 dest=$6
 root=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
 . "$root/scripts/lib/sigs.sh" || exit 1   # SIGS: the signals the cleanup trap catches
 pk=$(mktemp -d "${TMPDIR:-/tmp}/sr-npmpack.XXXXXX") || exit 1
-trap 'rm -rf "$pk"' EXIT
+trap 'trap "" $SIGS; rm -rf "$pk"' EXIT
 trap 'exit 1' $SIGS
 mkdir -p "$pk/main/bin" "$pk/darwin" "$pk/linux-arm64/bin" "$pk/linux-x64/bin" "$pk/home" || exit 1
 : > "$pk/npmrc"

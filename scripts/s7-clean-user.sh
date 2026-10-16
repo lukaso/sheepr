@@ -341,7 +341,7 @@ s7_cmd_tools() {
   [ "$(/usr/bin/uname -m)" = arm64 ] || s7_die "the leg is pinned to arm64 (node darwin-arm64)"
   [ -d "$HOME/Library/Safari" ] || s7_die "open Safari once and quit it first, so ~/Library/Safari (the reads' folder) exists"
   t_t=$(mktemp -d "${TMPDIR:-/tmp}/s7-tools.XXXXXX") || exit 1
-  trap 'rm -rf "$t_t"' EXIT; trap 'exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$t_t"' EXIT; trap 'exit 1' $SIGS
   s7_fetch "https://github.com/Homebrew/brew/archive/refs/tags/$S7_BREW_TAG.tar.gz" "$S7_BREW_SHA" "$t_t/brew.tgz"
   s7_fetch "https://nodejs.org/dist/$S7_NODE/node-$S7_NODE-darwin-arm64.tar.gz" "$S7_NODE_SHA" "$t_t/node.tgz"
   s7_env > "$HOME/s7-env.sh.part" && . "$HOME/s7-env.sh.part" || s7_die "cannot write ~/s7-env.sh.part"
@@ -413,7 +413,7 @@ s7_cmd_channel() {
   s7_save   # before the channel's first write: uninstall can always clean up
   c_r=$S7_DIR/results/$c_c.txt
   c_t=$(mktemp -d "${TMPDIR:-/tmp}/s7-channel.XXXXXX") || exit 1
-  c_srv=""; trap '[ -z "$c_srv" ] || kill "$c_srv" 2>/dev/null; rm -rf "$c_t"' EXIT; trap 'exit 1' $SIGS
+  c_srv=""; trap 'trap "" $SIGS; [ -z "$c_srv" ] || kill "$c_srv" 2>/dev/null; rm -rf "$c_t"' EXIT; trap 'exit 1' $SIGS
   c_v=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["tag"][1:], m["commit"][:12])' "$S7_DIR/MANIFEST.json") || s7_die "no manifest"
   c_ver=${c_v% *} c_commit=${c_v#* }
   s7_rec "== channel $c_c, $(date -u +%Y-%m-%dT%H:%M:%SZ), user $(id -un), rc $c_ver ($c_commit)"

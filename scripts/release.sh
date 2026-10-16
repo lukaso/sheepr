@@ -252,7 +252,7 @@ build_release() { # mode: unsigned | signed | control
   [ -e "$final" ] && die "$final exists (a release output directory is never reused)"
   scratch=$(mktemp -d /private/tmp/sr-release.XXXXXX 2>/dev/null || mktemp -d) || die "no scratch dir"
   dest=""   # the staging dir, once it is made (empty again after the rename)
-  trap 'git -C "$root" worktree remove --force "$scratch/src" >/dev/null 2>&1; rm -rf "$scratch"
+  trap 'trap "" $SIGS; git -C "$root" worktree remove --force "$scratch/src" >/dev/null 2>&1; rm -rf "$scratch"
     [ -z "$dest" ] || echo "release: the build of $tag stopped; what it made is kept in $dest (never used by a later run: look at it, then remove it)" >&2' EXIT
   trap 'exit 1' $SIGS
   src=$scratch/src
@@ -456,7 +456,7 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
-  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
   files_ok "$d" || die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"
@@ -563,7 +563,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
+  trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-dry (stand-ins; verify not run; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   # the cells' way into the shipping branches (only `yes` sets it; the planned ship sets shipping itself)
@@ -652,7 +652,7 @@ publish_cask_exec() { # dir: the cask step alone, for a release that is already 
   d=$1
   case $tag in *-rc.*) die "an rc: the Homebrew cask follows final releases only" ;; esac
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
-  trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"; m=$MAN
   mf() { sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$m" | head -1; }
   [ "$(mf tag)" = "$tag" ] && [ "$(mf mode)" = signed ] && [ "$(mf control)" = false ] \
@@ -675,7 +675,7 @@ publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real 
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __publish-cask-dry (stand-ins; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
   GH=$SR_PUBLISH_DRY_GH NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry   # plain assignments, as above
@@ -758,7 +758,7 @@ publish_npm_exec() { # dir
   [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); nothing was published"
   case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; nothing was published" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
-  trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   chmod 700 "$pc" || die "cannot make $pc private"
   private_manifest "$d" "$pc"; m=$MAN
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
@@ -840,7 +840,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
     NOTIFY=$SR_PUBLISH_DRY_NOTIFY
   fi
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
+  trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME, $DRYHOME)"
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
@@ -859,7 +859,7 @@ npm_check() { # dir
   # a stamp from an earlier pass never outlives a check that does not pass
   rm -f "$d/NPM-CHECKED" || die "cannot remove $d/NPM-CHECKED"
   nt=/private/tmp/sr-npmcheck.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-  trap 'rm -rf "$nt"' EXIT; trap 'rm -rf "$nt"; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$nt"' EXIT; trap 'rm -rf "$nt"; exit 1' $SIGS
   mkdir -m 700 "$nt" "$nt/p" "$nt/ref" || die "no temp dir"
   # the manifest every check reads, and the stamp names: a private copy, taken first (a manifest
   # replaced during the check gets no stamp that publish accepts)
@@ -906,7 +906,7 @@ verify() { # dir -> exit 1 naming the tool that refused
   d=$1 arc=$1/sheepr-macos-universal.tar.gz
   [ -f "$arc" ] || die "no $arc"
   vt=/private/tmp/sr-verify.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
-  trap 'rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' $SIGS
   # the bundle the real tools judge, from a private copy whose hash publish then binds to the
   # stamped manifest (an archive replaced after this check is not the one judged)
   mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" && verified_ah=$(shasum -a 256 "$vt/a.tgz" | cut -d' ' -f1) \
@@ -939,7 +939,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
   # right after mktemp, as in the other dry entries: ship_run refuses an rc or a tag off the grammar
   # before it sets its own exit handler (which then replaces this one and removes the temp HOME)
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
@@ -1089,7 +1089,7 @@ progress() { # line: ship's record of the phases (no-op outside ship); written b
 drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase's own trap removes it)
   [ "$dryentry" = yes ] || return 0
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
-  trap 'rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
+  trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: (a phase) a temp HOME, $DRYHOME" >&2   # stderr: a closed stdout cannot hide it
 }
 # shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
