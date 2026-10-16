@@ -15,7 +15,8 @@
 #     smoke.sh at `SHEEPR --version`, s7-clean-user.sh's tools at its download and its channel at
 #     its manifest read): a QUIT (whose default runs no EXIT trap) and a USR1 (whose default runs
 #     it at once, without waiting for the running tool), each sent to the script by its pid while
-#     the tool runs: the script waits for the tool, then its temp dir is gone. sign.sh's and
+#     the tool runs (a stand-in that succeeds, so only the trap can end the script with 1): the
+#     script waits for the tool, writes none of its own later lines, then its temp dir is gone. sign.sh's and
 #     install.sh's rows are in their own cells (t_sign, t_install). exec-guard.sh's checks and
 #     archive.sh's check have no such point (PATH pinned to /usr/bin:/bin, their tools called by
 #     path, a regular file as input; plutil does not block on a FIFO plist: measured): the sweep
@@ -91,28 +92,39 @@ plant unlisted listed "$EX" "$SG"
 plant bare other "$S1" 'SIGS=' "$EX" "$SG"
 plant literal literal "$S1" "$EX" "$SG" "trap 'exit 1' HUP INT TERM"
 
-# --- the rows: a stand-in tool sends the signal to the script's pid ($FX/target.pid), takes 1 s,
-# marks itself done and fails
+# --- the rows: a stand-in tool, at its first call, sends the signal to the script's pid
+# ($FX/target.pid), takes 1 s, marks itself done; every call succeeds (exit 0, no output), so only
+# the script's trap can end it with 1, and a script that went on past the signal is seen by the
+# lines it writes after the tool (each row names them: they must be absent)
 mkdir -p "$FX/sb"
 sigtool() { # path
   mkdir -p "$(dirname "$1")"
   cat > "$1" <<EOF
 #!/bin/sh
+[ -e "$FX/sent" ] && exit 0
+: > "$FX/sent"
 i=0; while [ ! -s "$FX/target.pid" ] && [ \$i -lt 100 ]; do /bin/sleep 0.1; i=\$((i + 1)); done
 kill -\$(cat "$FX/sig") \$(cat "$FX/target.pid")
-/bin/sleep 1; : > "$FX/tool.done"; exit 1
+/bin/sleep 1; : > "$FX/tool.done"; exit 0
 EOF
   chmod +x "$1"
 }
 prep() { # signal tmpdir
-  rm -f "$FX/target.pid" "$FX/tool.done"; echo "$1" > "$FX/sig"; rm -rf "${2:?}"; mkdir -p "$2"
+  rm -f "$FX/target.pid" "$FX/tool.done" "$FX/sent"; echo "$1" > "$FX/sig"; rm -rf "${2:?}"; mkdir -p "$2"
 }
-sigrow() { # label tmpdir (rc in $rc): the tool had ended when the script did; then its own end is awaited
+sigrow() { # label tmpdir own-lines-pattern (rc in $rc, the script's output in $FX/o): the tool had
+           # ended when the script did, the script wrote none of its own lines after it, its temp
+           # dir is gone; then the tool's own end is awaited
   waited=no; [ ! -e "$FX/tool.done" ] || waited=yes
   i=0; while [ ! -e "$FX/tool.done" ] && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done
-  [ "$rc" = 1 ] && [ $waited = yes ] && [ -z "$(ls -A "$2" 2>/dev/null)" ] \
-    && pass "$1: it waits for the tool, then its temp dir is gone (rc $rc)" || fail "$1: rc=$rc tool done: $(ls "$FX/tool.done" 2>/dev/null) left: $(ls -A "$2" 2>/dev/null | tr '\n' ' ')"
+  own=$(grep -E -c "$3" "$FX/o")
+  [ "$rc" = 1 ] && [ -e "$FX/sent" ] && [ $waited = yes ] && [ "$own" = 0 ] && [ -z "$(ls -A "$2" 2>/dev/null)" ] \
+    && pass "$1: it waits for the tool, writes nothing after it, then its temp dir is gone (rc $rc)" \
+    || fail "$1: rc=$rc sent: $(ls "$FX/sent" 2>/dev/null) tool done: $(ls "$FX/tool.done" 2>/dev/null) own lines: $own ($(head -3 "$FX/o" | tr '\n' '|')) left: $(ls -A "$2" 2>/dev/null | tr '\n' ' ')"
 }
+# the lines each script writes after the tool returns (measured: none before it, but smoke.sh's
+# `smoke: testing` line, which holds the tool's call)
+OWN_NPMPACK=. OWN_SMOKE='^(ok|FAIL): ' OWN_S7TOOLS=. OWN_S7CHAN=.
 # npm-pack.sh, at npm pack
 sigtool "$FX/sb/npm"
 mkdir -p "$FX/arc/Sheepr.app" && tar -czf "$FX/arc.tgz" -C "$FX/arc" Sheepr.app && printf x > "$FX/la" && printf x > "$FX/lx" && printf '#!/bin/sh\n' > "$FX/launcher" || exit 3
@@ -120,7 +132,7 @@ for sg in QUIT USR1; do
   prep $sg "$FX/ntmp"; rm -rf "$FX/ndest"; mkdir -p "$FX/ndest" "$FX/h"
   /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env -i PATH="$FX/sb:/usr/bin:/bin" HOME="$FX/h" TMPDIR="$FX/ntmp" sh "$SR_ROOT/scripts/lib/npm-pack.sh" 0.1.0 "$FX/arc.tgz" "$FX/la" "$FX/lx" "$FX/launcher" "$FX/ndest" > "$FX/o" 2>&1 & tp=$!
   echo $tp > "$FX/target.pid"; wait $tp; rc=$?
-  sigrow "npm-pack.sh, a $sg during npm pack" "$FX/ntmp"
+  sigrow "npm-pack.sh, a $sg during npm pack" "$FX/ntmp" "$OWN_NPMPACK"
 done
 # smoke.sh, at SHEEPR --version (the stand-in is the sheepr under test)
 sigtool "$FX/sd/sheepr"
@@ -128,7 +140,7 @@ for sg in QUIT USR1; do
   prep $sg "$FX/stmp"
   /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env -i PATH=/usr/bin:/bin HOME="$FX/h" TMPDIR="$FX/stmp" sh "$SR_ROOT/scripts/smoke.sh" "$FX/sd/sheepr" < /dev/null > "$FX/o" 2>&1 & tp=$!
   echo $tp > "$FX/target.pid"; wait $tp; rc=$?
-  sigrow "smoke.sh, a $sg during sheepr --version" "$FX/stmp"
+  sigrow "smoke.sh, a $sg during sheepr --version" "$FX/stmp" "$OWN_SMOKE"
 done
 # s7-clean-user.sh's tools, at its download (the library, the wall stubbed, as t_s7_clean_user runs it)
 sigtool "$FX/sb/s7curl"
@@ -137,7 +149,7 @@ for sg in QUIT USR1; do
   /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- sh -c 'SR_S7_LIB=1; . "$1"; s7_walled() { :; }; S7_CURL=$2; HOME=$3; TMPDIR=$4; export HOME TMPDIR; s7_cmd_tools' sh \
     "$SR_ROOT/scripts/s7-clean-user.sh" "$FX/sb/s7curl" "$FX/s7h" "$FX/s7tmp" < /dev/null > "$FX/o" 2>&1 & tp=$!
   echo $tp > "$FX/target.pid"; wait $tp; rc=$?
-  sigrow "s7-clean-user.sh tools, a $sg during its download" "$FX/s7tmp"
+  sigrow "s7-clean-user.sh tools, a $sg during its download" "$FX/s7tmp" "$OWN_S7TOOLS"
 done
 # s7-clean-user.sh's channel, at its manifest read (python3: the first on the PATH ~/s7-env.sh sets)
 for sg in QUIT USR1; do
@@ -146,6 +158,6 @@ for sg in QUIT USR1; do
   /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- sh -c 'SR_S7_LIB=1; . "$1"; s7_walled() { :; }; S7_DIR=$2; S7_TTY=$3; S7_TTY_OUT=/dev/null; HOME=$4; TMPDIR=$5; export HOME TMPDIR; s7_cmd_channel npm' sh \
     "$SR_ROOT/scripts/s7-clean-user.sh" "$FX/s7d" "$FX/s7tty" "$FX/s7h" "$FX/s7tmp" < /dev/null > "$FX/o" 2>&1 & tp=$!
   echo $tp > "$FX/target.pid"; wait $tp; rc=$?
-  sigrow "s7-clean-user.sh channel, a $sg during its manifest read" "$FX/s7tmp"
+  sigrow "s7-clean-user.sh channel, a $sg during its manifest read" "$FX/s7tmp" "$OWN_S7CHAN"
 done
 finish
