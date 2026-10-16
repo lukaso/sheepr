@@ -12,7 +12,7 @@
 set -u
 # scripts/lib/sigs.sh's list, verbatim (this file runs alone, as the S7 test user's ~/s7-smoke.sh;
 # tests/dist/t_sigs.sh holds the two equal)
-SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM PROF"
 SD=${1:-sheepr}
 t=$(mktemp -d "${TMPDIR:-/tmp}/sr-smoke.XXXXXX") || exit 1
 fails=0

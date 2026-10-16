@@ -1,5 +1,7 @@
 #!/bin/sh
 # Every cleanup trap of the release catches one list of terminating signals (scripts/lib/sigs.sh):
+#   - the list: every signal `kill -l` names whose default ends /bin/sh without its EXIT trap
+#     (measured on each run: QUIT and PROF) is on it;
 #   - the sweep: each EXIT cleanup trap in scripts/ has a trap on $SIGS beside it (within five
 #     lines), never a literal list; each file with one reads the list from sigs.sh, or has it
 #     written in when it is rendered (install.sh), or carries sigs.sh's SIGS line verbatim
@@ -20,8 +22,30 @@ set -u
 fx_dir
 L=$SR_ROOT/scripts/lib/sigs.sh
 line=$(grep '^SIGS="' "$L" 2>/dev/null)
-[ "$(grep -c '^SIGS=' "$L" 2>/dev/null)" = 1 ] && [ "$line" = 'SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"' ] \
+[ "$(grep -c '^SIGS=' "$L" 2>/dev/null)" = 1 ] && [ "$line" = 'SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM PROF"' ] \
   && pass "scripts/lib/sigs.sh: one SIGS line, ship's list" || fail "sigs.sh: '$line'"
+# the list holds every signal whose default ends sh without running its EXIT trap: each signal
+# `kill -l` names (but the uncatchable and the job-control ones), sent by a child to a /bin/sh that
+# has an EXIT trap, every signal at its default; the controls: QUIT is found, TERM runs the trap
+cat > "$FX/selfsig.sh" <<'EOF'
+trap 'echo exit-trap >> "$2"' EXIT
+/bin/sh -c 'kill -$1 $PPID' sh "$1"
+/bin/sleep 0.3
+echo went-on >> "$2"
+EOF
+silent= trm=
+for s in $(/bin/sh -c 'kill -l' | tr ' \t' '\n\n' | grep -v '^$' | sed 's/^SIG//'); do
+  case $s in KILL|STOP|TSTP|TTIN|TTOU|CONT) continue ;; esac
+  : > "$FX/sl"
+  ( /usr/bin/perl -e 'for (keys %SIG) { $SIG{$_} = "DEFAULT" } exec @ARGV' -- /bin/sh "$FX/selfsig.sh" "$s" "$FX/sl" ) 2>/dev/null; r=$?
+  [ $r -gt 128 ] && ! grep -q exit-trap "$FX/sl" && silent="$silent $s"
+  [ $s = TERM ] && trm="$r:$(tr '\n' + < "$FX/sl")"
+done
+eval "$line"; miss=
+for s in $silent; do case " $SIGS " in *" $s "*) ;; *) miss="$miss $s" ;; esac; done
+case " $silent " in *" QUIT "*) qf=yes ;; *) qf=no ;; esac
+[ $qf = yes ] && [ "$trm" = "143:exit-trap+" ] && pass "control: the scan finds QUIT, and TERM runs the EXIT trap" || fail "control: QUIT found: $qf, TERM: $trm"
+[ -n "$silent" ] && [ -z "$miss" ] && pass "every signal whose default skips the EXIT trap ($silent ) is on the list" || fail "skip the EXIT trap but not on the list:$miss (found:$silent )"
 
 # --- the sweep
 sites() { # file -> "SITES n", then one line per EXIT trap with no $SIGS trap beside it

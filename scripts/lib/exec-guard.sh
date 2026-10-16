@@ -39,7 +39,7 @@ esac
 set -u
 # scripts/lib/sigs.sh's list, verbatim (the door is copied as one file: install.sh embeds it, the
 # S7 leg and the cells copy it; tests/dist/t_sigs.sh holds the two equal)
-SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM PROF"
 
 usage() { echo "usage: exec-guard.sh check|exec PATH [ARG...]" >&2; exit 2; }
 [ $# -ge 2 ] || usage

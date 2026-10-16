@@ -29,7 +29,7 @@
 set -u
 # scripts/lib/sigs.sh's list, verbatim (the test user runs this file alone from /Users/Shared/sr-s7;
 # tests/dist/t_sigs.sh holds the two equal)
-SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM"
+SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM PROF"
 S7_ID=com.lukaso.sheepr
 S7_DIR=/Users/Shared/sr-s7
 S7_LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
