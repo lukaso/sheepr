@@ -475,6 +475,16 @@ for fl in assume-unchanged skip-worktree; do
 done
 rm -rf "${OUTR:?}"; ship; r=$?
 ! grep -q "is not v0.1.0's" "$FX/o" && grep -q "^sgit -C $WTP push --dry-run" "$FX/calls" && pass "control: a clean checkout of the tag passes the compare of scripts/ (the run goes on to the push)" || fail "control, a clean checkout: rc=$r $(lastline)"
+# a filter cannot hide an edit either: .git/info/attributes gives sign.sh `text eol=crlf`, and it is
+# checked out again (CR bytes in the file; git status clean; no index flag): the compare reads the
+# file's own bytes (--no-filters), so it is refused by name before any remote call
+printf 'scripts/lib/sign.sh text eol=crlf\n' >> "$REPO/.git/info/attributes" && rm -f "${REPO:?}/scripts/lib/sign.sh" && g checkout -- scripts/lib/sign.sh \
+  && [ "$(tr -cd '\r' < "$REPO/scripts/lib/sign.sh" | wc -c | tr -d ' ')" -gt 0 ] && [ -z "$(g status --porcelain)" ] || fail "the CRLF checkout of sign.sh was not made"
+rm -rf "${OUTR:?}"; ship; r=$?
+sed '/^scripts\/lib\/sign.sh text eol=crlf$/d' "$REPO/.git/info/attributes" > "$FX/attr.n" && mv "$FX/attr.n" "$REPO/.git/info/attributes" \
+  && rm -f "${REPO:?}/scripts/lib/sign.sh" && g checkout -- scripts/lib/sign.sh && [ "$(tr -cd '\r' < "$REPO/scripts/lib/sign.sh" | wc -c | tr -d ' ')" = 0 ] || fail "sign.sh not put back"
+[ $r = 1 ] && grep -q "scripts/lib/sign.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
+  && pass "a scripts/lib/sign.sh checked out with CRLF by an attribute (git status clean): refused before any remote call, by name" || fail "sign.sh CRLF: rc=$r $(lastline)"
 # the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
 # outside any function are one, and it reads the list ship compares ($sourced)
 topsrc() { # file -> "LINE top WORDS" for each source command (`.` or `source`, any quoting) outside
