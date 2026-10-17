@@ -26,11 +26,15 @@
 #       compares against it
 #   npm-same.py same TGZ ARCHIVE           the darwin package's Sheepr.app equals the release
 #       archive's, file by file: path, mode and content (`packages` has fixed the package's modes)
-# Exit 0, or 1 with the reason on stderr.
+# Exit 0, or 1 with the reason on stderr; 3, "npm-same: cannot check: ...", when the check could
+# not run (a file it cannot open, any other error): no finding about the packages (r13b F3).
 import sys, hashlib, json, os, re, zlib
 
 def die(msg):
     sys.stderr.write("npm-same: " + msg + "\n"); sys.exit(1)
+
+def cannot(msg):
+    sys.stderr.write("npm-same: cannot check: " + msg + "\n"); sys.exit(3)
 
 NAME = re.compile(r"[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*/?")
 NPM = "npm 11.6.0 (node-tar 6.2.1)"  # whose npm pack the header rule was measured on
@@ -55,9 +59,11 @@ def npm_header(name, mode, size):
 def plain(path, what, allow_dirs, canonical=False):
     # exactly one gzip member and nothing after it: Python reads on past a zero byte into another
     # member, node's zlib and libarchive stop there
+    try: raw = open(path, "rb").read()
+    except OSError as e: cannot("%s: cannot open %s (%s)" % (what, path, e))
     try:
-        z = zlib.decompressobj(31); data = z.decompress(open(path, "rb").read())
-    except Exception as e: die("%s: cannot read %s (%s)" % (what, path, e))
+        z = zlib.decompressobj(31); data = z.decompress(raw)
+    except zlib.error as e: die("%s: not a gzip stream (%s)" % (what, e))
     if not z.eof or z.unused_data: die("%s: not one gzip stream (%s)" % (what, "cut short" if not z.eof else "bytes after it"))
     files, seen, o = {}, set(), 0
     while True:
@@ -177,7 +183,7 @@ def same(tgz, arc):
         if p[n][0] != a[n][0]: die("the darwin package's bundle is not the release archive's bundle: %s has mode %o, the archive's %o" % (n, p[n][0], a[n][0]))
         if p[n][1] != a[n][1]: die("the darwin package's bundle is not the release archive's bundle: %s differs in content" % n)
 
-if __name__ == "__main__":
+def main():
     if len(sys.argv) == 6 and sys.argv[1] == "packages": packages(*sys.argv[2:6])
     elif len(sys.argv) == 4 and sys.argv[1] == "pkgjson": print(json.dumps(pkgjson(sys.argv[2], sys.argv[3]), indent=2))
     elif len(sys.argv) == 4 and sys.argv[1] == "same": same(*sys.argv[2:4])
@@ -188,3 +194,9 @@ if __name__ == "__main__":
         print("sha512-" + base64.b64encode(hashlib.sha512(ref(sys.argv[2])).digest()).decode())
     else:
         sys.stderr.write("usage: npm-same.py packages DIR VERSION REF NAMES | list NAMES | same TGZ ARCHIVE | pkgjson KIND VERSION | integrity TGZ\n"); sys.exit(2)
+
+if __name__ == "__main__":
+    # an error that is not one of the checks' own refusals (die) is no finding: exit 3
+    try: main()
+    except SystemExit: raise
+    except BaseException as e: cannot("%s: %s" % (type(e).__name__, e))

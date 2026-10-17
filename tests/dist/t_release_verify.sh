@@ -78,17 +78,55 @@ cp "$FX/rt.real" "$REPO/scripts/lib/realtools.sh" || exit 3
 # rt_judge itself: 0 accepts, 1 judged (an exit that is not 126 or 127, words that name no license),
 # 2 no verdict
 mkdir -p "$FX/rj"; o_=""
-for t_ in '0||0' '127||2' '126||2' '69|You have not agreed to the Xcode license agreements|2' '1||2' '3|rejected|1' '65|does not have a ticket stapled to it|1'; do
+for t_ in '0||0' '127||2' '126||2' '69|You have not agreed to the Xcode license agreements|2' '1||2' '3|rejected|1' '65|does not have a ticket stapled to it|1' '1|code failed|2' '3|xcrun: error: unable to find utility|2' '137|Processing: x|2'; do
   c_=${t_%%|*}; w_=${t_##*|}; m_=${t_#*|}; m_=${m_%|*}
   printf '#!/bin/sh\n[ -z "%s" ] || echo "%s"\nexit %s\n' "$m_" "$m_" "$c_" > "$FX/rj/t"; chmod +x "$FX/rj/t"
-  g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=$2/out; rt_judge "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
+  g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=$2/out; rt_judge "3 65" "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
   [ "$g_" = "$w_" ] || o_="$o_ exit $c_ '$m_': $g_ (want $w_);"
 done
-[ -z "$o_" ] && pass "rt_judge: accepts 0; judged 1 for an exit with words; no verdict 2 for 126, 127, a license text, no output" || fail "rt_judge:$o_"
-g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=""; rt_judge "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
+[ -z "$o_" ] && pass "rt_judge (the refusal codes 3 and 65): accepts 0; judged 1 for its own refusal exit with words; no verdict 2 for 126, 127, a license text, no output, any other exit" || fail "rt_judge:$o_"
+g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=""; rt_judge "3 65" "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
 [ "$g_" = 2 ] && pass "  with no RT_OUT (its words not kept): no verdict, never a judgment" || fail "  no RT_OUT: $g_"
+# r13b F1, F2, F5: a verdict only from the tool's own refusal (codesign 1 or 3, spctl 3, stapler 65:
+# notes/r13b/probe/apple/*.out); anything else (an exit above 125, xcrun's own error, a license text) is
+# no verdict: class fix, and the cause says the tool gave none, with its words, never the fixed
+# verdict sentence. The fixture's realtools.sh points codesign, xcrun and spctl at stand-ins that accept
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.real0" || exit 3
+mkt() { # NAME RC WORDS [SIG]: a stand-in tool $FX/t_NAME: WORDS on stderr, then exit RC, or SIG to itself
+  printf '%s' "$3" > "$FX/w_$1"
+  printf '#!/bin/sh\n[ -s "%s" ] && { cat "%s" >&2; echo >&2; }\n%s\nexit %s\n' "$FX/w_$1" "$FX/w_$1" "$( [ -n "${4:-}" ] && echo "kill -$4 \$\$; /bin/sleep 1")" "$2" > "$FX/t_$1"; chmod +x "$FX/t_$1"
+}
+rtset() { sed -e "s#/usr/bin/codesign#${1:-$FX/t_cs}#" -e "s#/usr/bin/xcrun#$FX/t_xc#" -e "s#/usr/sbin/spctl#$FX/t_sp#" "$FX/rt.real0" > "$REPO/scripts/lib/realtools.sh"; }
+AP=$FX/b/Sheepr.app
+for t_ in "xc|1|xcrun: error: missing DEVELOPER_DIR path: /nonexistent||fix|stapler gave no verdict" \
+          "xc|1|xcrun: error: sh -c '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -find stapler 2> /dev/null' failed with exit code 17664: (null) (errno=Undefined error: 0)
+xcrun: error: unable to find utility \"stapler\", not a developer tool or in PATH||fix|unable to find utility" \
+          "xc|72|xcrun: error: unable to find utility \"stapler\", not a developer tool or in PATH||fix|stapler gave no verdict" \
+          "xc|0|Processing: $AP|KILL|fix|exit 137" \
+          "xc|0|Processing: $AP|TERM|fix|exit 143" \
+          "xc|69|You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.||fix|license" \
+          "cs|missing|||fix|No such file or directory" \
+          "cs|noexec|||fix|ermission denied" \
+          "xc|65|Processing: $AP
+Sheepr.app does not have a ticket stapled to it.||content|does not have a ticket stapled" \
+          "cs|3|test-requirement: code failed to satisfy specified code requirement(s)||content|failed to satisfy" \
+          "cs|1|$AP: code has no resources but signature indicates they must be present||content|no resources but signature" \
+          "sp|3|$AP: rejected||content|rejected"; do
+  tl_=${t_%%|*} rest_=${t_#*|}; rc_=${rest_%%|*} rest_=${rest_#*|}; wd_=${rest_%%|*} rest_=${rest_#*|}; sg_=${rest_%%|*} rest_=${rest_#*|}; want_=${rest_%%|*} has_=${rest_#*|}
+  mkt cs 0 ''; mkt xc 0 ''; mkt sp 0 ''; cpath_=""
+  case $rc_ in
+    missing) cpath_=$FX/t_nonexistent; rm -f "$FX/t_nonexistent" ;;
+    noexec) printf '#!/bin/sh\nexit 0\n' > "$FX/t_noexec"; chmod 644 "$FX/t_noexec"; cpath_=$FX/t_noexec ;;
+    *) mkt "$tl_" "$rc_" "$wd_" "$sg_" ;;
+  esac
+  rtset "$cpath_"; vc; rc=$?
+  [ $rc = 1 ] && [ "$(cls)" = "$want_" ] && grep -qF -- "$has_" "$FX/o" && { [ "$want_" = content ] || ! grep -q -e 'no valid staple ticket' -e 'does not meet the release requirement' -e 'Gatekeeper rejects' "$FX/o"; } \
+    && pass "$( [ "$want_" = content ] && echo '  control: ')r13b: $tl_ $( [ -n "$sg_" ] && echo "stopped by $sg_" || echo "exit $rc_")$( [ -n "$wd_" ] && printf ' (%s)' "$(printf '%s' "$wd_" | head -1 | cut -c1-50)"): class $want_; the cause holds '$has_'" \
+    || fail "r13b $tl_ $rc_ $sg_: rc=$rc '$(cls)' cause: $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
+done
+cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
 n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple_ok|spctl_ok) "')
-n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -c '|| rtfail \$? "')
+n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -cE '\|\| rtfail \$\? (codesign|stapler|spctl) "')
 [ "$n_rt" -ge 6 ] && [ "$n_rt" = "$n_ok" ] && pass "every Apple tool call in release.sh ($n_rt lines) hands its status to rtfail" || fail "rt_* calls: $n_rt lines, $n_ok through rtfail"
 finish

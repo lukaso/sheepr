@@ -4,7 +4,11 @@
 #   archive.sh make APP OUT.tar.gz          tar APP (Sheepr.app) with no xattrs, ACLs or mac
 #                                           metadata, owners 0/0 with no names
 #   archive.sh check ARCHIVE [--signed|--signed-unstapled]
-#                                           exit 0 only if ARCHIVE holds exactly the bundle
+#                                           exit 0 only if ARCHIVE holds exactly the bundle; 1 when
+#                                           it does not ("archive: ..."); 3 when the check could not
+#                                           run ("archive: cannot check: ...": no temp dir, a tar a
+#                                           signal stopped, an extraction that fails once the listing
+#                                           passed, i.e. a full or unwritable temp dir): no finding
 #
 # The default macOS tar stores com.apple.provenance and any com.apple.quarantine in pax headers
 # that `tar -t` does not show, and extraction restores them; it also stores the user's name.
@@ -18,6 +22,7 @@ PATH=/usr/bin:/bin; export PATH
 . "$(dirname "$0")/sigs.sh" || exit 1   # SIGS: the signals the cleanup trap catches
 usage() { echo "usage: archive.sh make APP OUT.tar.gz | archive.sh check ARCHIVE [--signed|--signed-unstapled]" >&2; exit 2; }
 bad() { echo "archive: $*" >&2; exit 1; }
+nocheck() { echo "archive: cannot check: $*" >&2; exit 3; }   # (no finding about the archive: r13b F3)
 [ $# -ge 2 ] || usage
 case $1 in
   make)
@@ -32,7 +37,7 @@ case $1 in
     [ $# -le 3 ] || usage
     [ $# -eq 3 ] && case $3 in --signed) signed=yes ;; --signed-unstapled) signed=unstapled ;; *) usage ;; esac
     [ -f "$arc" ] || bad "no archive $arc"
-    t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || exit 1
+    t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || nocheck "no temp dir"
     trap 'trap "" $SIGS; rm -rf "$t"' EXIT
     trap 'rm -rf "$t"; exit 1' $SIGS
     want="Sheepr.app/Contents/Info.plist
@@ -44,7 +49,9 @@ Sheepr.app/Contents/CodeResources"
     want=$(printf '%s\n' "$want" | sort)
     wantdirs=$(printf '%s\n' "$want" | while IFS= read -r f; do d=$(dirname "$f"); while [ "$d" != . ]; do echo "$d/"; d=$(dirname "$d"); done; done | sort -u)
     # the listing: regular files and directories, owners
-    tar -tvzf "$arc" > "$t/list" 2>/dev/null || bad "cannot list $arc"
+    tar -tvzf "$arc" > "$t/list" 2>/dev/null; r_=$?
+    [ $r_ -le 125 ] || nocheck "tar stopped by a signal while it listed $arc (exit $r_)"
+    [ $r_ = 0 ] || bad "cannot list $arc"
     files=$(awk '$1 ~ /^-/ {print $NF}' "$t/list" | sort)
     dirs=$(awk '$1 ~ /^d/ {print $NF}' "$t/list" | sed 's#/*$#/#' | sort -u)
     others=$(awk '$1 !~ /^[-d]/' "$t/list")
@@ -54,7 +61,8 @@ Sheepr.app/Contents/CodeResources"
     owners=$(awk '{print $3 " " $4}' "$t/list" | sort -u)
     [ "$owners" = "0 0" ] || bad "owners are not 0/0 without names: $(printf '%s' "$owners" | tr '\n' ',')"
     gzip -dc "$arc" | grep -a -q -e 'SCHILY.xattr' -e 'LIBARCHIVE.xattr' && bad "an xattr pax header"
-    mkdir "$t/x" && tar -xzf "$arc" -C "$t/x" || bad "cannot extract"
+    # (the listing passed: an extraction that fails is the temp dir's (full, unwritable) or a signal's)
+    mkdir "$t/x" && tar -xzf "$arc" -C "$t/x" || nocheck "cannot extract $arc into $t/x (a full or unwritable temp dir, or a stopped tar)"
     # macOS adds com.apple.provenance to every file this process creates (measured: even
     # `echo > f`), so that one is the extraction's own; any other (quarantine, ...) came from the
     # archive. The pax-header check above is the one that sees what the archive carries.

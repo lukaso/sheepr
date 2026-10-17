@@ -527,9 +527,16 @@ hashof() { # FILE: its sha256, or a stop (fix): shasum gave no hash
 # with a line of its own refusal (PREFIX) in FILE. A tool that cannot run (126, 127), a signal, a usage
 # error, or no such line is no verdict (r12b F1)
 judged() { [ "$1" = 1 ] && grep -q "^$3" "$2" 2>/dev/null; }
-# rtfail RC TEXT: an Apple tool's refusal (rt_judge's status): the content class only for its verdict
+# rtfail RC TOOL TEXT: an Apple tool's refusal (rt_judge's status). Its verdict on the bytes (1): the
+# content class and TEXT. No verdict (2): no class, and the cause says TOOL gave none, never TEXT (a
+# fixed verdict sentence there sent the build aside anyway; r13b F2). The tool's words ($RT_OUT, read
+# here, before the check's temp dir goes) in the cause either way
 # on the bytes (1), never when it gave none (2: it cannot run, a license stops it, it said nothing)
-rtfail() { [ "$1" = 1 ] && stopclass content; die "$2"; }
+rtfail() {
+  w_=$(errcut "${RT_OUT:-/dev/null}" 300)
+  if [ "$1" = 1 ]; then stopclass content; die "$3 ($2: $w_)"
+  else die "$2 gave no verdict on the bundle (exit ${rt_rc:-?}${w_:+: $w_}): it could not judge it, which says nothing about the build"; fi
+}
 stamp_line() { sh_=$(hashof "${MAN:-$1/MANIFEST.json}") || exit 1; printf '%s %s' "$tag" "$sh_"; }   # (in a $( ): its exit is the substitution's)
 stamp_ok() { # dir -> 0 if npm-check passed on this tag and this manifest (a hash that cannot be read: a stop, fix)
   [ -f "$1/NPM-CHECKED" ] && [ -f "${MAN:-$1/MANIFEST.json}" ] || return 1
@@ -1017,13 +1024,14 @@ npm_check() { # dir
   [ $r_ = 0 ] || { judged $r_ "$nt/npy.err" 'npm-same: ' && stopclass content; die "an npm package is refused (above)"; }
   # the bundle the real tools judge: an archive tar cannot list is a defect of its bytes; one that
   # lists and does not unpack is the temp dir's (full, unwritable)
-  /usr/bin/tar -tzf "$dt" > /dev/null 2>&1 || { stopclass content; die "the darwin package is not a gzip tar archive tar can read"; }
+  /usr/bin/tar -tzf "$dt" > /dev/null 2>&1; r_=$?   # (a tar a signal stopped, above 125: no finding)
+  [ $r_ = 0 ] || { [ $r_ -gt 125 ] || stopclass content; die "the darwin package is not a gzip tar archive tar can read (tar -t: exit $r_)"; }
   /usr/bin/tar -xzf "$dt" -C "$nt/p" || die "cannot unpack the darwin package into $nt/p"
   b=$nt/p/package/Sheepr.app
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$b/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the darwin package holds a control build (SheeprControlBuild in its Info.plist)"; }
-  rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || rtfail $? "codesign: the darwin package's bundle does not meet the release requirement"
-  rt_staple_ok "$b" || rtfail $? "stapler: the darwin package's bundle has no valid staple ticket"
-  rt_spctl_ok "$b" || rtfail $? "spctl: Gatekeeper rejects the darwin package's bundle"
+  rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the darwin package's bundle does not meet the release requirement"
+  rt_staple_ok "$b" || rtfail $? stapler "stapler: the darwin package's bundle has no valid staple ticket"
+  rt_spctl_ok "$b" || rtfail $? spctl "spctl: Gatekeeper rejects the darwin package's bundle"
   # the release archive: its own check (only files and directories, the bundle signed and
   # stapled), then the same files as the package, read raw: path, mode and content (a CDHash is
   # read from the embedded signature, not recomputed, so equal CDHashes prove nothing)
@@ -1052,14 +1060,15 @@ verify() { # dir -> exit 1 naming the tool that refused
   mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" || die "cannot copy $arc into $vt"
   RT_OUT=$vt/rt.out   # the Apple tools' words (rt_judge)
   verified_ah=$(hashof "$vt/a.tgz") || exit 1
-  /usr/bin/tar -tzf "$vt/a.tgz" > /dev/null 2>&1 || { stopclass content; die "$arc is not a gzip tar archive tar can read"; }
+  /usr/bin/tar -tzf "$vt/a.tgz" > /dev/null 2>&1; r_=$?   # (a tar a signal stopped, above 125: no finding)
+  [ $r_ = 0 ] || { [ $r_ -gt 125 ] || stopclass content; die "$arc is not a gzip tar archive tar can read (tar -t: exit $r_)"; }
   /usr/bin/tar -xzf "$vt/a.tgz" -C "$vt" && rm -f "$vt/a.tgz" || die "cannot unpack $arc into $vt"
   a=$vt/Sheepr.app
   # a control build's bundle carries the control marker (bundle.sh --control): never a release
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the archive holds a control build (SheeprControlBuild in its Info.plist)"; }
-  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || rtfail $? "codesign: the bundle does not meet the release requirement"
-  rt_staple_ok "$a" || rtfail $? "stapler: no valid staple ticket"
-  rt_spctl_ok "$a" || rtfail $? "spctl: Gatekeeper rejects the bundle"
+  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the bundle does not meet the release requirement"
+  rt_staple_ok "$a" || rtfail $? stapler "stapler: no valid staple ticket"
+  rt_spctl_ok "$a" || rtfail $? spctl "spctl: Gatekeeper rejects the bundle"
   rm -rf "$vt"; trap - EXIT
   verified=yes
   echo "release: $d: signed, notarized and stapled (checked from the archive)"

@@ -180,4 +180,31 @@ grep -q "$FX/cs127" "$REPO/scripts/lib/realtools.sh" || fail "premise: codesign'
 mk signed false; ncc; r=$?
 [ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'codesign' "$FX/o" && pass "r12b F1: an Apple tool that cannot run (exit 127): class fix" || fail "codesign 127 class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
 cp "$FX/rt.keep" "$REPO/scripts/lib/realtools.sh" || exit 3
+# r13b F3, F4: judged takes a checking tool's failure for a finding only for its own refusal (exit 1,
+# its "npm-same: " or "archive: " line). npm-same.py stand-ins (the fixture's): "npm-same: x", then a
+# KILL (137); a traceback (exit 1, no "npm-same: " line); exit 2 (usage): fix. Control: the real
+# npm-same refusing an extra file in a package: content
+cp "$REPO/scripts/lib/npm-same.py" "$FX/ns.real" || exit 3
+for t_ in 'kill|import os, signal, sys\nsys.stderr.write("npm-same: x\\n"); sys.stderr.flush(); os.kill(os.getpid(), signal.SIGKILL)' \
+          'trace|raise RuntimeError("a bug (stand-in)")' \
+          'usage|import sys\nsys.stderr.write("usage: npm-same.py (stand-in)\\n"); sys.exit(2)'; do
+  printf "${t_#*|}\n" > "$REPO/scripts/lib/npm-same.py"
+  mk signed false; ncc; r=$?
+  [ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'an npm package is refused' "$FX/o" && pass "r13b F4: npm-same.py ${t_%%|*} (no refusal of its own): class fix" || fail "npm-same ${t_%%|*}: rc=$r '$(cls)' $(tail -2 "$FX/o" | tr '\n' '|')"
+done
+cp "$FX/ns.real" "$REPO/scripts/lib/npm-same.py" || exit 3
+mk signed false; python3 "$E" "$D/$MT" "$FX/e.tgz" add package/binding.gyp '{}' && mv "$FX/e.tgz" "$D/$MT" && resum "$MT" || fail "could not add a file to $MT"
+ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'the files are' "$FX/o" && pass "  control: the real npm-same refusing an extra file in a package: class content" || fail "  extra file: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+# archive.sh stand-ins (the fixture's; the real tools stand in and accept): exit 3, "archive: cannot
+# check: ..." (its extraction out of room): fix. Control: exit 1, "archive: ..." (its refusal): content
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep2" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep2" || exit 3
+printf 'rt_meets() { return 0; }\nrt_staple_ok() { return 0; }\nrt_spctl_ok() { return 0; }\n' > "$REPO/scripts/lib/realtools.sh"
+for t_ in '3|archive: cannot check: cannot extract x into y (a full or unwritable temp dir, or a stopped tar)|fix' "1|archive: the files are not exactly the bundle's: x|content"; do
+  printf '#!/bin/sh\necho "%s" >&2\nexit %s\n' "$(printf '%s' "$t_" | cut -d'|' -f2)" "${t_%%|*}" > "$REPO/scripts/lib/archive.sh"; chmod +x "$REPO/scripts/lib/archive.sh"
+  mk signed false; ncc; r=$?; w_=${t_##*|}
+  [ $r = 1 ] && [ "$(cls)" = "$w_" ] && grep -q 'the release archive fails its check' "$FX/o" \
+    && pass "$( [ $w_ = content ] && echo '  control: ')r13b F3: archive.sh exit ${t_%%|*}$( [ $w_ = fix ] && echo ' (cannot check)' || echo ' (its refusal)'): class $w_" || fail "archive.sh ${t_%%|*}: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+done
+cp "$FX/rt.keep2" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep2" "$REPO/scripts/lib/archive.sh" || exit 3
 finish

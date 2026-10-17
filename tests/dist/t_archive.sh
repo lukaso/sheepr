@@ -42,6 +42,15 @@ codesign -s - -f "$app" 2>/dev/null
 "$A" check "$FX/su.tar.gz" --signed >/dev/null 2>&1 && fail "--signed accepted a bundle with no staple ticket" || pass "--signed refuses a bundle with no staple ticket"
 "$A" check "$FX/su.tar.gz" >/dev/null 2>&1 && fail "the unsigned check accepted a signed bundle" || pass "the unsigned check refuses a signed bundle"
 "$A" check "$FX/good.tar.gz" --signed-unstapled >/dev/null 2>&1 && fail "--signed-unstapled accepted an unsigned bundle" || pass "--signed-unstapled refuses an unsigned bundle"
+# r13b F3: an extraction that runs out of room (ulimit -f: the listing passes, the 16 KB executable
+# does not fit) is no finding about the archive: exit 3, "archive: cannot check:". Control: an extra
+# file, exit 1, its refusal
+lim=$(( $(wc -c < "$FX/good.tar.gz") / 512 + 4 ))
+[ $(( lim * 512 )) -lt "$(wc -c < "$FX/bin")" ] || fail "premise: the executable fits in $lim blocks (the row would prove nothing)"
+(ulimit -f "$lim"; "$A" check "$FX/good.tar.gz") > "$FX/room.o" 2>&1; rc=$?
+[ $rc = 3 ] && grep -q '^archive: cannot check: cannot extract' "$FX/room.o" && pass "r13b F3: the extraction out of room (ulimit -f $lim): exit 3, cannot check" || fail "room: rc=$rc $(tail -2 "$FX/room.o" | tr '\n' '|')"
+"$A" check "$FX/extra.tar.gz" > "$FX/extra.o" 2>&1; rc=$?
+[ $rc = 1 ] && grep -q '^archive: ' "$FX/extra.o" && ! grep -q 'cannot check' "$FX/extra.o" && pass "  control: an extra file: exit 1, its refusal" || fail "  extra: rc=$rc $(tail -1 "$FX/extra.o")"
 # a QUIT (its default runs no EXIT trap) and a USR1 to `archive.sh check` while tar lists the
 # archive (400 MiB of zeros, small once compressed, so tar runs long enough; tests/lib/sigchild.c
 # sends the signal once tar is archive.sh's child): archive.sh waits for tar, exits 1, writes
