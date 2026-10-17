@@ -982,6 +982,10 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   checks
   git -C "$root" show "$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
   cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
+  for f_ in $sourced; do
+    git -C "$root" show "$tag:$f_" > "$st/sourced" 2>/dev/null || die "cannot read $tag's $f_"
+    cmp -s "$root/$f_" "$st/sourced" || die "this $f_ is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
+  done
   tagobj=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag") || die "no tag $tag"
   # the commit the checks passed on must be the recorded object's (a tag moved in between is refused)
   tc=$(git -C "$root" rev-parse -q --verify "$tagobj^{commit}") && [ "$tc" = "$commit" ] \
@@ -991,10 +995,6 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # its release.sh
   git -C "$root" worktree add -q --detach "$st/tree" "$commit" || die "cannot make a worktree of $commit"
   wt=$st/tree root=$st/tree
-  for f_ in $sourced; do
-    git -C "$root" show "$tag:$f_" > "$st/sourced" 2>/dev/null || die "cannot read $tag's $f_"
-    cmp -s "$root/$f_" "$st/sourced" || die "this $f_ is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
-  done
   [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh
   # A2. the push target; A3. the push, as far as a dry run can tell
   ship_target

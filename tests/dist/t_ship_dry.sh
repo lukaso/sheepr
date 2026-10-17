@@ -407,6 +407,21 @@ g update-index --assume-unchanged scripts/release.sh && cp "$REPO/scripts/releas
 rm -rf "${OUTR:?}"; ship; r=$?
 cp "$FX/rs.keep" "$REPO/scripts/release.sh"; g update-index --no-assume-unchanged scripts/release.sh
 [ $r = 1 ] && grep -q "is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null && pass "a scripts/release.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "\$0 compare: rc=$r $(lastline)"
+# every file ship's parent sources from the checkout is compared with the tag's, as $0 is: an edit
+# of scripts/lib/sigs.sh hidden from git status (assume-unchanged; PROF dropped from the list) is
+# refused before any remote call
+g update-index --assume-unchanged scripts/lib/sigs.sh && cp "$REPO/scripts/lib/sigs.sh" "$FX/sg.keep" \
+  && sed -i '' 's/ VTALRM PROF"$/ VTALRM"/' "$REPO/scripts/lib/sigs.sh" && ! cmp -s "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh" && [ -z "$(g status --porcelain)" ] \
+  || fail "the hidden sigs.sh edit was not made"
+rm -rf "${OUTR:?}"; ship; r=$?
+cp "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh"; g update-index --no-assume-unchanged scripts/lib/sigs.sh
+[ $r = 1 ] && grep -q "scripts/lib/sigs.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
+  && pass "a scripts/lib/sigs.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "sigs.sh compare: rc=$r $(lastline)"
+# the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
+# outside any function are one, and it reads the list ship compares ($sourced)
+awk '/^[a-z_]+\(\) *\{/ {f = 1} /^}/ {f = 0} !f && /(^|[;&|{(]|then|else|do)[ \t]*\.[ \t]+"/ {print NR ": " $0}' "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
+[ "$(grep -c . "$FX/top.src")" = 1 ] && grep -q '\. "\$root/\$sourced"' "$FX/top.src" && grep -q '^sourced=scripts/lib/sigs\.sh$' "$SR_ROOT/scripts/release.sh" \
+  && pass "ship's parent sources one file from the checkout before its frozen tree, the one it compares" || fail "top-level source commands: $(tr '\n' '|' < "$FX/top.src")"
 # the push target
 pt_row() { # label want-text: set up by the caller; one run
   rm -rf "${OUTR:?}"; ship; r=$?
@@ -427,21 +442,6 @@ echo "file://$FX/origin2.git" > "$FX/updir"; pt_row "origin and github.com/lukas
 grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && grep -qx 'This run made nothing public.' "$OUTR/v0.1.0.ship-next.txt" && pass "  its stop text: this run made nothing public (before A4); run ship again" || fail "  disagree text: $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 # origin's main diverged from the tag's commit
 g branch -q side "$BASE" && (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
-# every file ship's parent sources from the checkout is compared with the tag's, as $0 is: an edit
-# of scripts/lib/sigs.sh hidden from git status (assume-unchanged; PROF dropped from the list) is
-# refused before any remote call
-g update-index --assume-unchanged scripts/lib/sigs.sh && cp "$REPO/scripts/lib/sigs.sh" "$FX/sg.keep" \
-  && sed -i '' 's/ VTALRM PROF"$/ VTALRM"/' "$REPO/scripts/lib/sigs.sh" && ! cmp -s "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh" && [ -z "$(g status --porcelain)" ] \
-  || fail "the hidden sigs.sh edit was not made"
-rm -rf "${OUTR:?}"; ship; r=$?
-cp "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh"; g update-index --no-assume-unchanged scripts/lib/sigs.sh
-[ $r = 1 ] && grep -q "scripts/lib/sigs.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
-  && pass "a scripts/lib/sigs.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "sigs.sh compare: rc=$r $(lastline)"
-# the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
-# outside any function are one, and it reads the list ship compares ($sourced)
-awk '/^[a-z_]+\(\) *\{/ {f = 1} /^}/ {f = 0} !f && /(^|[;&|{(]|then|else|do)[ \t]*\.[ \t]+"/ {print NR ": " $0}' "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
-[ "$(grep -c . "$FX/top.src")" = 1 ] && grep -q '\. "\$root/\$sourced"' "$FX/top.src" && grep -q '^sourced=scripts/lib/sigs\.sh$' "$SR_ROOT/scripts/release.sh" \
-  && pass "ship's parent sources one file from the checkout before its frozen tree, the one it compares" || fail "top-level source commands: $(tr '\n' '|' < "$FX/top.src")"
   git commit-tree -p "$BASE" -m side "$BASE^{tree}" > "$FX/side") && g push -q -f --no-follow-tags origin "$(cat "$FX/side"):refs/heads/main" || exit 3
 pt_row "origin's main diverged from the tag's commit" "diverged"
 g push -q -f --no-follow-tags origin "$BASE:refs/heads/main" || exit 3
@@ -469,20 +469,6 @@ printf '  echo "  git ls-remote origin refs/tags/$tag"\n' > "$FX/planted.sh"; [ 
 rm -f "$FX/calls"; env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" "$S/sgit" ls-remote https://127.0.0.1:9/x > /dev/null 2>&1; r=$?
 [ $r != 0 ] && grep -q '^SGIT REFUSED https://127.0.0.1:9/x$' "$FX/calls" && pass "the stand-in git refuses a remote that is not file:// (a planted https URL)" || fail "sgit and an https URL: rc=$r $(tail -1 "$FX/calls" 2>/dev/null)"
 env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" "$S/sgit" ls-remote "file://$FX/origin.git" > /dev/null 2>&1 && pass "control: the stand-in git takes a file:// remote" || fail "control: sgit refused file://"
-
-# --- A4 to A8: nothing of the version public; the tap; npm (owners, no session); the build's
-# preconditions, or a finished build's checks; then armed
-reached_end3() { completed; }
-nobuild() { ! grep -q '^build ' "$FX/calls" 2>/dev/null && ! grep -q '^notify ' "$FX/calls" 2>/dev/null; }
-rm -rf "${OUTR:?}"; ship; r=$?
-reached_end3 && pass "a clean pre-flight: A1 to A8 pass" || fail "the clean pre-flight: $(lastline)"
-grep -q '^docker info' "$FX/calls" && grep -q '^identity find-identity -v -p codesigning' "$FX/calls" && pass "no build yet: Docker, the images and the signing identity checked" || fail "the preconditions: $(grep -e '^docker' -e '^identity' "$FX/calls" | tr '\n' ' ')"
-pre_row() { # label want-text: the last run refused before the build, naming want-text (before A8: no notification)
-  [ $r = 1 ] && grep -q "$2" "$FX/o" && nobuild && ! grep -q '^notify' "$FX/calls" && pass "$1: refused before the build ($2)" || fail "$1: rc=$r $(grep '^notify' "$FX/calls" | head -1) $(lastline)"
-}
-# A4: anything of the version public
-g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
-rm -rf "${OUTR:?}"; ship; r=$?; pre_row "the tag on origin (and on github.com)" "public"
 # every remote argument is resolved (a URL in scp form with no user, a named remote other than
 # origin with an ssh URL) and only file:// goes on; git's ssh is a recorder here, so a remote that
 # got through is seen without any network; the control: a named remote with a file:// URL is taken
@@ -501,6 +487,20 @@ sgrow "a named remote with an ssh URL (fetch)" -C "$REPO" fetch -q other main
 rm -f "$FX/calls"; env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_SSH_COMMAND="$FX/sshrec" "$S/sgit" -C "$REPO" ls-remote otherfile > /dev/null 2>&1; r=$?
 [ $r = 0 ] && ! grep -q -e '^SGIT REFUSED' -e '^SSH REACHED' "$FX/calls" && pass "control: the stand-in git takes a named remote whose URL is file://" || fail "control: sgit and a file:// named remote: rc=$r $(tr '\n' '|' < "$FX/calls")"
 g remote remove other; g remote remove otherfile
+
+# --- A4 to A8: nothing of the version public; the tap; npm (owners, no session); the build's
+# preconditions, or a finished build's checks; then armed
+reached_end3() { completed; }
+nobuild() { ! grep -q '^build ' "$FX/calls" 2>/dev/null && ! grep -q '^notify ' "$FX/calls" 2>/dev/null; }
+rm -rf "${OUTR:?}"; ship; r=$?
+reached_end3 && pass "a clean pre-flight: A1 to A8 pass" || fail "the clean pre-flight: $(lastline)"
+grep -q '^docker info' "$FX/calls" && grep -q '^identity find-identity -v -p codesigning' "$FX/calls" && pass "no build yet: Docker, the images and the signing identity checked" || fail "the preconditions: $(grep -e '^docker' -e '^identity' "$FX/calls" | tr '\n' ' ')"
+pre_row() { # label want-text: the last run refused before the build, naming want-text (before A8: no notification)
+  [ $r = 1 ] && grep -q "$2" "$FX/o" && nobuild && ! grep -q '^notify' "$FX/calls" && pass "$1: refused before the build ($2)" || fail "$1: rc=$r $(grep '^notify' "$FX/calls" | head -1) $(lastline)"
+}
+# A4: anything of the version public
+g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
+rm -rf "${OUTR:?}"; ship; r=$?; pre_row "the tag on origin (and on github.com)" "public"
 :
 for rel in "v0.1.0 false false" "v0.1.0 true false"; do
   printf 'v0.0.9 false false\n%s\n' "$rel" > "$FX/rels"; rm -rf "${OUTR:?}"; ship; r=$?; pre_row "a release '$rel' on GitHub" "public"
