@@ -41,10 +41,10 @@ for kv in \
   "npm-approve-again|$T: npm may ask again: approve the upload of the main package in the browser" \
   "npm-approve-next|$T: npm may ask again: approve the next npm upload in the browser" \
   "done|$T is public on GitHub, Homebrew and npm" \
-  "logout-failed|$T: npm logout failed. Run npm logout in the terminal" \
+  "logout-failed|$T: npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal" \
   "failed-push|$T stopped at push. What to run next is in $T.ship-next.txt" \
   "failed-npm-platform|$T stopped at npm-platform. What to run next is in $T.ship-next.txt" \
-  "logout-failed-npm-main|$T stopped at npm-main, and npm logout failed. Run npm logout in the terminal; what to run next is in $T.ship-next.txt"; do
+  "logout-failed-npm-main|$T stopped at npm-main, and npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal; what to run next is in $T.ship-next.txt"; do
   k=${kv%%|*} want=${kv#*|}
   nt "$FX/osa" "$k" "$T"
   [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec")" = "$pre[$want]" ] && pass "$k: the table's text, after --" || fail "$k: rc=$r got '$(cat "$FX/rec" 2>/dev/null)'"
@@ -53,7 +53,7 @@ nt "$FX/osa" failed-abcdefghijabcdefghijabcdefghijab "$T"   # a phase of exactly
 [ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab. What to run next is in $T.ship-next.txt]" ] \
   && pass "a phase of exactly 32 characters: accepted" || fail "32-character phase: rc=$r $(cat "$FX/err")"
 nt "$FX/osa" logout-failed-abcdefghijabcdefghijabcdefghijab "$T"
-[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab, and npm logout failed. Run npm logout in the terminal; what to run next is in $T.ship-next.txt]" ] \
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at abcdefghijabcdefghijabcdefghijab, and npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal; what to run next is in $T.ship-next.txt]" ] \
   && pass "logout-failed-PHASE: a phase of exactly 32 characters accepted" || fail "logout-failed 32-character phase: rc=$r $(cat "$FX/err")"
 # with the out dir (release.sh gives it to failed-PHASE and logout-failed-PHASE): the next file's full
 # path, so the notification names a file that opens from any window; a dir that is not absolute, or
@@ -62,7 +62,7 @@ nt "$FX/osa" failed-push "$T" "/Users/o p/sheepr-release"
 [ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at push. What to run next is in /Users/o p/sheepr-release/$T.ship-next.txt]" ] \
   && pass "failed-PHASE with the out dir: the next file's full path" || fail "failed-push with dir: rc=$r '$(cat "$FX/rec" 2>/dev/null)' $(cat "$FX/err")"
 nt "$FX/osa" logout-failed-npm-main "$T" "/Users/o/sheepr-release"
-[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at npm-main, and npm logout failed. Run npm logout in the terminal; what to run next is in /Users/o/sheepr-release/$T.ship-next.txt]" ] \
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at npm-main, and npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal; what to run next is in /Users/o/sheepr-release/$T.ship-next.txt]" ] \
   && pass "logout-failed-PHASE with the out dir: the next file's full path" || fail "logout-failed with dir: rc=$r '$(cat "$FX/rec" 2>/dev/null)'"
 for d in 'sheepr-release' "/Users/o/a$(printf '\001')b"; do
   nt "$FX/osa" failed-push "$T" "$d"

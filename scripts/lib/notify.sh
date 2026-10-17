@@ -54,13 +54,13 @@ case $key in
   npm-approve-next) text="$tag: npm may ask again: approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
-  logout-failed) text="$tag: npm logout failed. Run npm logout in the terminal" ;;
+  logout-failed) text="$tag: npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
     text="$tag stopped at $phase. What to run next is in $nf" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; what to run next is in $nf" ;;
+    text="$tag stopped at $phase, and npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal; what to run next is in $nf" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 

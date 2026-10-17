@@ -174,20 +174,20 @@ h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*)
 nopub() { ! grep -q -e '^npm publish' -e '^npm view' "$FX/calls"; }
 mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail"
 [ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && pass "not logged in to npm: refused before any view or upload" || fail "whoami fails: rc=$r $(order) $(tail -1 "$FX/o")"
-# npm's E401 with a counted login line in npm's userconfig (an expired token) names its remedy, npm
-# config delete, at each npm call of publish-npm that can answer it: whoami, a view before an upload,
-# and the wait's last view after one (each site's own npmhint). Control: no counted line, no delete
+# npm's E401, a counted login line in npm's userconfig, at each npm call of publish-npm that can answer
+# it (whoami, a view before an upload, the wait's last view after one): npm's words, then npm_tokens
+# (REV 10: the count picks no words, and no delete is named). Control: no counted line, the same
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/dryrc"
 mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
-[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && pass "whoami answering E401, a counted token line: refused before any upload, naming npm config delete //registry.npmjs.org/:_authToken" || fail "whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "whoami answering E401, a counted token line: refused before any upload; npm's words, then npm_tokens, no delete" || fail "whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 mkout "$D" v0.1.0; echo E401 > "$FX/viewcode.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcode.sheepr-linux-arm64"
-[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'cannot tell whether sheepr-linux-arm64@0.1.0 is on npm' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && pass "a view before an upload answering E401, a counted token line: refused there, naming npm config delete //registry.npmjs.org/:_authToken" || fail "view E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'cannot tell whether sheepr-linux-arm64@0.1.0 is on npm' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "a view before an upload answering E401, a counted token line: refused there; npm_tokens, no delete" || fail "view E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 mkout "$D" v0.1.0; echo E401 > "$FX/viewcodeafter.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcodeafter.sheepr-linux-arm64"
-[ $r = 1 ] && grep -q 'sheepr-linux-arm64@0.1.0 is not visible on npm after' "$FX/o" && grep -q 'the last view: E401' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
-  && pass "the views after an upload answering E401 to the wait's limit, a counted token line: the stop names npm config delete //registry.npmjs.org/:_authToken" || fail "wait E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+[ $r = 1 ] && grep -q 'sheepr-linux-arm64@0.1.0 is not visible on npm after' "$FX/o" && grep -q 'the last view: E401' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" \
+  && pass "the views after an upload answering E401 to the wait's limit, a counted token line: npm_tokens, no delete" || fail "wait E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 rm -f "$FX/dryrc"
 mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
-[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "control: whoami E401 with no counted line: no npm config delete" || fail "control whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && ! grep -q 'config delete' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && pass "control: whoami E401 with no counted line: the same npm_tokens, no delete" || fail "control whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 mkout "$D" v0.1.0; echo other > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && ! grep -q '^npm owner' "$FX/calls" && grep -q 'logged in to npm as other' "$FX/o" && pass "logged in to npm as another user than release.conf's: refused before any owner, view or upload call" || fail "other user: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; printf 'lukasco\nnpm notice x\n' > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"

@@ -863,8 +863,8 @@ publish_npm_exec() { # dir
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")"
-  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); this step uploaded nothing"
+    || die "npm whoami failed (not logged in to npm?)$(next_hint ": log in as ${SR_NPM_USER:-the owner} with cd / && npm login --registry=$NPMREG, then publish-npm again"); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")"
+  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": log in as that user with cd / && npm login --registry=$NPMREG, then publish-npm again"); this step uploaded nothing"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
@@ -1142,9 +1142,6 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   notify npm-login
   logged_in=yes
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
-  # the login lines right after the login: ship's own line, and any older line npm's login rewrote into
-  # a spelling ship counts (it normalizes the file); ship_exit speaks only of ship's own (REV 9 rule 3)
-  ship_la=$(npmauth)
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end)
   e_=$(( $(date +%s) + 7200 )); ship_end=$(date -r "$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null || date -d "@$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null)
@@ -1276,42 +1273,51 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
     [ "$pp" = true ] || die "this gh login cannot write $r_"
   done
 }
-# npmauth: npm's login lines for registry.npmjs.org in the userconfig npm names: "unreadable", or
-# "N ROOT". N counts every spelling npm reads: any spacing, a quoted key, a port, any path under the
-# host (a path-specific line wins for the requests under it), and _authToken, _auth, _password or
-# username. ROOT is yes when N is 1 and that line is the root //registry.npmjs.org/:_authToken one:
-# only then does `npm config delete //registry.npmjs.org/:_authToken` remove exactly the line npm used
-# (with two, npm uses the later one, and the delete removes both). VAR is yes when N is not 0 and every
-# counted line's token is a ${VAR} reference (no token in the file). No file: "0 no no"
+# npmauth: the number of npm's login lines for registry.npmjs.org in the userconfig npm names, or
+# "unreadable" (no file: 0). It counts every spelling ship knows npm reads: any spacing, a quoted key, a
+# port, any path under the host, and _authToken, _auth, _password or username. Only A6's clean state
+# reads it (0 lines and whoami ENEEDAUTH): ship cannot know which line npm sends, or what kind of
+# token it holds, so no count picks a remedy's words (PLAN-ship.md REV 10)
 npmauth() {
   uc=$(tool "$NPMC" "$NPM" config get userconfig 2>/dev/null) && [ -n "$uc" ] || { echo unreadable; return; }
-  [ -e "$uc" ] || { echo "0 no no"; return; }
+  [ -e "$uc" ] || { echo 0; return; }
   [ -r "$uc" ] || { echo unreadable; return; }
   re_='^[[:space:]]*"?//registry\.npmjs\.org(:[0-9]+)?(/[^:=[:space:]]*)?:(_authToken|_auth|_password|username)"?[[:space:]]*='
   na_=$(grep -ciE "$re_" "$uc") || [ "$na_" = 0 ] || { echo unreadable; return; }
-  ro_=no
-  [ "$na_" = 1 ] && grep -iE "$re_" "$uc" | grep -qE '^[[:space:]]*//registry\.npmjs\.org/:_authToken[[:space:]]*=' && ro_=yes
-  va_=no; [ "$na_" != 0 ] && [ "$(grep -iE "$re_" "$uc" | grep -cE '=[[:space:]]*"?\$\{')" = "$na_" ] && va_=yes
-  echo "$na_ $ro_ $va_"
+  echo "$na_"
 }
-tokcount() { a_=$(npmauth); echo "${a_%% *}"; }   # N of npmauth, or unreadable
-# npm_tokens: how a login line's token ends, one construction (PLAN-ship.md, "npm token remedies (REV
-# 9)"). Every text that deletes or removes a registry.npmjs.org login line names it first, whatever
-# npmauth counted (ship's count reads the userconfig by a pattern, not by npm's ini reader, and the two
-# disagree on some spellings, so its "one root line" can be two); no text says "revoke" alone. A
-# session from npm login (ship's own is one) is not on npmjs.com's Access Tokens list
-npm_tokens="Deleting or editing a login line ends no token: a session from npm login ends by itself 2 hours after that login, and npm logout asks npm's server to end it sooner, while npm still sends its line; an access token ends when you revoke it under Access Tokens on npmjs.com; an _auth line holds the account's user name and password"
-readonly npm_tokens
+tokcount() { npmauth; }
+# shipkey: yes when the userconfig npm names holds ship's own login key, the root
+# //registry.npmjs.org/:_authToken (any spacing), no when it does not, "unreadable" when it cannot
+# tell. It reads keys only (each line cut at its first =), never a value: ship_exit's "ship's line is
+# still there" (REV 10 rule 4), never a count of other lines
+shipkey() {
+  uc=$(tool "$NPMC" "$NPM" config get userconfig 2>/dev/null) && [ -n "$uc" ] || { echo unreadable; return; }
+  [ -e "$uc" ] || { echo no; return; }
+  [ -r "$uc" ] || { echo unreadable; return; }
+  if sed -e 's/=.*//' "$uc" | grep -qE '^[[:space:]]*//registry\.npmjs\.org/:_authToken[[:space:]]*$'; then echo yes; else echo no; fi
+}
+# npm_logout, npm_delete: the only npm credential commands ship names (PLAN-ship.md REV 10 rule 1), each
+# from / (from a project dir, npm logout ended the project's token and left ship's: r12b, measured).
+# npm_delete only for ship's own line, after the clock time its session ends by itself
+npm_logout="cd / && npm logout --registry=https://registry.npmjs.org/"
+npm_delete="cd / && npm config delete //registry.npmjs.org/:_authToken"
+# npm_tokens: the one fixed paragraph every npm credential stop shows after npm's own words (REV 10
+# rule 2): REV 9's facts (how each kind of token ends) and REV 10's (what npm logout does). Its one
+# removal is conditional on the line's token having ended. Nothing in it is chosen by a count
+npm_tokens="Deleting or editing a login line ends no token. A session from npm login ends by itself 2 hours after that login and is not on npmjs.com's Access Tokens list; an access token ends when you revoke it under Access Tokens on npmjs.com; a \${VAR} line holds no token in the file, and ship runs npm with no environment variables. npm logout asks npm's server to end the token npm sends for registry.npmjs.org, wherever that token is used, and removes its line only when the server accepted. Remove a login line only once that line's token has ended (an _auth line holds a user name and password, not a token)"
+readonly npm_logout npm_delete npm_tokens
 ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session ship did not make:
   # the token count 0 and whoami ENEEDAUTH
   npm_list; npm_owners "$NPMC" "$NPM" "$st"
   n=$(tokcount)
   if who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err"); then
-    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it asks npm's server to end the session). If a registry.npmjs.org login line is still in npm's userconfig after it (npm logout cannot remove an _auth line): $npm_tokens. Then remove that line. Then run ship again (ship logs in itself, after the build)"
+    # REV 10 rule 3: the logout command; it ends that token everywhere it is used, whatever its kind
+    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run $npm_logout: it ends that token everywhere it is used, whatever its kind; if it fails, npm's words say why, and the next run stops here again. $npm_tokens. Then run ship again (ship logs in itself, after the build)"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
   # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
-  # the remedy for its exact code (npmhint); the class is fix, whatever npm answered
+  # npm_tokens (npmhint); the class is fix, whatever npm answered
   [ "$n" = 0 ] && [ "$(npmcode "$st/who.err")" = ENEEDAUTH ] && return 0
   stopclass fix; die "cannot tell whether an npm session exists (npm whoami: $(errcut "$st/who.err" 200))$(npmhint "$st/who.err")"
 }
@@ -1321,34 +1327,14 @@ npmcode() {
   e_=$(printf '\033')
   sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null | sed -n -e 's/^npm error code \([A-Za-z0-9_]*\).*/\1/p' -e 's/^npm ERR! code \([A-Za-z0-9_]*\).*/\1/p' | head -1
 }
-# npmhint FILE: the remedy for npm's exact error code in FILE, as a sentence to append, or nothing.
-# The one place a remedy is named, at every npm failure site; its absence changes nothing else (the
-# class comes from ship's own checks). Each text that removes a login line or names npm config delete
-# names how each token ends first (npm_tokens); the count only picks the words. Lines whose tokens are
-# all ${VAR} references hold no token: ship's npm gets no environment variable, so they cannot work
-# under ship (no revoke, no "expired"). ERR_INVALID_AUTH (a top-level _authToken): npm config fix, run
-# with no --registry, names it with the registry the userconfig names; a text never names the
-# registry.npmjs.org key for it (that would send a private registry's token to registry.npmjs.org). E401 names npm config delete
-# only when npmauth counts exactly one registry.npmjs.org login line and it is the root _authToken one;
-# with more, or another one, npm may have refused another token than a delete would remove; with none,
-# the token is outside the lines ship counts. ENEEDAUTH with lines: lines whoami does not use (an empty
-# token, ${NPM_TOKEN?} unset, or a line only other npm commands send, as views and uploads send a
-# no-slash or a path-specific line); ERR_INVALID_AUTH is an _authToken that names no registry
+# npmhint FILE: what follows npm's own words at every npm failure site, for a credential code: the
+# fixed paragraph npm_tokens (REV 10 rule 2), and for ERR_INVALID_AUTH first rule 5's fixed sentence.
+# No command, and no count picks the words: ship cannot know which line npm sends or what kind of
+# token it holds. Its absence changes nothing else (the class comes from ship's own checks)
 npmhint() {
-  hc_=$(npmcode "$1") hn_=""
-  case $hc_ in E401|ENEEDAUTH) hn_=$(npmauth) ;; esac
-  case $hc_:${hn_##* } in
-    E401:yes|ENEEDAUTH:yes) printf '%s' ". npm's userconfig holds a registry.npmjs.org login line whose token is a variable (\${...}), which holds no token: ship runs npm with no environment variables, so that line cannot work under ship: remove it"; return 0 ;;
-  esac
-  hn_=${hn_% *}
-  case $hc_:$hn_ in
-    "E401:0 no") printf '%s' ". npm answered E401, and ship counts no registry.npmjs.org login line in npm's userconfig: a token outside the lines ship counts (a spelling ship does not count, or another file npm reads: look at npm config list). $npm_tokens. Then remove that line" ;;
-    E401:unreadable) ;;
-    "E401:1 yes") printf '%s' ". npm answered E401 with a login token line in npm's userconfig (an expired token). $npm_tokens. Then run npm config delete //registry.npmjs.org/:_authToken" ;;
-    E401:*) printf '%s' ". npm answered E401, and npm's userconfig holds ${hn_%% *} registry.npmjs.org login lines, or one that is not the //registry.npmjs.org/:_authToken line: npm may have refused another token than the one a delete would remove. $npm_tokens. Then remove those lines" ;;
-    "ENEEDAUTH:0 no"|ENEEDAUTH:unreadable) ;;
-    ENEEDAUTH:*) printf '%s' ". whoami does not use the registry.npmjs.org login lines in npm's userconfig (an empty token, one from a variable that is not set, or a line only other npm commands send). $npm_tokens. Then remove those lines" ;;
-    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry: run npm config fix, with no --registry (it names that line with the registry your userconfig names, registry.npmjs.org when it names none)" ;;
+  case $(npmcode "$1") in
+    E401|ENEEDAUTH) printf '%s' ". $npm_tokens" ;;
+    ERR_INVALID_AUTH) printf '%s' ". npm's message names ship's --registry (registry.npmjs.org), not the registry your config names: do not rename a line to that key unless its token is for registry.npmjs.org. $npm_tokens" ;;
   esac
 }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
@@ -1462,23 +1448,18 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # (in a dry entry the temp HOME still exists here)
   if [ "$logged_in" = yes ]; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" 2> "$st/logout.err"; cat "$st/logout.err" >&2
-    drain; na=$(npmauth); n=${na%% *}; lc=$(npmcode "$st/logout.err")
-    # ship's own lines left: those counted now beyond the older ones counted right after its login
-    # (all of them but ship's own line); the older ones are not ship's, and no text speaks of them
-    o_=${ship_la:-}; o_=${o_%% *}
-    case $n:$o_ in *unreadable*|*:) ;; *) [ "$o_" -gt 0 ] && n=$(( n - (o_ - 1) )); [ "$n" -ge 0 ] || n=0 ;; esac
+    # ship's line is still there when ship's own root _authToken key is (REV 10 rule 4: keys only, never
+    # a value, never a count of other lines); a userconfig that cannot be read cannot vouch for it
+    drain; sk=$(shipkey); n=0; [ "$sk" = no ] || n=1; lw=$(errcut "$st/logout.err" 200)
   fi
   if [ "$n" != 0 ]; then
-    # REV 9 rule 2: ship's own session; npm logout is the only remedy until it ends with no error or
-    # answers E401 (the session is over then): never a delete of its line before that, never Access
-    # Tokens (npmjs.com does not list a session); the clock time it ends by itself
+    # REV 10 rule 4: ship's own session, after any failed logout (E401 too: another line's token may
+    # answer it): the logout again; the clock time the session ends by itself; then, only after that
+    # time, the delete of ship's own line. npm's words and npm_tokens first (rule 2)
     rc=1
-    if [ "${lc:-}" = E401 ]; then
-      lo="npm logout answered E401: npm no longer accepts ship's session, and its line stays in npm's userconfig (login token lines left: $n). $npm_tokens. Then run npm config delete //registry.npmjs.org/:_authToken"
-      [ "${na% *}" = "1 yes" ] || lo="npm logout answered E401: npm no longer accepts ship's session, and login lines stay in npm's userconfig (login token lines left: $n). $npm_tokens. Then remove those lines"
-    else
-      lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can ask npm's server to end ship's session sooner only while that line is there. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login)."
-    fi
+    lo="ship's npm login line is still in npm's userconfig after npm logout$( [ -n "$lw" ] && printf ' (npm logout: %s)' "$(redact "$lw")")"
+    [ "$sk" != unreadable ] || lo="ship cannot tell whether its npm login line is still in npm's userconfig after npm logout (the userconfig cannot be read)$( [ -n "$lw" ] && printf ' (npm logout: %s)' "$(redact "$lw")")"
+    lo="$lo. $npm_tokens. Run $npm_logout again until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login); after that time its line holds no live token, and you may run $npm_delete."
   fi
   # the stop text, with the logout's remedy second when there is one (to the file again, then stdout);
   # with no stop text (a release done), the remedy alone
@@ -1520,7 +1501,7 @@ ship_stoptext() {
   # each runnable line names the operator's checkout by its absolute path (oroot: root is the frozen
   # tree by now), so it runs as printed from any directory (a new terminal window opens in ~)
   run="  sh $(dq "$oroot/scripts/release.sh")" o="--out $(dq "$out") $tag"
-  login="  npm login --registry=$NPMREG"
+  login="  cd / && npm login --registry=$NPMREG"
   mainp=""; for p_ in ${SR_NPM_PKGS:-}; do mainp=$p_; done
   up=$(sed -n 's/^start npm-platform //p' "$shipprog" 2>/dev/null); grep -qx 'start npm-main' "$shipprog" 2>/dev/null && up="$up $mainp"
   echo "release: ship $tag stopped at $phase: $cause"
