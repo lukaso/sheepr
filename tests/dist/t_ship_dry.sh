@@ -53,6 +53,15 @@ exit 1
 EOF
 chmod +x "$B/git"
 printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\n' "$FX" > "$B/sleep"; chmod +x "$B/sleep"
+# mktemp: the real one; each dir it makes for release.sh (sr-ship, sr-publish, sr-npmpub, sr-dryhome,
+# sr-release) is recorded in $FX/made, so a row can hold every one to a name on the run's stderr
+cat > "$B/mktemp" <<EOF
+#!/bin/sh
+d=\$(/usr/bin/mktemp "\$@") || exit \$?
+case \${d##*/} in sr-ship.*|sr-publish.*|sr-npmpub.*|sr-dryhome.*|sr-release.*) echo "\$d" >> "$FX/made" ;; esac
+printf '%s\n' "\$d"
+EOF
+chmod +x "$B/mktemp"
 # the stand-ins (in the fixtures, by variable): each records "NAME args" in calls and whether its
 # HOME exists
 S=$FX/st; mkdir -p "$S"
@@ -289,7 +298,7 @@ chmod +x "$S/sgit"
 
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
-  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/pipe.rc"
+  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/pipe.rc" "$FX/made"
   set -- SR_ASK_RECORD="$FX/asks" SR_SHIP_DRY_BUILD="$S/build" SR_SHIP_DRY_NPMCHECK="$S/npmcheck" SR_SHIP_DRY_NOTIFY="$S/notify" SR_SHIP_DRY_CAFFEINATE="$S/caffeinate" \
     SR_SHIP_DRY_IDENTITY="$S/identity" SR_SHIP_DRY_DOCKER="$S/docker" SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" \
     SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" $( [ "${VERIFIED:-}" = - ] || printf '%s' "SR_PUBLISH_DRY_VERIFIED=${VERIFIED:-$AH}" ) "$@"
@@ -308,16 +317,20 @@ $a" ;; esac; done
       $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 2> "$FX/o"; echo $? > "$FX/pipe.rc"; } | sed -n "/$PIPEQ/q"
     r_=$(cat "$FX/pipe.rc")
   fi
-  dryhomes "$FX/o"
+  dryhomes "$FX/o"; cat "$FX/made" >> "$FX/allmade" 2>/dev/null
   [ ! -s "$FX/pathcalls" ] || fail "a PATH tool was called in a ship run: $(head -2 "$FX/pathcalls" | tr '\n' ' ')"
   [ -n "${KEEP:-}" ] || world_reset; return $r_
 }
-# this cell's own leaked phase dirs: publish's and publish-npm's private copies name the fixture
-fxleaks() { for d in /private/tmp/sr-npmpub.* /private/tmp/sr-publish.*; do [ -d "$d" ] && grep -rqs -F -- "$FX" "$d" && echo "$d"; done; }
-# the dry HOMEs the last run named are gone, and no phase dir of this cell is left
-leakfree() { [ -z "$(fxleaks)" ] && [ -z "$(sed -n 's/.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$FX/o" | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ]; }
-# the dry HOMEs a run named (a phase's go to stderr, so a PIPEQ run's are read too), for the last row
-dryhomes() { sed -n 's/.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$1" >> "$FX/dryhomes"; }
+# the temp dirs a run named on its output (`a temp dir, PATH` on stderr, and the dry entries' `a temp
+# HOME, PATH`): a PIPEQ run's $FX/o holds its stderr only
+named() { sed -n -e 's/.*a temp HOME, \(\/private\/tmp\/sr-[a-z]*\.[A-Za-z0-9]*\).*/\1/p' -e 's/.*a temp dir, \(\/private\/tmp\/sr-[a-z]*\.[A-Za-z0-9]*\).*/\1/p' "$1" | sort -u; }
+# the dirs the last run made (mktemp's record) that it did not name, or that are left
+unnamed() { named "$FX/o" > "$FX/named"; sort -u "$FX/made" 2>/dev/null | grep -v -x -F -f "$FX/named"; }
+leftover() { sort -u "$FX/made" "$FX/named" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done; }
+# every dir the last run made is named on its output and gone
+leakfree() { [ -z "$(unnamed)" ] && [ -z "$(leftover)" ]; }
+# the dirs a run named (a phase's go to stderr, so a PIPEQ run's are read too), for the last row
+dryhomes() { named "$1" >> "$FX/dryhomes"; }
 # what a run changed, kept for the rows (origin's refs, the tap's cask), then put back: origin's main
 # at BASE and no v0.1.0 tag, npm with nothing published, the tap at 0.0.9, no uploads
 world_reset() {
@@ -732,9 +745,8 @@ rm -rf "${OUTR:?}"
 # notification, the worktree, the temp dirs and the lock; signals; caffeinate
 NF=$OUTR/v0.1.0.ship-next.txt
 nots() { grep '^notify ' "$FX/calls" | sed 's/^notify \([^ ]*\) .*/\1/' | tr '\n' ' '; }
-gone() { # the temp dir, the worktree, the lock and the dry HOMEs of the last run are gone
-  [ "$(g worktree list | grep -c .)" = 1 ] && [ ! -e "$OUTR/.ship.lock" ] && [ -z "$(sed -n 's/^release: .*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\).*/\1/p' "$FX/o" | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ] \
-    && [ -z "$(sed -n 's/.*\(\/private\/tmp\/sr-ship\.[A-Za-z0-9]*\)\/tree.*/\1/p' "$FX/calls" | sort -u | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)" ]
+gone() { # the worktree and the lock of the last run are gone, and every dir it made is named and gone
+  [ "$(g worktree list | grep -c .)" = 1 ] && [ ! -e "$OUTR/.ship.lock" ] && leakfree
 }
 # a success: one logout, then done (the count 0); no next file (an earlier one removed)
 rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; ship; r=$?
@@ -1043,7 +1055,10 @@ rm -rf "${OUTR:?}"; rm -f "$FX/onshow.done"; ship; r=$?; rm -f "$FX/onshow" "$FX
 rm -rf "${OUTR:?}"
 # --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
 # tag off the grammar are refused before ship's own exit handler is set)
-n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .)
-left_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)
-[ -z "$left_dh" ] && [ "$n_dh" -ge 100 ] && [ -z "$(fxleaks)" ] && pass "none of the $n_dh dry HOMEs this cell's runs named is left, nor a phase dir naming it" || fail "dry HOMEs left ($(printf '%s\n' "$left_dh" | grep -c .) of $n_dh): $(printf '%s\n' "$left_dh" | tr '\n' ' ') phase dirs: $(fxleaks | tr '\n' ' ')"
+n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .); n_mk=$(sort -u "$FX/allmade" 2>/dev/null | grep -c .)
+left_dh=$(sort -u "$FX/dryhomes" "$FX/allmade" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)
+un_dh=$(sort -u "$FX/allmade" 2>/dev/null | grep -v -x -F -f "$FX/dryhomes")
+[ -z "$left_dh" ] && [ -z "$un_dh" ] && [ "$n_mk" -ge 100 ] && [ "$(sort -u "$FX/allmade" | grep -c '/sr-npmpub\.')" -ge 1 ] \
+  && pass "every one of the $n_mk temp dirs this cell's runs made was named on the run's output, and none is left" \
+  || fail "temp dirs left ($(printf '%s\n' "$left_dh" | grep -c .)): $(printf '%s\n' "$left_dh" | head -3 | tr '\n' ' ') not named ($(printf '%s\n' "$un_dh" | grep -c .)): $(printf '%s\n' "$un_dh" | head -3 | tr '\n' ' ')"
 finish

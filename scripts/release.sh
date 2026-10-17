@@ -459,6 +459,7 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
+  drydir "$pt"
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
@@ -566,6 +567,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  drydir "$DRYHOME"
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-dry (stand-ins; verify not run; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
@@ -655,6 +657,7 @@ publish_cask_exec() { # dir: the cask step alone, for a release that is already 
   d=$1
   case $tag in *-rc.*) die "an rc: the Homebrew cask follows final releases only" ;; esac
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
+  drydir "$pt"
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"; m=$MAN
   mf() { sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$m" | head -1; }
@@ -678,6 +681,7 @@ publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real 
   dryentry=yes
   standins SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_CURL
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  drydir "$DRYHOME"
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __publish-cask-dry (stand-ins; a temp HOME, $DRYHOME)"
   [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
@@ -761,6 +765,7 @@ publish_npm_exec() { # dir
   [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); nothing was published"
   case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; nothing was published" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
+  drydir "$pc"
   trap 'trap "" $SIGS; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   chmod 700 "$pc" || die "cannot make $pc private"
   private_manifest "$d" "$pc"; m=$MAN
@@ -843,6 +848,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
     NOTIFY=$SR_PUBLISH_DRY_NOTIFY
   fi
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  drydir "$DRYHOME"
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS   # right after mktemp: a death before the run's own trap leaves no temp HOME (a signal in between still can)
   echo "release: __publish-npm-dry (a stand-in npm and notifier; a temp HOME, $DRYHOME)"
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
@@ -940,6 +946,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
     SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   cmp -s "$SR_SHIP_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_SHIP_DRY_NOTIFY is the real notify.sh, not a stand-in"
   DRYHOME=$(mktemp -d /private/tmp/sr-dryhome.XXXXXX) || die "no temp HOME"
+  drydir "$DRYHOME"
   # right after mktemp, as in the other dry entries: ship_run refuses an rc or a tag off the grammar
   # before it sets its own exit handler (which then replaces this one and removes the temp HOME)
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
@@ -961,6 +968,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
+  drydir "$st"
   shipcause=$st/cause shipcls=$st/class; stopclass fix
   locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt=""
   trap 'ship_exit $?' EXIT
@@ -1092,6 +1100,10 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
 }
 progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names
   [ -z "$shipprog" ] || printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
+}
+drydir() { # dir: a dry run names each temp dir it makes on stderr (a closed stdout cannot hide it),
+           # so its cells can hold every one to being gone; a real run (no temp HOME) says nothing
+  [ -z "${DRYHOME:-}" ] || echo "release: (dry) a temp dir, $1" >&2
 }
 drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase's own trap removes it)
   [ "$dryentry" = yes ] || return 0
