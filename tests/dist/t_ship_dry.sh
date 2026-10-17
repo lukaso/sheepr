@@ -421,6 +421,21 @@ echo "file://$FX/origin2.git" > "$FX/updir"; pt_row "origin and github.com/lukas
 grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && grep -qx 'This run made nothing public.' "$OUTR/v0.1.0.ship-next.txt" && pass "  its stop text: this run made nothing public (before A4); run ship again" || fail "  disagree text: $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 # origin's main diverged from the tag's commit
 g branch -q side "$BASE" && (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+# every file ship's parent sources from the checkout is compared with the tag's, as $0 is: an edit
+# of scripts/lib/sigs.sh hidden from git status (assume-unchanged; PROF dropped from the list) is
+# refused before any remote call
+g update-index --assume-unchanged scripts/lib/sigs.sh && cp "$REPO/scripts/lib/sigs.sh" "$FX/sg.keep" \
+  && sed -i '' 's/ VTALRM PROF"$/ VTALRM"/' "$REPO/scripts/lib/sigs.sh" && ! cmp -s "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh" && [ -z "$(g status --porcelain)" ] \
+  || fail "the hidden sigs.sh edit was not made"
+rm -rf "${OUTR:?}"; ship; r=$?
+cp "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh"; g update-index --no-assume-unchanged scripts/lib/sigs.sh
+[ $r = 1 ] && grep -q "scripts/lib/sigs.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
+  && pass "a scripts/lib/sigs.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "sigs.sh compare: rc=$r $(lastline)"
+# the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
+# outside any function are one, and it reads the list ship compares ($sourced)
+awk '/^[a-z_]+\(\) *\{/ {f = 1} /^}/ {f = 0} !f && /(^|[;&|{(]|then|else|do)[ \t]*\.[ \t]+"/ {print NR ": " $0}' "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
+[ "$(grep -c . "$FX/top.src")" = 1 ] && grep -q '\. "\$root/\$sourced"' "$FX/top.src" && grep -q '^sourced=scripts/lib/sigs\.sh$' "$SR_ROOT/scripts/release.sh" \
+  && pass "ship's parent sources one file from the checkout before its frozen tree, the one it compares" || fail "top-level source commands: $(tr '\n' '|' < "$FX/top.src")"
   git commit-tree -p "$BASE" -m side "$BASE^{tree}" > "$FX/side") && g push -q -f --no-follow-tags origin "$(cat "$FX/side"):refs/heads/main" || exit 3
 pt_row "origin's main diverged from the tag's commit" "diverged"
 g push -q -f --no-follow-tags origin "$BASE:refs/heads/main" || exit 3

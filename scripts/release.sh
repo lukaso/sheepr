@@ -69,7 +69,10 @@ unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE S
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
 GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
-. "$root/scripts/lib/sigs.sh" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
+# the one file this script sources from the checkout before ship's frozen tree: ship compares it
+# with the tag's, as it compares $0 (every later source command reads the frozen tree under ship)
+sourced=scripts/lib/sigs.sh
+. "$root/$sourced" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
@@ -988,6 +991,10 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # its release.sh
   git -C "$root" worktree add -q --detach "$st/tree" "$commit" || die "cannot make a worktree of $commit"
   wt=$st/tree root=$st/tree
+  for f_ in $sourced; do
+    git -C "$root" show "$tag:$f_" > "$st/sourced" 2>/dev/null || die "cannot read $tag's $f_"
+    cmp -s "$root/$f_" "$st/sourced" || die "this $f_ is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
+  done
   [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh
   # A2. the push target; A3. the push, as far as a dry run can tell
   ship_target

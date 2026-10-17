@@ -14,7 +14,8 @@ starts (never in a comment, a quoted string or a heredoc). Rules (each violation
   ignore   an EXIT trap whose action does not start (after an optional `rc=$?`) with
            `trap '' $SIGS`, itself or as the first command of the function it calls: a second
            signal during the cleanup must not cut it short;
-  listed   a file with an EXIT trap that does not get the list: it sources sigs.sh, or it carries
+  listed   a file with an EXIT trap that does not get the list: it sources sigs.sh (a plain
+           variable in the path expanded), or it carries
            SIGS-LINE as a command, or it is RENDERED-FILE (install.sh: the list is written into its
            trap lines at render, as tests/dist/t_install.sh checks);
   other    a SIGS= assignment that is not SIGS-LINE (a bare SIGS= too);
@@ -310,7 +311,17 @@ def main():
                 if not starts_ignore(c[1].value, funcs):
                     print(f"ignore {p}:{a}: an EXIT trap whose cleanup does not start with trap '' $SIGS")
             if exits:
-                sources = any(c[0].raw == '.' and len(c) >= 2 and c[1].value.endswith('sigs.sh') for c in cmds)
+                # a source command's argument, its plain variables expanded (NAME=word assignments
+                # in this file, the word with no quote or expansion of its own)
+                plain = {}
+                for c in cmds:
+                    for w in c:
+                        m = re.fullmatch(r'([A-Za-z_][A-Za-z0-9_]*)=([^\s$`"\'\\]*)', w.raw)
+                        if not m:
+                            break
+                        plain[m.group(1)] = m.group(2)
+                expand = lambda v: re.sub(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?', lambda m: plain.get(m.group(1), m.group(0)), v)
+                sources = any(c[0].raw == '.' and len(c) >= 2 and expand(c[1].value).endswith('sigs.sh') for c in cmds)
                 verbatim = any(len(c) == 1 and c[0].raw == sigs_line for c in cmds)
                 if not (sources or verbatim or os.path.realpath(p) == rendered):
                     print(f'listed {p}:{exits[0][0].line}: has an EXIT trap but does not get the list (sigs.sh, the render, or its verbatim line)')

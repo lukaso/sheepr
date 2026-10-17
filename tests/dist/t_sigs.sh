@@ -88,6 +88,8 @@ plant far near "$S1" "$EX" : : : : : : "$SG"
 plant noignore ignore "$S1" "trap 'rm -rf x' EXIT" "$SG"
 plant noignorefn ignore "$S1" 'cl() {' '  rm -rf x' "  trap '' \$SIGS" '}' 'trap cl EXIT' "trap 'cl; exit 1' \$SIGS"
 plant unlisted listed "$EX" "$SG"
+plant viavar "" 'f=scripts/lib/sigs.sh' '. "$root/$f"' "$EX" "$SG"
+plant viavarother listed 'f=scripts/lib/other.sh' '. "$root/$f"' "$EX" "$SG"
 plant bare other "$S1" 'SIGS=' "$EX" "$SG"
 plant literal literal "$S1" "$EX" "$SG" "trap 'exit 1' HUP INT TERM"
 
