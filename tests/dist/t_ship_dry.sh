@@ -128,7 +128,7 @@ cat > "$S/gh" <<EOF
 [ -d "\$HOME" ] || echo "NOHOME gh" >> "$FX/calls"
 echo "gh \$*" >> "$FX/calls"
 case "\$*" in
-  *"@tsv"*) [ -e "$FX/relsfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; tr ' ' '\t' < "$FX/rels" ;;
+  *"@tsv"*) [ -e "$FX/relsfail" ] && { if [ -e "$FX/relserr" ]; then cat "$FX/relserr" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; tr ' ' '\t' < "$FX/rels" ;;
   *".[].tag_name"*) awk '{print \$1}' "$FX/rels" ;;
   *"repos/lukaso/sheepr --jq .permissions.push"*) cat "$FX/repoperm" 2>/dev/null || echo true ;;
   *"repos/lukaso/homebrew-tap --jq .permissions.push"*) [ -e "$FX/tappermfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; cat "$FX/tapperm" 2>/dev/null || echo true ;;
@@ -159,6 +159,8 @@ echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
 last=""; for a; do last=\$a; done
 TOK='//registry.npmjs.org/:_authToken='
+# (\$FX/npmall: every npm command that reaches the registry writes this text on stderr and fails)
+case \$1 in view|owner|whoami|login|publish) [ -e "$FX/npmall" ] && { cat "$FX/npmall" >&2; exit 1; } ;; esac
 case \$1 in
   view) p=""; for a; do case \$a in sheepr*) p=\${a%@*} ;; esac; done
     [ -e "$FX/owner404.\$p" ] && { echo "npm error code E404" >&2; exit 1; }   # a name not on npm: every view is E404
@@ -184,6 +186,8 @@ case \$1 in
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
   config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/npmrc"; exit 0; } ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    # (\$FX/whoamiansi: the code it answers, in npm's colours, as color=always writes it)
+    [ -e "$FX/whoamiansi" ] && { printf '\033[1mnpm\033[22m \033[31merror\033[39m \033[94mcode\033[39m %s\n' "\$(cat "$FX/whoamiansi")" >&2; exit 1; }
     [ -e "$FX/whoamicode" ] && { echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; }   # (\$FX/whoamicode: the code it answers)
     # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
     [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
@@ -192,7 +196,8 @@ case \$1 in
       [ -e "$FX/expired" ] && { echo "npm error code E401" >&2; exit 1; }
       cat "$FX/whoami" 2>/dev/null || echo lukasco; exit 0
     fi
-    echo "npm error code ENEEDAUTH" >&2; exit 1 ;;
+    # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
+    if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else echo "npm error code ENEEDAUTH" >&2; fi; exit 1 ;;
   login) [ -e "$FX/loginfail" ] && exit 1; echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
   logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
     [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "$FX/npmrc"; exit 0; }
@@ -275,7 +280,7 @@ case \$1 in push|fetch|ls-remote)
     echo "SGIT REFUSED \$m" >> "$FX/calls"; echo "sgit: refused \$m (only file:// remotes)" >&2; exit 1 ;; esac; done ;;
 esac
 extra="" real=no lie=""
-[ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
+[ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { if [ -e "$FX/lserr" ]; then cat "$FX/lserr" >&2; else echo "fatal: unable to access (stand-in)" >&2; fi; exit 128; }
 [ "\$1" = fetch ] && [ -e "$FX/fetchfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfailafter" ] && [ -e "$FX/pushtried" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 if [ "\$1" = push ]; then
@@ -591,44 +596,88 @@ echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; rm -rf "${OUTR:?}
 pre_row "an npm session from before ship" "npm logout"; ! grep -q '^npm logout' "$FX/calls" && pass "  and no logout call" || fail "  a logout ran"
 # a token line (the count 1): only npm's E401 (an expired token) makes the fix `npm config delete`;
 # any other whoami failure cannot tell whether that session is live (deleting the line would leave a
-# live token on npm's server): cannot tell, run ship again; and a count that cannot be read names no
-# delete either
+# live token on npm's server); and a count that cannot be read names no delete either
 A6NF=$OUTR/v0.1.0.ship-next.txt
 : > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/expired"
 pre_row "an expired npm token (the count 1, whoami E401)" "npm config delete //registry.npmjs.org/:_authToken"
-grep -q 'E401' "$FX/o" && ! grep -q 'cannot tell whether an npm session' "$FX/o" && pass "  the reason named: npm's E401" || fail "  E401 row: $(lastline)"
+grep -q 'E401' "$FX/o" && pass "  the reason named: npm's E401" || fail "  E401 row: $(lastline)"
 [ "$(tail -1 "$A6NF")" = 'When the cause above is fixed, run ship again.' ] && pass "  class fix: its next file ends 'When the cause above is fixed, run ship again.'" || fail "  E401 class: '$(tail -1 "$A6NF")'"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
 pre_row "a token line, and whoami failing with ETIMEDOUT" "cannot tell whether an npm session exists"
-! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && grep -qx 'Run ship again.' "$A6NF" \
-  && pass "  no npm config delete (the session may be live), in stdout or the next file; run ship again" || fail "  ETIMEDOUT with a token: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
+! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && [ "$(tail -1 "$A6NF")" = 'When the cause above is fixed, run ship again.' ] && ! grep -qx 'Run ship again.' "$A6NF" \
+  && pass "  no npm config delete (the session may be live), in stdout or the next file; when the cause is fixed, run ship again" || fail "  ETIMEDOUT with a token: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|') last: $(tail -1 "$A6NF")"
 chmod 000 "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; chmod 644 "$FX/npmrc"; rm -f "$FX/npmrc"
 pre_row "npm's userconfig unreadable (the count unreadable), whoami failing" "cannot count npm's login tokens"
 ! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && pass "  no npm config delete" || fail "  unreadable count: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
 : > "$FX/whoamibad"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad"; pre_row "a whoami failure that is not ENEEDAUTH" "cannot tell whether an npm session"
-# "Run ship again." only for a network code (ETIMEDOUT, ECONNREFUSED, ECONNRESET, ENOTFOUND,
-# EAI_AGAIN, E5xx): any other npm answer is definite (a rerun stops the same way), so class fix,
-# with a text that names the code and what to look at
+# a stop's class comes only from ship's own checks (PLAN-ship.md, REV 8): a failed npm, gh or git
+# call before the push ends "When the cause above is fixed, run ship again.", whatever it answered
+# (never a bare "Run ship again.", which loops on a definite answer); the cause keeps the tool's own
+# words, and a named remedy comes only for its own exact code (E401 on a counted token line: npm
+# config delete; ERR_INVALID_AUTH: the npmrc auth line)
 FIXL='When the cause above is fixed, run ship again.'
-a6row() { # label token-line(yes|no) whoami-code want-text want-last-line
-  [ "$2" = yes ] && echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo "$3" > "$FX/whoamicode"
-  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamicode" "$FX/npmrc"
-  pre_row "$1" "$4"
-  [ "$(tail -1 "$A6NF")" = "$5" ] && ! grep -q 'config delete' "$A6NF" && { [ "$5" = 'Run ship again.' ] || ! grep -qx 'Run ship again.' "$A6NF"; } \
-    && pass "  its next file ends '$5', and names no npm config delete" || fail "  $1: last line '$(tail -1 "$A6NF")', delete lines $(grep -c 'config delete' "$A6NF")"
+endsfix() { [ "$(tail -1 "$1")" = "$FIXL" ] && ! grep -qx 'Run ship again.' "$1"; }
+a6row() { # label token-line(yes|no) whoami|owner code want-text
+  [ "$2" = yes ] && echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo "$4" > "$FX/$3code"
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/$3code" "${FX:?}/npmrc"
+  pre_row "$1" "$5"
+  endsfix "$A6NF" && ! grep -q 'config delete' "$A6NF" && ! grep -q 'names no registry' "$A6NF" && grep -q "npm error code $4" "$A6NF" \
+    && pass "  its next file keeps npm's words and ends '$FIXL'; no npm config delete, no auth-line text" || fail "  $1: last line '$(tail -1 "$A6NF")', $(grep -c -e 'config delete' -e 'names no registry' "$A6NF") remedy lines"
 }
-a6row "a token line, whoami E403" yes E403 "npm whoami answered E403" "$FIXL"
-a6row "a token line npm does not use (the count 1, whoami ENEEDAUTH)" yes ENEEDAUTH "a login token line npm does not use" "$FIXL"
-a6row "no token line ship counts, whoami E401" no E401 "a token outside the lines ship counts" "$FIXL"
-a6row "control: a token line, whoami ETIMEDOUT" yes ETIMEDOUT "cannot tell whether an npm session exists" "Run ship again."
-a6row "control: no token line, whoami ETIMEDOUT" no ETIMEDOUT "cannot tell whether an npm session exists" "Run ship again."
-a6row "control: no token line, whoami E503" no E503 "cannot tell whether an npm session exists" "Run ship again."
-echo ERR_INVALID_AUTH > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownercode"
-pre_row "npm owner ls answering ERR_INVALID_AUTH" "npm owner ls answered ERR_INVALID_AUTH"
-[ "$(tail -1 "$A6NF")" = "$FIXL" ] && ! grep -qx 'Run ship again.' "$A6NF" && pass "  class fix: '$FIXL'" || fail "  owner ls ERR_INVALID_AUTH: last line '$(tail -1 "$A6NF")'"
-echo ECONNRESET > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownercode"
-pre_row "control: npm owner ls answering ECONNRESET" "cannot read the owners of"
-[ "$(tail -1 "$A6NF")" = 'Run ship again.' ] && pass "  class network: 'Run ship again.'" || fail "  owner ls ECONNRESET: last line '$(tail -1 "$A6NF")'"
+for c in E403 FETCH_ERROR E429 ETIMEDOUT; do
+  a6row "a token line, whoami $c" yes whoami $c "cannot tell whether an npm session exists"
+  a6row "a token line, npm owner ls $c" yes owner $c "cannot read the owners of"
+done
+echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo ENEEDAUTH > "$FX/whoamicode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamicode" "${FX:?}/npmrc"
+pre_row "a token line npm does not use (the count 1, whoami ENEEDAUTH)" "a login token line npm does not use"
+endsfix "$A6NF" && ! grep -q 'config delete' "$A6NF" && pass "  when the cause is fixed, run ship again; no npm config delete" || fail "  ENEEDAUTH with a token line: last '$(tail -1 "$A6NF")'"
+echo E401 > "$FX/whoamicode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamicode"
+pre_row "no token line ship counts, whoami E401" "a token outside the lines ship counts"
+endsfix "$A6NF" && ! grep -q 'config delete' "$A6NF" && pass "  when the cause is fixed, run ship again; no npm config delete" || fail "  E401 with no counted line: last '$(tail -1 "$A6NF")'"
+echo ERR_INVALID_AUTH > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/ownercode"
+pre_row "npm owner ls answering ERR_INVALID_AUTH" "an _authToken line that names no registry"
+endsfix "$A6NF" && pass "  when the cause is fixed, run ship again" || fail "  owner ls ERR_INVALID_AUTH: last line '$(tail -1 "$A6NF")'"
+# every npm command that reaches the registry answers E401, a counted token line in the userconfig:
+# A4's views fail first, and the stop still names the remedy
+echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"
+printf 'npm error code E401\nnpm error 401 Unauthorized - GET https://registry.npmjs.org/sheepr - stand-in\n' > "$FX/npmall"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall" "${FX:?}/npmrc"
+pre_row "every npm command answering E401 (a counted token line; A4 first)" "cannot tell whether anything is public"
+grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$A6NF" && endsfix "$A6NF" && pass "  the next file names npm config delete; when the cause is fixed, run ship again" \
+  || fail "  every npm E401: $(grep -c 'config delete' "$A6NF") delete lines, last '$(tail -1 "$A6NF")'"
+# every npm command answers ERR_INVALID_AUTH, npm's warning first (a top-level _authToken)
+echo "_authToken=npm_old" > "$FX/npmrc"
+printf 'npm warn Unknown user config "_authToken". This will stop working in the next major version of npm.\nnpm error code ERR_INVALID_AUTH\nnpm error Invalid auth configuration found: `_authToken` must be renamed to `//registry.npmjs.org/:_authToken` in user config\n' > "$FX/npmall"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall" "${FX:?}/npmrc"
+pre_row "every npm command answering ERR_INVALID_AUTH" "cannot tell whether anything is public"
+grep -q 'an _authToken line that names no registry' "$A6NF" && ! grep -q 'config delete' "$A6NF" && endsfix "$A6NF" && pass "  the next file names the npmrc auth line; when the cause is fixed, run ship again" \
+  || fail "  every npm ERR_INVALID_AUTH: last '$(tail -1 "$A6NF")'"
+# gh at A4's release list: a definite answer (401) and a transient one (502), the same ending; the
+# cause keeps gh's words
+for ge in 'HTTP 401: Bad credentials (https://api.github.com/graphql)
+Try authenticating with:  gh auth login' 'HTTP 502: Bad Gateway (https://api.github.com/repos/lukaso/sheepr/releases)'; do
+  printf '%s\n' "$ge" > "$FX/relserr"; : > "$FX/relsfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/relsfail" "${FX:?}/relserr"
+  g1=$(printf '%s' "$ge" | head -1 | cut -d'(' -f1)
+  pre_row "gh at A4's release list: ${g1% }" "cannot tell whether anything is public"
+  head -1 "$A6NF" | grep -q -F "$g1" && endsfix "$A6NF" && pass "  the cause keeps gh's words; when the cause is fixed, run ship again" || fail "  gh ${g1% }: $(head -1 "$A6NF" | cut -c1-120) last '$(tail -1 "$A6NF")'"
+done
+# git ls-remote failing: an auth failure and a timeout, the same ending
+for le in "remote: Invalid username or password.
+fatal: Authentication failed for 'https://github.com/lukaso/sheepr/'" "fatal: unable to access 'https://github.com/lukaso/sheepr/': Failed to connect to github.com port 443 after 75001 ms: Timed out"; do
+  printf '%s\n' "$le" > "$FX/lserr"; : > "$FX/lsfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/lsfail" "${FX:?}/lserr"
+  [ $r = 1 ] && head -1 "$A6NF" | grep -q 'fatal:' && endsfix "$A6NF" && pass "git ls-remote failing ($(printf '%s' "$le" | tail -1 | cut -c1-40)…): when the cause is fixed, run ship again" \
+    || fail "git ls-remote failing: rc=$r $(head -1 "$A6NF" 2>/dev/null | cut -c1-100) last '$(tail -1 "$A6NF" 2>/dev/null)'"
+done
+# A6's pass (no token line, whoami ENEEDAUTH) holds for npm's coloured answer and for npm 9's
+printf '\033[1mnpm\033[22m \033[31merror\033[39m \033[94mcode\033[39m ENEEDAUTH\n\033[1mnpm\033[22m \033[31merror\033[39m \033[94mneed auth\033[39m This command requires you to be logged in.\n' > "$FX/whoamierr"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamierr"
+completed && pass "A6, whoami's ENEEDAUTH in npm's colours (no token line): passes, the run completes" || fail "coloured ENEEDAUTH: $(lastline)"
+printf 'npm ERR! code ENEEDAUTH\nnpm ERR! need auth This command requires you to be logged in.\n' > "$FX/whoamierr"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamierr"
+completed && pass "A6, npm 9's 'npm ERR! code ENEEDAUTH' (no token line): passes, the run completes" || fail "npm 9 ENEEDAUTH: $(lastline)"
+# a coloured E401 with a counted line: the remedy named
+echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/whoamiansi"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamiansi" "${FX:?}/npmrc"
+pre_row "a counted token line, whoami's E401 in npm's colours" "npm config delete //registry.npmjs.org/:_authToken"
 # A7: the build's preconditions
 : > "$FX/nodocker"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nodocker"; pre_row "Docker does not answer" "Docker"
 : > "$FX/nobase"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nobase"; pre_row "the pinned base image missing" "no local image rust:"
@@ -731,7 +780,7 @@ T=$T2
 echo other > "$FX/whoami"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoami"
 [ $r = 1 ] && grep -q 'logged in to npm as other' "$FX/o" && nopub && grep -qx 'When the cause above is fixed, run ship again.' "$OUTR/v0.1.0.ship-next.txt" && pass "another npm user after the login: stopped, nothing public" || fail "wrong user: rc=$r $(lastline)"
 : > "$FX/loginfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/loginfail"
-[ $r = 1 ] && grep -q 'npm login failed' "$FX/o" && nopub && grep -qx 'Run ship again.' "$OUTR/v0.1.0.ship-next.txt" && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && pass "a failing login: stopped, nothing public, one logout (logged in from the attempt on)" || fail "login fails: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") $(lastline)"
+[ $r = 1 ] && grep -q 'npm login failed' "$FX/o" && nopub && endsfix "$OUTR/v0.1.0.ship-next.txt" && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && pass "a failing login: stopped, nothing public, one logout (logged in from the attempt on); when the cause is fixed, run ship again" || fail "login fails: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") $(lastline)"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
 [ $r = 1 ] && grep -q 'npm whoami failed after the login' "$FX/o" && nopub && pass "whoami failing after the login: stopped, nothing public" || fail "whoami after login: rc=$r $(lastline)"
 cat > "$FX/onbuild" <<EOF
@@ -935,10 +984,11 @@ rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; PIPEQ='checks passed'; s
 rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"; echo https://github.com/someone/sheepr.git > "$FX/pushurl"; ship; r=$?; rm -f "$FX/pushurl"
 [ $r = 1 ] && [ "$(cat "$NF")" = EARLIER ] && grep -qx 'This run made nothing public.' "$FX/o" && pass "a stop before A4 passed: an earlier next file kept; this run 'made nothing public'" || fail "pre-A4 keep: $(head -2 "$NF" | tr '\n' '|')"
 rm -rf "${OUTR:?}"
-# network reads that fail: run ship again (A2's ls-remote, A3's fetch; C3's tap read and write right)
+# reads that fail (A2's ls-remote, A3's fetch; C3's tap read and write right): when the cause is
+# fixed, run ship again (the class comes from ship's own checks, never from the tool's answer)
 for sw in lsfail fetchfail; do
   : > "$FX/$sw"; ship; r=$?; rm -f "$FX/$sw"
-  [ $r = 1 ] && grep -qx 'Run ship again.' "$NF" && pass "$sw: run ship again" || fail "$sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+  [ $r = 1 ] && endsfix "$NF" && pass "$sw: when the cause is fixed, run ship again" || fail "$sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
   rm -rf "${OUTR:?}"
 done
 cat > "$FX/onbuild" <<EOF
@@ -949,7 +999,7 @@ ship; r=$?; rm -f "$FX/onbuild"
 rm -rf "${OUTR:?}"
 for sw in tapreadfail tappermfail; do
   printf ': > "%s/%s"\n' "$FX" "$sw" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/$sw"
-  [ $r = 1 ] && grep -qx 'Run ship again.' "$NF" && ! grep -q aside "$NF" && pass "C3 $sw: run ship again, no move aside" || fail "C3 $sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+  [ $r = 1 ] && endsfix "$NF" && ! grep -q aside "$NF" && pass "C3 $sw: when the cause is fixed, run ship again, no move aside" || fail "C3 $sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
   rm -rf "${OUTR:?}"
 done
 # stdout closed during the uploads, and a logout that removes the npmrc (the count reads no file):
@@ -1004,12 +1054,12 @@ grep -qx 'Nothing is public.' "$NF" && grep -qx "Move $OUTR/v0.1.0 aside (never 
 mv "$OUTR/v0.1.0" "$FX/aside"; ship; r=$?; rm -rf "${FX:?}/aside"
 completed && pass "  and ship again (the build moved aside) completes" || fail "  ship again: $(lastline)"
 rm -rf "${OUTR:?}"; printf ': > "%s/ownerfail"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/ownerfail"
-grep -qx 'Run ship again.' "$NF" && ! grep -q 'aside' "$NF" && grep -q 'cannot read the owners' "$NF" && pass "C3: npm's owners unreadable: 'Run ship again', no move aside (the first cause kept)" || fail "C3 network text: $(tr '\n' '|' < "$NF")"
+endsfix "$NF" && ! grep -q 'aside' "$NF" && grep -q 'cannot read the owners' "$NF" && pass "C3: npm's owners unreadable: when the cause is fixed, run ship again, no move aside (the first cause kept)" || fail "C3 owner text: $(tr '\n' '|' < "$NF")"
 ship; r=$?; completed && pass "  and ship again (the build kept) completes" || fail "  ship again: $(lastline)"
 rm -rf "${OUTR:?}"; printf 'echo stranger > "%s/owner.sheepr"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/owner.sheepr"
 grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -q 'aside' "$NF" && pass "C3: a name another npm user owns: fix it first, no move aside" || fail "C3 fix text: $(tr '\n' '|' < "$NF")"
 rm -rf "${OUTR:?}"; : > "$FX/relsfail"; ship; r=$?; rm -f "$FX/relsfail"
-grep -q 'cannot tell whether anything is public' "$NF" && grep -qx 'Nothing was done. Run ship again.' "$NF" && pass "A4 unreadable: 'cannot tell', run ship again" || fail "A4 unreadable: $(tr '\n' '|' < "$NF")"
+grep -q 'cannot tell whether anything is public' "$NF" && grep -qx 'This run made nothing public.' "$NF" && endsfix "$NF" && pass "A4 unreadable: 'cannot tell', this run made nothing public; when the cause is fixed, run ship again" || fail "A4 unreadable: $(tr '\n' '|' < "$NF")"
 g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
 rm -rf "${OUTR:?}"; ship; r=$?
 grep -qx 'ship does not continue a release of which anything is public.' "$NF" && grep -q 'separate steps of PHASE3.md §5: build --sign, npm-check' "$NF" && ! grep -q 'Never rebuild' "$NF" \

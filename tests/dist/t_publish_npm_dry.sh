@@ -152,8 +152,9 @@ case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private
 # npm's environment class (npm_env, the real run's too): only the named variables; a proxy reaches
 # it (the control), a token or an npmrc of the caller's never does in the dry run
 bad=""; for f in "$FX"/env.npm.*; do for k in $(sed 's/=.*//' "$f"); do
-  # npm_env's named set (a caller's proxy and CA settings pass by design) and what sh adds
-  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS) ;; *) bad="$bad $k" ;; esac
+  # npm_env's named set (a caller's proxy and CA settings pass by design; npm's colour and log level
+  # are npm_env's own) and what sh adds
+  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS|npm_config_color|npm_config_loglevel) ;; *) bad="$bad $k" ;; esac
 done; done
 [ -z "$bad" ] && pass "npm got only the named environment" || fail "extra environment:$(printf '%s\n' $bad | sort -u | tr '\n' ' ')"
 grep -q '^HTTPS_PROXY=http://127.0.0.1:9$' "$FX/env.npm.0" && pass "control: the proxy reaches npm" || fail "control: no HTTPS_PROXY for npm"
@@ -256,6 +257,12 @@ printf '%s\n' "$e1" | grep -qx "NPM_CONFIG_USERCONFIG=$FX/u1/npmrc" && printf '%
   && printf '%s\n' "$e1" | grep -qx 'HTTPS_PROXY=http://127.0.0.1:9' && printf '%s\n' "$e1" | grep -qx "HOME=$FX/ghome" \
   && pass "the real npm class: the operator's npmrc (either spelling), HOME and a proxy pass" || fail "the npm class: $(printf '%s' "$e1" | tr '\n' ' ')"
 printf '%s\n%s\n' "$e1" "$e2" | grep -q -e "$DECOY" -e '^SSH_AUTH_SOCK=' -e '^GH_' && fail "the npm class let a token or a transport through" || pass "the real npm class: no token, no git/gh transport"
+# npm's colours off and its log level at npm's default, whatever the operator's npmrc says (an
+# environment setting wins over the userconfig): its `npm error code X` line stays readable (color=always
+# writes it in ANSI; loglevel=silent writes nothing), so a clean state is never refused for its form
+e3=$(ne NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" npm_config_color=always npm_config_loglevel=silent)
+printf '%s\n' "$e3" | grep -qx 'npm_config_color=false' && printf '%s\n' "$e3" | grep -qx 'npm_config_loglevel=notice' && [ "$(printf '%s\n' "$e3" | grep -c '^npm_config_')" = 2 ] \
+  && pass "the real npm class: npm_config_color=false and npm_config_loglevel=notice, the caller's own dropped" || fail "the npm class's npm settings: $(printf '%s\n' "$e3" | grep '^npm_config_' | tr '\n' ' ')"
 
 # nothing at all without the stamp, with a stamp for another manifest, or with a control manifest
 rm "$D/NPM-CHECKED"; pub v0.1.0; r=$?

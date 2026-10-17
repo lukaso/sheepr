@@ -209,7 +209,10 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
 npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may need, never the git/gh
             # transport (one construction for the real run and the dry one)
   h=$1 u=$2; shift 2
+  # npm_config_color and _loglevel: npm's `npm error code X` line stays readable whatever the npmrc says
+  # (color=always writes it in ANSI, loglevel=silent writes nothing); an environment setting wins
   /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" ${u:+NPM_CONFIG_USERCONFIG="$u"} \
+    npm_config_color=false npm_config_loglevel=notice \
     ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \
@@ -613,7 +616,7 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   # the tap's cask: exactly one version line, never newer than this tag; this version only as these bytes
   tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$ct/tap.rb" 2> "$ct/tap.err" || {
     grep -q 'HTTP 404' "$ct/tap.err" && die "$TAP has no $CASK (add it by hand once)"
-    stopclass network; die "gh: cannot read $TAP's $CASK ($(head -1 "$ct/tap.err"))"; }
+    stopclass fix; die "gh: cannot read $TAP's $CASK ($(head -c 300 "$ct/tap.err" | tr '\n' ' '))"; }
   [ "$(grep -c '^  version "' "$ct/tap.rb")" = 1 ] || { stopclass fix; die "$TAP's $CASK has not exactly one version line"; }
   tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$ct/tap.rb")
   rel=$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz") || { stopclass fix; die "$TAP's $CASK has a version off the grammar ('$tv')"; }
@@ -624,7 +627,7 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
     *) cmp -s "$ct/tap.rb" "$ct/cask.rb" && cask_put=no \
          || { stopclass fix; die "$TAP's cask is $xyz with sha256 $(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$ct/tap.rb"), but this build's archive is $ah: refused (a swapped asset, or a tap edited by hand)"; } ;;
   esac
-  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push) || { stopclass network; die "gh: cannot read $TAP"; }
+  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push 2> "$ct/perm.err") || { stopclass fix; die "gh: cannot read $TAP ($(head -c 300 "$ct/perm.err" | tr '\n' ' '))"; }
   [ "$pp" = true ] || { stopclass fix; die "this gh login cannot write $TAP"; }
 }
 cask_post() { # dir tmp release-path fail: the release is public; the cask put and read back
@@ -727,7 +730,7 @@ npm_visible() {
       [ "$got" = "$3" ] && return 0
       die "$1@$2 is on npm with another file ($got) than ${4:-the one just published}; $(notafter "$1")"
     fi
-    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(sed -n 's/^npm error code \(.*\)$/\1/p' "$pc/err" | head -1 | grep . || echo "exit $r, an empty answer")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}$(next_hint "; once it shows, run publish-npm again (it skips a version already there with this file)"). A blocked version needs a new version number. $(notafter "$1" | sed 's/^t/T/')"
+    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(npmcode "$pc/err" | grep . || echo "exit $r, an empty answer")$(npmhint "$pc/err")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}$(next_hint "; once it shows, run publish-npm again (it skips a version already there with this file)"). A blocked version needs a new version number. $(notafter "$1" | sed 's/^t/T/')"
     sleep "$NPM_WAIT_STEP"; w=$((w + NPM_WAIT_STEP))
   done
 }
@@ -749,10 +752,7 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
       grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); this step uploaded nothing"; }
-      c_=$(npmcode "$3/err")
-      netcode "$c_" && { stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); this step uploaded nothing"; }
-      # a definite answer: a rerun would stop the same way
-      stopclass fix; die "npm owner ls answered ${c_:-no npm error code} for $p, not a network failure (exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')): look at that answer and at npm config list (ERR_INVALID_AUTH: an _authToken that names no registry); this step uploaded nothing"
+      stopclass fix; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' '))$(npmhint "$3/err"); this step uploaded nothing"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
       || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; this step uploaded nothing"; }
@@ -792,7 +792,7 @@ publish_npm_exec() { # dir
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(head -c 200 "$pc/err" | tr '\n' ' '))"
+    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(head -c 200 "$pc/err" | tr '\n' ' '))$(npmhint "$pc/err")"
   [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); this step uploaded nothing"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
@@ -821,7 +821,7 @@ publish_npm_exec() { # dir
       echo "release: $p@$nv is already on npm (the same file): skipped"
       continue
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$pc/err" | grep -q 'E404'; }; then
-      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' ')); $(notafter "$p")"
+      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' '))$(npmhint "$pc/err"); $(notafter "$p")"
     fi
     # the operator may have left during a wait: a notification before each upload that follows one
     # (npm-approve-again for the main package, npm-approve-next for another), none before the first;
@@ -1045,7 +1045,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   phase=checks
   post_build_check "$out/$tag"
   ship_mh=$(shasum -a 256 "$out/$tag/MANIFEST.json" | cut -d' ' -f1)
-  printf '%s\n' "$ship_mh" | grep -qx '[0-9a-f]\{64\}' || { ship_mh=""; stopclass network; die "cannot read the hash of $out/$tag/MANIFEST.json (every later phase is bound to it); nothing is public"; }
+  printf '%s\n' "$ship_mh" | grep -qx '[0-9a-f]\{64\}' || { ship_mh=""; stopclass fix; die "cannot read the hash of $out/$tag/MANIFEST.json (every later phase is bound to it); nothing is public"; }
   # C2. npm-check (its own traps: a subshell)
   phase=npm-check; stopclass content
   ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"
@@ -1058,10 +1058,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   phase=npm-login; stopclass fix
   notify npm-login
   logged_in=yes
-  stopclass network
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
-  who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(head -c 200 "$st/who.err" | tr '\n' ' ')); nothing is public"
-  stopclass fix
+  who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(head -c 200 "$st/who.err" | tr '\n' ' '))$(npmhint "$st/who.err"); nothing is public"
   [ "$who" = "$SR_NPM_USER" ] || die "logged in to npm as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), not as $SR_NPM_USER; nothing is public"
   # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
   # exactly A3's refspecs (the recorded object), atomic, no tag followed
@@ -1167,14 +1165,14 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
   for p in $SR_NPM_PKGS; do
     vout=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p@$xyz" dist.integrity 2> "$st/err"); r=$?
     if [ $r = 0 ] && [ -n "$(printf '%s' "$vout" | tr -d ' "\n\r')" ]; then ship_public "npm has $p@$xyz"
-    elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(head -c 200 "$st/err" | tr '\n' ' ')"; fi
+    elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"; fi
     # a name npm does not know answers E404 to every view (owner ls too, A6): not a read failure
     # (npm's --json says its E404 in the error object on stdout, and may say nothing on stderr)
     tm=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" time 2> "$st/err") || {
       printf '%s\n' "$tm" | cat - "$st/err" | grep -q E404 && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as ${SR_NPM_USER:-the owner}); this run made nothing public"; }
-      ship_unreadable "npm view $p time: $(head -c 200 "$st/err" | tr '\n' ' ')"; }
+      ship_unreadable "npm view $p time: $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"; }
     if printf '%s\n' "$tm" | grep -q "\"$xyz\":"; then stopclass lost; die "$p@$xyz was published once and is gone: $xyz can never be published on npm again; release a new version"; fi
-    lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(head -c 200 "$st/err" | tr '\n' ' ')"
+    lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"
     lt=$(printf '%s' "$lt" | tr -d ' "\n\r')
     [ -z "$lt" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$lt" "$xyz" 2>/dev/null)" = newer ] || die "$tag is not newer than npm's latest $p ($lt): tag a newer version"
   done
@@ -1185,7 +1183,7 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
   tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$st/tap.rb")
   [ "$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz" 2>/dev/null)" = newer ] || die "$TAP's cask is $tv, not below $xyz"
   for r_ in "$TAP" lukaso/sheepr; do
-    pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push) || { stopclass network; die "gh: cannot read $r_"; }
+    pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push 2> "$st/perm.err") || { stopclass fix; die "gh: cannot read $r_ ($(head -c 300 "$st/perm.err" | tr '\n' ' '))"; }
     [ "$pp" = true ] || die "this gh login cannot write $r_"
   done
 }
@@ -1203,25 +1201,34 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
     die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server), then run ship again (ship logs in itself, after the build)"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
-  # whoami's answer, by its npm error code: no token line and ENEEDAUTH is no session; a network code
-  # cannot tell (run ship again); every other answer is definite (a rerun stops the same way), so it
-  # names the code and what to look at, class fix. Only E401 on a counted line makes the fix
-  # `npm config delete`: any other answer may leave a live token on npm's server
-  c_=$(npmcode "$st/who.err") e_=$(head -c 200 "$st/who.err" | tr '\n' ' ')
-  [ "$n" = 0 ] && [ "$c_" = ENEEDAUTH ] && return 0
-  netcode "$c_" && { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $e_)"; }
-  stopclass fix
-  case $n:$c_ in
-    0:E401) die "npm whoami answered E401, but npm's userconfig has no //registry.npmjs.org/:_authToken= line ship counts: a token outside the lines ship counts (spaces around =, another file npm reads, or an _authToken that names no registry): look at npm config list, remove that token, then run ship again" ;;
-    *:E401) die "npm's userconfig holds a login token npm refuses (npm whoami: E401, an expired token; token lines: $n): run npm config delete //registry.npmjs.org/:_authToken, then run ship again" ;;
-    *:ENEEDAUTH) die "npm's userconfig holds a login token line npm does not use (token lines: $n; npm whoami: ENEEDAUTH): an empty token, or one from a variable that is not set (\${NPM_TOKEN?}): look at its //registry.npmjs.org/:_authToken line, remove it, then run ship again" ;;
-    *) die "npm whoami answered ${c_:-no npm error code}, not a network failure ($e_): look at that answer and at npm config list, then run ship again" ;;
+  # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
+  # the remedy for its exact code (npmhint); the class is fix, whatever npm answered
+  [ "$n" = 0 ] && [ "$(npmcode "$st/who.err")" = ENEEDAUTH ] && return 0
+  stopclass fix; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))$(npmhint "$st/who.err")"
+}
+# npmcode FILE: the first error code npm wrote there: npm 11's `npm error code X`, npm 9's
+# `npm ERR! code X`; ANSI colour (an npmrc's color=always) dropped first; or nothing
+npmcode() {
+  e_=$(printf '\033')
+  sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null | sed -n -e 's/^npm error code \([A-Za-z0-9_]*\).*/\1/p' -e 's/^npm ERR! code \([A-Za-z0-9_]*\).*/\1/p' | head -1
+}
+# npmhint FILE: the remedy for npm's exact error code in FILE, as a sentence to append, or nothing.
+# The one place a remedy is named, at every npm failure site; its absence changes nothing else (the
+# class comes from ship's own checks). E401 is an expired token when npm's userconfig holds a counted
+# token line, else a token outside those lines; ENEEDAUTH with a counted line is a line npm does not
+# use (an empty token, or ${NPM_TOKEN?} unset); ERR_INVALID_AUTH is an _authToken that names no registry
+npmhint() {
+  hc_=$(npmcode "$1") hn_=""
+  case $hc_ in E401|ENEEDAUTH) hn_=$(tokcount) ;; esac
+  case $hc_:$hn_ in
+    E401:0) printf '%s' ". npm answered E401, and npm's userconfig has no //registry.npmjs.org/:_authToken= line: a token outside the lines ship counts (spaces around =, or another file npm reads): look at npm config list and remove it" ;;
+    E401:unreadable) ;;
+    E401:*) printf '%s' ". npm answered E401 with a login token line in npm's userconfig (an expired token): run npm config delete //registry.npmjs.org/:_authToken" ;;
+    ENEEDAUTH:0|ENEEDAUTH:unreadable) ;;
+    ENEEDAUTH:*) printf '%s' ". npm's userconfig holds a login token line npm does not use (an empty token, or one from a variable that is not set): remove its //registry.npmjs.org/:_authToken line" ;;
+    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry; remove it, or write it as //registry.npmjs.org/:_authToken=" ;;
   esac
 }
-# npmcode FILE: the first npm error code npm wrote there (`npm error code X`), or nothing
-npmcode() { sed -n 's/^npm error code \([A-Za-z0-9_]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
-# netcode CODE: 0 for a network failure, the one answer a rerun may change
-netcode() { case $1 in ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|E5[0-9][0-9]) return 0 ;; *) return 1 ;; esac; }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
   # its manifest's, and no control manifest inside it (-mindepth 2: a control build beside it is not)
   [ -f "$1/MANIFEST.json" ] || { stopclass content; die "no $1/MANIFEST.json"; }
@@ -1263,7 +1270,7 @@ ship_lsr() { # A2's read of the remote refs, again before the push: origin's and
              # sheepr's main and this tag (exactly refs/tags/vTAG and its peeled line; an rc tag of
              # the version is not one) must agree; sets amain (origin's main) and rtag
   for r_ in origin "$UPSTREAM"; do
-    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" || { stopclass network; die "git: cannot list the refs of $r_ (ls-remote)"; }
+    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" 2> "$st/ls.err" || { stopclass fix; die "git: cannot list the refs of $r_ (ls-remote: $(head -c 300 "$st/ls.err" | tr '\n' ' '))"; }
     awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' "$st/ls.raw" | sort > "$st/ls.$( [ "$r_" = origin ] && echo o || echo u)"
   done
   cmp -s "$st/ls.o" "$st/ls.u" || { stopclass network; die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u")); a push in between? run ship again"; }
@@ -1276,7 +1283,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
   # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
   [ -z "$rtag" ] || ship_public "the tag is on origin ($(printf '%s' "$rtag" | head -1))"
-  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || { stopclass network; die "git: cannot fetch origin's main"; }
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main 2> "$st/fetch.err" || { stopclass fix; die "git: cannot fetch origin's main ($(head -c 300 "$st/fetch.err" | tr '\n' ' '))"; }
   fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
   [ "$fh" = "$amain" ] || { stopclass network; die "origin's main moved between its read ($amain) and the fetch ($fh)"; }
   if git -C "$root" merge-base --is-ancestor "$commit" "$fh"; then pushmain=no
@@ -1367,7 +1374,7 @@ ship_stoptext() {
             echo "Continue with the separate steps of PHASE3.md §5: build --sign, npm-check, the push, publish, publish-npm."
           fi ;;
         lost) echo "ship does not continue: release a new version." ;;
-        unreadable) echo "Nothing was done. Run ship again." ;;
+        unreadable) echo "This run made nothing public."; echo "When the cause above is fixed, run ship again." ;;
         *)
           if [ $pubok = yes ]; then echo "Nothing is public."; else echo "This run made nothing public."; fi
           case $cls in
