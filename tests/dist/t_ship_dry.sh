@@ -229,7 +229,10 @@ case \$1 in
     fi
     # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
     if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else echo "npm error code ENEEDAUTH" >&2; fi; exit 1 ;;
-  login) [ -e "$FX/loginfail" ] && exit 1; echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
+  # (\$FX/loginnormalizes: the login rewrites the file as npm's ini writer does, a quoted key unquoted)
+  login) [ -e "$FX/loginfail" ] && exit 1
+    [ -e "$FX/loginnormalizes" ] && [ -f "$FX/npmrc" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"; }
+    echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
   logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
     # (\$FX/logoutcode: the logout fails with that npm error code, and the line stays)
     [ -e "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
@@ -1286,6 +1289,16 @@ echo '//registry.npmjs.org/-/:_authToken=npm_pathline' > "$FX/logoutleaves"; rm 
 [ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "npm logout did not end ship's npm login (login token lines left: 1)" "$FX/o" \
   && ! grep -q -e 'config delete' -e 'Access Tokens' "$FX/o" && grep -qE "ends by itself at [0-9]{2}:[0-9]{2}" "$FX/o" && pass "a path-specific login line left after the logout: logout-failed, exit 1; npm logout again, the session's own end; no delete, no Access Tokens" \
   || fail "line left after the logout: rc=$r '$(nots)' $(grep 'npm logout did not end' "$FX/o" | cut -c1-200)"
+# ship_exit speaks only of the line ship's own login wrote (counted right after the login): an older
+# line npm's login rewrites into a counted spelling (here a quoted path line, unquoted by the login) is
+# not ship's: the run is done, and no text calls it ship's npm login
+echo "'//registry.npmjs.org/-/:_authToken'=npm_older" > "$FX/npmrc"; : > "$FX/loginnormalizes"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/loginnormalizes"
+grep -q '^//registry.npmjs.org/-/:_authToken=npm_older' "$FX/npmrc" || fail "  the stand-in login did not rewrite the older line (the row would prove nothing)"
+rm -f "${FX:?}/npmrc"
+completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && ! grep -q "ship's npm login" "$FX/o" \
+  && pass "an older line the login rewrote into a counted spelling: not ship's; done, exit 0, no text about ship's npm login" \
+  || fail "older line after the login: rc=$r '$(nots)' $(grep "ship's npm login" "$FX/o" | cut -c1-200)"
 # the count decides, not logout's exit code: a logout that fails but removes the token is done
 : > "$FX/logoutlies"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutlies"
 completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && pass "a logout that exits 1 but leaves no token: done, exit 0 (the count decides)" || fail "logout lies: rc=$r '$(nots)'"

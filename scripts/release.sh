@@ -1128,6 +1128,9 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   notify npm-login
   logged_in=yes
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
+  # the login lines right after the login: ship's own line, and any older line npm's login rewrote into
+  # a spelling ship counts (it normalizes the file); ship_exit speaks only of ship's own (REV 9 rule 3)
+  ship_la=$(npmauth)
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end)
   e_=$(( $(date +%s) + 7200 )); ship_end=$(date -r "$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null || date -d "@$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null)
@@ -1444,6 +1447,10 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   if [ "$logged_in" = yes ]; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" 2> "$st/logout.err"; cat "$st/logout.err" >&2
     drain; na=$(npmauth); n=${na%% *}; lc=$(npmcode "$st/logout.err")
+    # ship's own lines left: those counted now beyond the older ones counted right after its login
+    # (all of them but ship's own line); the older ones are not ship's, and no text speaks of them
+    o_=${ship_la:-}; o_=${o_%% *}
+    case $n:$o_ in *unreadable*|*:) ;; *) [ "$o_" -gt 0 ] && n=$(( n - (o_ - 1) )); [ "$n" -ge 0 ] || n=0 ;; esac
   fi
   if [ "$n" != 0 ]; then
     # REV 9 rule 2: ship's own session; npm logout is the only remedy until it ends with no error or
