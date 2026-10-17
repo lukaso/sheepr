@@ -14,8 +14,12 @@
 # And for each shell, stdout closed: install.sh's stdout is a pipe whose reader has exited, PIPE at
 # its default, so its first `say` gets SIGPIPE. The run starts in a process group of its own, KILLed
 # at 10 s (a KILL is a FAIL: zsh loops on a write error when PIPE is trapped but not held off in the
-# cleanup), and must end with 1 and an empty TMPDIR. perl makes the pipe and the group where there
-# is one; else (busybox) a FIFO whose reader has gone, and setsid.
+# cleanup), and must end with 1, an empty TMPDIR, no `sheepr install:` line on stderr and at most
+# one call of the stand-in curl: a run that went on past the closed write (PIPE ignored, or blocked
+# in what started it) dies later on its own, also with 1 and an empty TMPDIR, but says why and calls
+# curl twice; one call is allowed, since ksh93 runs the trap one command late (measured). perl makes
+# the pipe and the group, and unblocks PIPE in the child, where there is perl; else (busybox) a FIFO
+# whose reader has gone, and setsid, and the row refuses to run when PIPE is blocked.
 # Prints ok/FAIL lines; exit 0 only when every row passed.
 set -u
 [ $# -ge 3 ] || { echo "usage: install-sig-rows.sh WORKDIR INSTALL_SH SHELL..." >&2; exit 2; }
@@ -27,6 +31,7 @@ bad() { echo "FAIL: $*"; fails=$((fails + 1)); }
 mkdir -p "$W/sb" "$W/h" || exit 3
 cat > "$W/sb/curl" <<EOF
 #!/bin/sh
+echo x >> "$W/curl.calls"
 [ -e "$W/sent" ] && exit 0
 : > "$W/sent"; kill -\$(cat "$W/sig") \$PPID; sleep 1; : > "$W/curl.done"; exit 0
 EOF
@@ -55,9 +60,10 @@ run() { # shell: install.sh, its output in $W/o and $W/e
 # 10 s), and " STRAY" when a process of its group outlived it (then KILLed too)
 closed() {
   if [ -x /usr/bin/perl ]; then
-    res=$(/usr/bin/perl -e '
+    res=$(/usr/bin/perl -MPOSIX -e '
       my $p = fork(); defined $p or die "fork";
       if ($p == 0) { setpgrp(0, 0); $SIG{$_} = "DEFAULT" for qw(PIPE INT QUIT);
+        POSIX::sigprocmask(POSIX::SIG_UNBLOCK(), POSIX::SigSet->new(POSIX::SIGPIPE())) or die "unblock";
         pipe(my $r, my $w) or die; close($r); open(STDOUT, ">&", $w) or die; close($w); exec @ARGV or die }
       my $res = "KILLED";
       for (1..100) { if (waitpid($p, 1) == $p) { my $s = $?; $res = ($s & 127) ? 128 + ($s & 127) : $s >> 8; last } select(undef, undef, undef, 0.1) }
@@ -69,6 +75,9 @@ closed() {
   # no perl (busybox): PIPE must be at its default in what this shell runs (signal 13: bit 12)
   m=$(sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status 2>/dev/null); d=$(printf %s "$m" | tail -c 4 | head -c 1)
   case $d in [0-9a-fA-F]) [ $((0x$d & 1)) = 0 ] || { res="not run (PIPE ignored on entry, no perl)"; return; } ;; *) res="not run (cannot read SigIgn)"; return ;; esac
+  # and not blocked (a blocked PIPE stays pending: the write fails and the shell goes on)
+  m=$(sed -n 's/^SigBlk:[[:space:]]*//p' /proc/self/status 2>/dev/null); d=$(printf %s "$m" | tail -c 4 | head -c 1)
+  case $d in [0-9a-fA-F]) [ $((0x$d & 1)) = 0 ] || { res="not run (PIPE blocked, no perl to unblock it)"; return; } ;; *) res="not run (cannot read SigBlk)"; return ;; esac
   command -v setsid > /dev/null 2>&1 || { res="not run (no perl, no setsid)"; return; }
   rm -f "$W/fifo"; mkfifo "$W/fifo" || { res="not run (no fifo)"; return; }
   sh -c 'exec < "$1"' sh "$W/fifo" & rp=$!
@@ -85,12 +94,13 @@ closed() {
 }
 for shl in "$@"; do
   [ -x "$shl" ] || { bad "$shl: no such shell"; continue; }
-  rm -rf "${W:?}/itmp"; mkdir -p "$W/itmp" || exit 3; : > "$W/sent"   # (the stand-in curl: no signal)
-  closed "$shl"; left=$(ls -A "$W/itmp" 2>/dev/null); e1=$(head -c 120 "$W/e" | tr '\n' '|'); : > "$W/e"   # (no write-error flood kept)
-  if [ "$res" = 1 ] && [ -z "$left" ]; then
-    ok "$shl, install.sh with its stdout closed (PIPE at its default): exits 1, its temp dir is gone, within 10 s"
+  rm -rf "${W:?}/itmp"; rm -f "$W/curl.calls"; mkdir -p "$W/itmp" || exit 3; : > "$W/sent"   # (the stand-in curl: no signal)
+  closed "$shl"; left=$(ls -A "$W/itmp" 2>/dev/null); own=$(grep -c '^sheepr install:' "$W/e"); calls=$(cat "$W/curl.calls" 2>/dev/null | grep -c .)
+  e1=$(head -c 120 "$W/e" | tr '\n' '|'); : > "$W/e"   # (no write-error flood kept)
+  if [ "$res" = 1 ] && [ -z "$left" ] && [ "$own" = 0 ] && [ "$calls" -le 1 ]; then
+    ok "$shl, install.sh with its stdout closed (PIPE at its default): exits 1 at the closed write (curl calls: $calls), its temp dir is gone, within 10 s"
   else
-    bad "$shl, stdout closed: rc=$res left: $(echo $left) stderr: $e1"
+    bad "$shl, stdout closed: rc=$res left: $(echo $left) its own lines: $own curl calls: $calls stderr: $e1"
   fi
   for sg in INT QUIT USR1; do
     case $sg in INT|QUIT) [ $can = yes ] || { bad "$shl, a $sg: not run ($why)"; continue; } ;; esac
