@@ -1934,7 +1934,7 @@ ln_rs() { grep -n -x -F -- "$1" "$RS" | cut -d: -f1; }
 sw=$(ln_rs '  [ "$NOTIFY" != frozen-tree ] || NOTIFY=$root/scripts/lib/notify.sh'); rt=$(ln_rs '  wt=$st/tree root=$st/tree'); ar=$(grep -n '^  armed=yes ' "$RS" | cut -d: -f1)
 [ "$(printf '%s\n' "$sw" | grep -c .)" = 1 ] && [ -n "$rt" ] && [ -n "$ar" ] && [ "$sw" -gt "$rt" ] && [ "$sw" -lt "$ar" ] \
   && pass "the notifier's swap to the frozen tree's notify.sh: once, after root is the frozen tree, before A8 (text)" || fail "the notifier swap: lines '$sw' root '$rt' armed '$ar'"
-grep -qx -F 'shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@"; fi; }' "$RS" && pass "shipcall: the real branch runs the tool as the operator has it (text)" || fail "shipcall's text"
+grep -qx -F 'shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@" 8>&- 9>&-; fi; }   # (fds 8 and 9 closed: as in tool)' "$RS" && pass "shipcall: the real branch runs the tool as the operator has it, with fds 8 and 9 closed (text)" || fail "shipcall's text"
 grep -qx -F '  else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} "$SHIP_DOCKER" "$@"; fi' "$RS" \
   && pass "shipdocker: the real branch, the docker class (text)" || fail "shipdocker's text"
 # the tag moved between the checks and its recording (a hook moves it at the $0 compare, to another
