@@ -105,6 +105,9 @@ die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
 # the remedy around it
 next_hint() { if [ "$shipping" = yes ]; then printf '%s' "${2:-}"; else printf '%s' "$1"; fi; }
+# dq TEXT: TEXT as one double-quoted shell word (\, ", $ and ` escaped), for a runnable line that names
+# a path: a line must run as printed from any directory, whatever the path holds
+dq() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"$`]/\\&/g')"; }
 stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
@@ -656,7 +659,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
 # file is read back at the commit the write made.
 TAP=lukaso/homebrew-tap CASK=Casks/sheepr.rb ARCHIVE=sheepr-macos-universal.tar.gz
 cask_fail() { # publish's failure after the PATCH: the release is public, its cask is not done (5)
-  echo "release: $tag is public, but its Homebrew cask is not updated: $(redact "$*").$(next_hint " Run: sh scripts/release.sh publish-cask --out \"$out\" $tag")" >&2; exit 5
+  echo "release: $tag is public, but its Homebrew cask is not updated: $(redact "$*").$(next_hint " Run: sh $(dq "$root/scripts/release.sh") publish-cask --out $(dq "$out") $tag")" >&2; exit 5
 }
 blob_id() { { printf 'blob %d\0' "$(wc -c < "$1" | tr -d ' ')"; cat "$1"; } | shasum -a 1 | cut -d' ' -f1; }   # git's id of a file's bytes
 cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and cask_blob, or refuses (1)
@@ -827,8 +830,10 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
 # entry's notifier always runs with SR_NOTIFY_OSASCRIPT set (empty), so even notify.sh given there
 # by mistake shows nothing real; a real entry's runs in the base class (no SR_NOTIFY_OSASCRIPT)
 notify() {
-  if [ -n "$DRYHOME" ]; then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$1" "$tag"
-  else tool base "$NOTIFY" "$1" "$tag"; fi || echo "release: the notification '$1' failed; the run goes on" >&2
+  # a stop's notification also gets the out dir: its text names the next file's full path
+  case $1 in failed-*|logout-failed-*) set -- "$1" "$tag" "$out" ;; *) set -- "$1" "$tag" ;; esac
+  if [ -n "$DRYHOME" ]; then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$@"
+  else tool base "$NOTIFY" "$@"; fi || echo "release: the notification '$1' failed; the run goes on" >&2
 }
 # publish_npm_exec DIR. npm_part (release.sh's own, never inherited): empty, today's order (each
 # package asked for, uploaded, then waited for until npm shows it; the main one last); platform (the
@@ -1512,7 +1517,9 @@ ship_stoptext() {
   last=$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1)
   cls=$(cat "$shipcls" 2>/dev/null) cause=$(cat "$shipcause" 2>/dev/null)
   [ -n "$cause" ] || cause="a signal, or a step that named no cause"
-  run="  sh scripts/release.sh" o="--out \"$out\" $tag"
+  # each runnable line names the operator's checkout by its absolute path (oroot: root is the frozen
+  # tree by now), so it runs as printed from any directory (a new terminal window opens in ~)
+  run="  sh $(dq "$oroot/scripts/release.sh")" o="--out $(dq "$out") $tag"
   login="  npm login --registry=$NPMREG"
   mainp=""; for p_ in ${SR_NPM_PKGS:-}; do mainp=$p_; done
   up=$(sed -n 's/^start npm-platform //p' "$shipprog" 2>/dev/null); grep -qx 'start npm-main' "$shipprog" 2>/dev/null && up="$up $mainp"
@@ -1557,7 +1564,7 @@ ship_stoptext() {
       return 0 ;;
     'start push')
       echo "The push started and was not confirmed. Check whether $tag is on GitHub:"
-      echo "  git ls-remote origin refs/tags/$tag"
+      echo "  git -C $(dq "$oroot") ls-remote origin refs/tags/$tag"
       echo "If it is not: run ship again. If it is, run in order:"
       echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
     'done push')

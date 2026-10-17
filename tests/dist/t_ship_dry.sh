@@ -1014,7 +1014,7 @@ c_row() { # label want-text: refused, nothing pushed
   [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q 'push --porcelain --atomic --no-follow-tags origin' "$FX/calls" 2>/dev/null && pass "$1: stopped ($2), no push" || fail "$1: rc=$r $(lastline)"
 }
 rm -rf "${OUTR:?}"; : > "$FX/buildfail"; ship; r=$?; rm -f "$FX/buildfail"; c_row "the build fails" "the build failed"
-! grep -q '^npm logout' "$FX/calls" && [ "$(grep -c '^notify failed-build v0.1.0$' "$FX/calls")" = 1 ] && pass "  no logout (no login was tried); one notification, failed-build" || fail "  build failure: logouts $(grep -c '^npm logout' "$FX/calls"), notifications $(grep '^notify' "$FX/calls" | tr '\n' ' ')"
+! grep -q '^npm logout' "$FX/calls" && [ "$(grep -c "^notify failed-build v0.1.0 $OUTR\$" "$FX/calls")" = 1 ] && pass "  no logout (no login was tried); one notification, failed-build" || fail "  build failure: logouts $(grep -c '^npm logout' "$FX/calls"), notifications $(grep '^notify' "$FX/calls" | tr '\n' ' ')"
 ! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check" || fail "  npm-check ran"
 rm -rf "${OUTR:?}"; echo 0000000000000000000000000000000000000000 > "$FX/build.other"; ship; r=$?; rm -f "$FX/build.other"; c_row "the build makes another commit's build" "holds no signed build of v0.1.0"
 ! grep -q '^npmcheck' "$FX/calls" && pass "  and no npm-check (post_build_check first)" || fail "  npm-check ran"
@@ -1401,8 +1401,8 @@ cont() { # run each step the next file names, in order: npm login (the operator'
   while IFS= read -r l; do
     case $l in
       *"npm login --registry=https://registry.npmjs.org/") echo "//registry.npmjs.org/:_authToken=npm_dry" >> "$FX/npmrc"; echo login >> "$FX/cont" ;;
-      *"sh scripts/release.sh "*" --out \"$OUTR\" v0.1.0"*)
-        e=$(printf '%s\n' "$l" | sed 's/.*sh scripts\/release\.sh \([a-z-]*\) --out.*/\1/')
+      *"/scripts/release.sh\" "*" --out \"$OUTR\" v0.1.0"*)
+        e=$(printf '%s\n' "$l" | sed 's/.*\/scripts\/release\.sh" \([a-z-]*\) --out.*/\1/')
         [ "$e" = "${2:-$e}" ] || continue
         [ -z "${2:-}" ] || [ ! -e "$FX/cont.one" ] || return
         [ -z "${2:-}" ] || : > "$FX/cont.one"
@@ -1462,7 +1462,7 @@ grep -qx 'ship does not continue a release of which anything is public.' "$NF" &
   && pass "A4, no build: the separate steps of §5" || fail "A4 no build: $(tr '\n' '|' < "$NF")"
 g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
 rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; ship; r=$?
-grep -q "^Never rebuild it: continue from $OUTR/v0.1.0" "$NF" && grep -qx "  sh scripts/release.sh npm-check --out \"$OUTR\" v0.1.0" "$NF" && pass "A4, this build in the out dir: never rebuild, continue from it" || fail "A4 with build: $(tr '\n' '|' < "$NF")"
+grep -q "^Never rebuild it: continue from $OUTR/v0.1.0" "$NF" && grep -qx "  sh \"$REPO/scripts/release.sh\" npm-check --out \"$OUTR\" v0.1.0" "$NF" && pass "A4, this build in the out dir: never rebuild, continue from it" || fail "A4 with build: $(tr '\n' '|' < "$NF")"
 # an A4 refusal keeps an earlier run's next file (and shows it); a refused lock writes nothing
 echo EARLIER > "$NF"; g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3; ship; r=$?
 [ "$(cat "$NF")" = EARLIER ] && grep -qx EARLIER "$FX/o" && pass "an A4 refusal keeps an earlier next file, and shows it" || fail "A4 keep: $(head -2 "$NF" | tr '\n' '|')"
@@ -1485,7 +1485,7 @@ grep -qx 'Nothing is public: the push was refused, and nothing of it landed.' "$
 rm -rf "${OUTR:?}"
 # after the push started: each stop point's text, then its steps complete the release
 echo tag > "$FX/pushlie"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pushlie"
-grep -q 'The push started and was not confirmed' "$NF" && grep -qx '  git ls-remote origin refs/tags/v0.1.0' "$NF" && postpush_ok && pass "the push not confirmed: check ls-remote; the steps if it is there" || fail "push unconfirmed: $(tr '\n' '|' < "$NF")"
+grep -q 'The push started and was not confirmed' "$NF" && grep -qx "  git -C \"$REPO\" ls-remote origin refs/tags/v0.1.0" "$NF" && postpush_ok && pass "the push not confirmed: check ls-remote; the steps if it is there" || fail "push unconfirmed: $(tr '\n' '|' < "$NF")"
 stoprow "the push not confirmed (the tag is there)"
 printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush" "$FX/viewfailv.sheepr-linux-arm64"
 [ "$(lastprog)" = "done push" ] && grep -q '^v0.1.0 is pushed; nothing else is public. Run in order:' "$NF" && ! grep -q 'npmjs.com/package' "$NF" && pass "the push done, no upload: publish, npm login, publish-npm (no wait note)" || fail "push done: '$(lastprog)' $(tr '\n' '|' < "$NF")"
@@ -1506,8 +1506,35 @@ world_reset
 grep -q '^  neither: run:' "$NF" && pass "N12: GitHub stopped before the POST: 'neither: run publish' among the cases" || fail "N12: $(tr '\n' '|' < "$NF")"
 cont "$NF" publish; [ $RC = 0 ] && cont "$NF" publish-npm && [ $RC = 0 ] && done_all && pass "  publish, then publish-npm: the release complete" || fail "  N12 steps: $(tr '\n' ' ' < "$FX/cont")"
 world_reset
+# every runnable line ship writes runs from any cwd (a new terminal window opens in ~): N12's next
+# file, from a checkout whose path holds a space; each `sh ".../scripts/release.sh" ENTRY ...` line,
+# run from /, reaches its entry (its dry entry here, with the stand-ins); the push-unconfirmed text's
+# git line, run from /, reaches the checkout (sgit: file:// remotes only)
+SPR="$FX/sp ace/repo"; mkdir -p "$FX/sp ace" && cp -R "$REPO" "$SPR" || exit 3
+RO_=$REPO; REPO=$SPR; : > "$FX/postfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/postfail"; REPO=$RO_
+nr_=0 nok_=0 bad_=""
+while IFS= read -r l; do
+  case $l in *'sh "'*'/scripts/release.sh" '*) ;; *) continue ;; esac
+  l=${l%%v0.1.0*}v0.1.0; eval "set -- $l"
+  nr_=$((nr_ + 1)); e_=$3; shift 3
+  (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" \
+    SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh "$SPR/scripts/release.sh" "__$e_-dry" "$@") > "$FX/co" 2>&1
+  dryhomes "$FX/co"
+  case $l in *"\"$SPR/scripts/release.sh\" $e_ "*) ;; *) bad_="$bad_ [path: $l]" ;; esac
+  grep -q "^release: __$e_-dry " "$FX/co" && nok_=$((nok_ + 1)) || bad_="$bad_ [$e_: $(head -1 "$FX/co" | cut -c1-80)]"
+done < "$NF"
+world_reset
+[ "$nr_" -ge 4 ] && [ "$nok_" = "$nr_" ] && [ -z "$bad_" ] && pass "each of N12's $nr_ release.sh lines, run from / (the checkout path holds a space), reaches its entry" \
+  || fail "lines from /: $nok_ of $nr_ reached their entry;$bad_"
+echo tag > "$FX/pushlie"; REPO=$SPR; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; REPO=$RO_; rm -f "$FX/pushlie"
+gl_=$(grep '^  git -C ' "$NF" | head -1); eval "set -- ${gl_# }"; shift
+(cd / && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$S/sgit" "$@") > "$FX/co" 2>&1; r=$?
+[ -n "$gl_" ] && [ $r = 0 ] && grep -q 'refs/tags/v0.1.0' "$FX/co" && ! grep -q '^SGIT REFUSED' "$FX/calls" \
+  && pass "the push-unconfirmed text's git line, run from /: it reaches the checkout (the tag listed)" || fail "git line from /: rc=$r '$gl_' $(head -1 "$FX/co" | cut -c1-120)"
+world_reset; rm -rf "${FX:?}/sp ace"
 : > "$FX/putfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/putfail"
-grep -q 'is public on GitHub, but its Homebrew cask is not updated' "$NF" && grep -qx "  sh scripts/release.sh publish-cask --out \"$OUTR\" v0.1.0" "$NF" && postpush_ok && pass "exit 5: publish-cask, npm login, publish-npm" || fail "exit5 text: $(tr '\n' '|' < "$NF")"
+grep -q 'is public on GitHub, but its Homebrew cask is not updated' "$NF" && grep -qx "  sh \"$REPO/scripts/release.sh\" publish-cask --out \"$OUTR\" v0.1.0" "$NF" && postpush_ok && pass "exit 5: publish-cask, npm login, publish-npm" || fail "exit5 text: $(tr '\n' '|' < "$NF")"
 stoprow "exit 5"
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pubfail.sheepr"
 grep -q 'public on GitHub and Homebrew, and npm may hold a part of it' "$NF" && ! grep -q 'release.sh publish ' "$NF" && grep -q 'npmjs.com/package/sheepr shows' "$NF" && postpush_ok \

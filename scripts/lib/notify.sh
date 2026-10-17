@@ -2,13 +2,16 @@
 # A release notification (PHASE3.md D2 step 3; the ship plan): a macOS notification and the terminal
 # bell, so an operator who left the desk comes back for a step only a human can do.
 #
-#   notify.sh KEY TAG
+#   notify.sh KEY TAG [DIR]
 #
 # KEY picks the text from the fixed table below; TAG (vX.Y.Z or vX.Y.Z-rc.N, one line) is the only
 # thing put into it, and the phase of failed-PHASE and logout-failed-PHASE (a letter, then letters,
 # digits and -, at most 32 in all). Never a tool's output. The keys: password, password-again,
 # npm-login, npm-approve, npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE,
-# logout-failed-PHASE (a stop and a failed npm logout: one notification names both).
+# logout-failed-PHASE (a stop and a failed npm logout: one notification names both). DIR, the out dir
+# (absolute, one line, no control character; else refused), makes failed-PHASE and
+# logout-failed-PHASE name the next file by its full path, DIR/TAG.ship-next.txt (release.sh gives it):
+# a notification read later, in another window, must name a file that opens from there.
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
@@ -33,10 +36,16 @@ phase_ok() { # phase key
   [ ${#1} -le 32 ] || refuse "the key '$2' (a phase has at most 32 characters)"
 }
 
-key=${1:-} tag=${2:-}
+key=${1:-} tag=${2:-} dir=${3:-}
 tagre='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
 printf '%s\n' "$tag" | grep -Eq "$tagre" && [ "$(printf '%s' "$tag" | wc -l | tr -d ' ')" = 0 ] \
   || refuse "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
+nf=$tag.ship-next.txt
+if [ -n "$dir" ]; then
+  case $dir in /*) ;; *) refuse "the out dir '$dir' is not an absolute path" ;; esac
+  case $dir in *[[:cntrl:]]*) refuse "the out dir holds a control character" ;; esac
+  nf=${dir%/}/$tag.ship-next.txt
+fi
 case $key in
   password) text="$tag: type the notary keychain password in the terminal" ;;
   password-again) text="$tag: Apple did not accept the submission. Type the notary keychain password again in the terminal, to fetch Apple's log" ;;
@@ -48,10 +57,10 @@ case $key in
   logout-failed) text="$tag: npm logout failed. Run npm logout in the terminal" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase. What to run next is in $tag.ship-next.txt" ;;
+    text="$tag stopped at $phase. What to run next is in $nf" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; what to run next is in $tag.ship-next.txt" ;;
+    text="$tag stopped at $phase, and npm logout failed. Run npm logout in the terminal; what to run next is in $nf" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 
