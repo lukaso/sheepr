@@ -142,7 +142,7 @@ fi
 tagre='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
 valid() { printf '%s\n' "$1" | grep -Eq "$tagre" && [ "$(printf '%s' "$1" | wc -l | tr -d ' ')" = 0 ]; }
 counter_at() { # tag -> its SR_BUILD_COUNTER (empty if none)
-  git -C "$root" show "$1:scripts/release.conf" 2>/dev/null | sed -n 's/^SR_BUILD_COUNTER=\([0-9][0-9]*\)$/\1/p' | head -1
+  git -C "$root" show "refs/tags/$1:scripts/release.conf" 2>/dev/null | sed -n 's/^SR_BUILD_COUNTER=\([0-9][0-9]*\)$/\1/p' | head -1
 }
 checks() {
   valid "$tag" || die "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
@@ -150,14 +150,14 @@ checks() {
   [ -z "$(git -C "$root" status --porcelain)" ] || die "the tree is not clean (a change or an untracked file)"
   [ "$(git -C "$root" rev-parse HEAD)" = "$commit" ] || die "HEAD is not $tag"
   xyz=${tag#v}; xyz=${xyz%%-*}
-  v=$(git -C "$root" show "$tag:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
+  v=$(git -C "$root" show "refs/tags/$tag:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
   [ "$v" = "$xyz" ] || die "Cargo.toml says $v, the tag $xyz"
-  lv=$(git -C "$root" show "$tag:Cargo.lock" | awk 'p && /^version = /{gsub(/"/,"",$3); print $3; exit} /^name = "sheepr"$/{p=1}')
+  lv=$(git -C "$root" show "refs/tags/$tag:Cargo.lock" | awk 'p && /^version = /{gsub(/"/,"",$3); print $3; exit} /^name = "sheepr"$/{p=1}')
   [ "$lv" = "$xyz" ] || die "Cargo.lock records sheepr $lv, not $xyz (run cargo build to update it, and commit it)"
   # a final release's CHANGELOG entry carries its date (an rc's may still say "not yet released")
   case $tag in *-rc.*) ;; *)
     xre=$(printf %s "$xyz" | sed 's/\./\\./g')
-    cl=$(git -C "$root" show "$tag:CHANGELOG.md" 2>/dev/null)
+    cl=$(git -C "$root" show "refs/tags/$tag:CHANGELOG.md" 2>/dev/null)
     n=$(printf '%s\n' "$cl" | grep -Ec "^## $xre( |\$)")
     d=$(printf '%s\n' "$cl" | grep -Ec "^## $xre \(20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])\)\$")
     [ "$n" = 1 ] && [ "$d" = 1 ] || die "CHANGELOG.md needs exactly one '## $xyz (YYYY-MM-DD)' heading for $xyz, with a YYYY-MM-DD date (found $n heading(s) for $xyz, $d of them dated so; a trailing space or CR leaves one undated): fix it, commit, and tag again" ;;
@@ -267,7 +267,7 @@ build_release() { # mode: unsigned | signed | control
     [ -z "$dest" ] || echo "release: the build of $tag stopped; what it made is kept in $dest (never used by a later run: look at it, then remove it)" >&2' EXIT
   trap 'exit 1' $SIGS
   src=$scratch/src
-  git -C "$root" worktree add -q --detach "$src" "$tag" || die "cannot make a worktree of $tag"
+  git -C "$root" worktree add -q --detach "$src" "refs/tags/$tag" || die "cannot make a worktree of $tag"
   [ -z "$(git -C "$src" status --porcelain --ignored)" ] || die "the worktree holds an untracked or ignored file"
   # from here on every helper and every setting comes from the tag's worktree, never the shared checkout
   S=$src/scripts
@@ -602,8 +602,8 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   cd_=$1 ct=$2 xyz=${tag#v}
   # the cask the tag renders (the tag's own template and renderer, the archive's manifest hash)
   mkdir -p "$ct/src/scripts/lib" "$ct/src/packaging/homebrew" || die "no temp dir for the cask"
-  git -C "$root" show "$tag:scripts/lib/render-cask.sh" > "$ct/src/scripts/lib/render-cask.sh" \
-    && git -C "$root" show "$tag:packaging/homebrew/sheepr.rb.in" > "$ct/src/packaging/homebrew/sheepr.rb.in" || die "cannot read $tag's cask template"
+  git -C "$root" show "refs/tags/$tag:scripts/lib/render-cask.sh" > "$ct/src/scripts/lib/render-cask.sh" \
+    && git -C "$root" show "refs/tags/$tag:packaging/homebrew/sheepr.rb.in" > "$ct/src/packaging/homebrew/sheepr.rb.in" || die "cannot read $tag's cask template"
   ah=$(man_hash "$cd_" "$ARCHIVE"); [ -n "$ah" ] || die "$ARCHIVE has no manifest hash"
   tool base sh "$ct/src/scripts/lib/render-cask.sh" "$xyz" "$ah" "$ct/cask.rb" || die "cannot render $tag's cask"
   cmp -s "$ct/cask.rb" "$cd_/sheepr.rb" || die "$cd_/sheepr.rb is not the cask the tag renders (its template, the archive's manifest hash)"
@@ -902,7 +902,7 @@ npm_check() { # dir
   # the four packages, read raw, before anything unpacks them (npm-same.py says why), against the
   # tag's license texts, README and launcher
   for x in LICENSE-MIT LICENSE-APACHE README.md npm/sheepr/bin/sheepr; do
-    git -C "$root" show "$tag:$x" > "$nt/ref/$(basename "$x")" 2>/dev/null || die "cannot read $x at $tag"
+    git -C "$root" show "refs/tags/$tag:$x" > "$nt/ref/$(basename "$x")" 2>/dev/null || die "cannot read $x at $tag"
   done
   mv "$nt/ref/sheepr" "$nt/ref/launcher"
   dt=$d/sheepr-darwin-universal-$nv.tgz
@@ -1003,13 +1003,13 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
   # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
   checks
-  git -C "$root" show "$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
+  git -C "$root" show "refs/tags/$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
   cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
   # every file the tag tracks under scripts/ (the sourced sigs.sh among them, and whatever any
   # spelling sources from there) holds the tag's bytes in this checkout, read from the file and never
   # from the index, so assume-unchanged and skip-worktree hide nothing: a regular file by its blob
   # hash (no filters), a symlink by its target; any other entry (a submodule) is refused
-  git -C "$root" ls-tree -r --full-tree "$tag" -- scripts > "$st/scripts.tree" 2>/dev/null && [ -s "$st/scripts.tree" ] \
+  git -C "$root" ls-tree -r --full-tree "refs/tags/$tag" -- scripts > "$st/scripts.tree" 2>/dev/null && [ -s "$st/scripts.tree" ] \
     || die "cannot list $tag's files under scripts/"
   while IFS= read -r l_; do
     m_=${l_%% *} h_=${l_#* * } f_=${l_#*	}; h_=${h_%%	*}
@@ -1084,7 +1084,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
       um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
       if [ -n "$um" ] && [ "$um" = "$amain" ]; then why="main unmoved"
       else
-        tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main 2>/dev/null \
+        tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2>/dev/null \
           || die "the push was refused and origin's main moved, but it cannot be fetched to tell where ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
         if [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null; then why="main holds it"; else why="main moved"; fi
       fi
@@ -1097,7 +1097,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   fi
   # what the push did: origin's main fetched, and github.com/lukaso/sheepr shows the tag at the
   # recorded object and main at or past the tag's commit
-  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main || die "the push ran, but origin's main cannot be fetched to confirm it"
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main || die "the push ran, but origin's main cannot be fetched to confirm it"
   tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" || die "the push ran, but the refs of $UPSTREAM cannot be read to confirm it"
   [ "$(awk -v t="refs/tags/$tag" '$2 == t {print $1}' "$st/ls.push")" = "$tagobj" ] || die "after the push, $UPSTREAM's $tag is not the recorded object $tagobj"
   um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
@@ -1287,7 +1287,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
   # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
   [ -z "$rtag" ] || ship_public "the tag is on origin ($(printf '%s' "$rtag" | head -1))"
-  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin main 2> "$st/fetch.err" || { stopclass fix; die "git: cannot fetch origin's main ($(head -c 300 "$st/fetch.err" | tr '\n' ' '))"; }
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2> "$st/fetch.err" || { stopclass fix; die "git: cannot fetch origin's main ($(head -c 300 "$st/fetch.err" | tr '\n' ' '))"; }
   fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
   [ "$fh" = "$amain" ] || { stopclass network; die "origin's main moved between its read ($amain) and the fetch ($fh)"; }
   if git -C "$root" merge-base --is-ancestor "$commit" "$fh"; then pushmain=no

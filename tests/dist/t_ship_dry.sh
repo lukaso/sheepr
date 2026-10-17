@@ -44,7 +44,7 @@ for x; do
   i=\$((i + 1))
 done
 # \$FX/onshow: a hook run once, before release.sh reads the tag's own release.sh (its \$0 compare)
-if [ -e "$FX/onshow" ] && [ ! -e "$FX/onshow.done" ]; then case " \$* " in *" show v0.1.0:scripts/release.sh "*) : > "$FX/onshow.done"; sh "$FX/onshow" ;; esac; fi
+if [ -e "$FX/onshow" ] && [ ! -e "$FX/onshow.done" ]; then case " \$* " in *" show refs/tags/v0.1.0:scripts/release.sh "*) : > "$FX/onshow.done"; sh "$FX/onshow" ;; esac; fi
 case \$sub in
   status|show|rev-parse|worktree|tag|merge-base|config|cat-file|for-each-ref|show-ref|ls-tree|hash-object) exec /usr/bin/git "\$@" ;;
 esac
@@ -299,6 +299,10 @@ fi
 [ -z "\$c" ] || set -- -C "\$c" "\$@"
 GIT_CONFIG_NOSYSTEM=1 /usr/bin/git "\$@"; r=\$?
 [ -z "\$extra" ] || printf '*\trefs/heads/x:refs/heads/x\t[new branch]\n'
+# (after a fetch that succeeded: FETCH_HEAD, and origin's refs/heads/main as ls-remote names it)
+if [ "\${3:-}" = fetch ] && [ \$r = 0 ]; then
+  echo "FH \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git -C "\$2" rev-parse FETCH_HEAD) \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git -C "\$2" ls-remote origin refs/heads/main | cut -f1)" >> "$FX/fetchheads"
+fi
 if [ \$real = yes ] && [ \$r = 0 ]; then
   [ ! -e "$FX/afterpush" ] || sh "$FX/afterpush"
   # mirrored to \$FX/updir when one is set (in the real world origin and github.com/lukaso/sheepr
@@ -439,7 +443,7 @@ rm -rf "${OUTR:?}"; ship; r=$?
 WTP='/private/tmp/sr-ship\.[A-Za-z0-9]*/tree'
 grep -q "^sgit -C $WTP push --dry-run --porcelain --atomic --no-follow-tags origin $C:refs/heads/main $T:refs/tags/v0.1.0\$" "$FX/calls" \
   && pass "the dry-run push: exactly main at the tag's commit and the tag object, atomic, --no-follow-tags, from the frozen tree" || fail "the dry-run push: $(grep 'push' "$FX/calls" | head -2 | tr '\n' ' ') $(lastline)"
-grep -q "^sgit -C $WTP fetch -q origin main\$" "$FX/calls" && pass "origin's main fetched with its refspec, in the frozen tree" || fail "the fetch: $(grep fetch "$FX/calls" | head -1)"
+grep -q "^sgit -C $WTP fetch -q origin refs/heads/main\$" "$FX/calls" && pass "origin's main fetched by its full ref, in the frozen tree" || fail "the fetch: $(grep fetch "$FX/calls" | head -1)"
 grep -q "^sgit -C $WTP ls-remote origin refs/heads/main refs/tags/v0\.1\.0\*\$" "$FX/calls" && grep -q "^sgit -C $WTP ls-remote https://github.com/lukaso/sheepr refs/heads/main refs/tags/v0\.1\.0\*\$" "$FX/calls" \
   && pass "ls-remote of origin and of github.com/lukaso/sheepr" || fail "ls-remote: $(grep ls-remote "$FX/calls" | tr '\n' ' ')"
 [ "$(g rev-parse -q --verify refs/tags/v0.1.0)" = "$T" ] && pass "the unpushed tag survives the fetch (fetch.prune and pruneTags on)" || fail "the local tag is gone"
@@ -447,6 +451,14 @@ grep -q "^sgit -C $WTP ls-remote origin refs/heads/main refs/tags/v0\.1\.0\*\$" 
   && pass "the push reached origin: main at the tag's commit and the tag object, nothing else (not x-follow, push.followTags on)" || fail "origin after: $(tr '\n' ' ' < "$FX/origin.after")"
 [ "$(g worktree list | grep -c .)" = 1 ] && pass "the frozen tree is removed at the end" || fail "worktrees left: $(g worktree list | tr '\n' ' ')"
 nopath && pass "no git call outside \$GITCMD reached the network (the PATH shim saw local subcommands only)" || fail "PATH calls: $(cat "$FX/pathcalls")"
+# an annotated tag named main on origin: every fetch names refs/heads/main, so FETCH_HEAD is origin's
+# branch main (as ls-remote reads it) and the run completes; a short `main` took the tag first
+GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t git --git-dir="$FX/origin.git" tag -a main -m main "$BASE" || exit 3
+rm -f "${FX:?}/fetchheads"; rm -rf "${OUTR:?}"; ship; r=$?
+git --git-dir="$FX/origin.git" tag -d main > /dev/null || exit 3
+nfh=$(cat "$FX/fetchheads" 2>/dev/null | grep -c .); bad=$(awk '$2 != $3' "$FX/fetchheads" 2>/dev/null)
+completed && [ "$nfh" -ge 2 ] && [ -z "$bad" ] && pass "a tag named main on origin: the run completes; each of its $nfh fetches put origin's refs/heads/main in FETCH_HEAD" \
+  || fail "a tag named main: rc=$r fetches: $nfh, FETCH_HEAD not main: $(printf '%s' "$bad" | tr '\n' '|') $(lastline)"
 # the $0 compare: an edit hidden from git status (assume-unchanged) is still refused
 g update-index --assume-unchanged scripts/release.sh && cp "$REPO/scripts/release.sh" "$FX/rs.keep" && echo '# an edit' >> "$REPO/scripts/release.sh"
 rm -rf "${OUTR:?}"; ship; r=$?
