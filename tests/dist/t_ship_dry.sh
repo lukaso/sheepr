@@ -717,6 +717,31 @@ rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall" "${FX:?}/npmrc"
 pre_row "every npm command answering ERR_INVALID_AUTH" "cannot tell whether anything is public"
 grep -q 'an _authToken line that names no registry' "$A6NF" && ! grep -q 'config delete' "$A6NF" && endsfix "$A6NF" && pass "  the next file names the npmrc auth line; when the cause is fixed, run ship again" \
   || fail "  every npm ERR_INVALID_AUTH: last '$(tail -1 "$A6NF")'"
+# a cause keeps the tool's error lines: two long `npm warn` lines ahead of npm's error (more bytes
+# than the cause's cut) leave `npm error code ETIMEDOUT` in the next file's cause (A4's first view);
+# git's `warning:` lines ahead of its `fatal:` the same (A3's ls-remote). Controls: the error alone
+WL='npm warn config a long stand-in warning npm could print ahead of its error, about a setting in an npmrc, line'
+printf '%s 1\n%s 2\nnpm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org/sheepr failed (stand-in)\n' "$WL" "$WL" > "$FX/npmall"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall"
+[ $r = 1 ] && head -1 "$OUTR/v0.1.0.ship-next.txt" | grep -q 'npm error code ETIMEDOUT' && endsfix "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "two npm warnings ahead of npm's error: the next file's cause holds npm error code ETIMEDOUT" || fail "npm warnings first: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-260)"
+printf 'npm error code ETIMEDOUT\nnpm error network request to https://registry.npmjs.org/sheepr failed (stand-in)\n' > "$FX/npmall"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall"
+[ $r = 1 ] && head -1 "$OUTR/v0.1.0.ship-next.txt" | grep -q 'npm error code ETIMEDOUT' && endsfix "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "control: npm's error alone: the next file's cause holds npm error code ETIMEDOUT" || fail "control, npm's error alone: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-260)"
+# the class: no cause in release.sh cuts a tool's stderr file with head; each goes through errcut
+# (21 sites when this row was written: A3, A4, A5, A6, C4, the push, the fetch, the casks', npm's)
+nh=$(grep -cE 'head -(c [0-9]+|1|n [0-9]+) "\$[A-Za-z_0-9]+/[A-Za-z_.]*err"' "$SR_ROOT/scripts/release.sh")
+ne=$(grep -oE 'errcut "\$[A-Za-z_0-9]+/[A-Za-z_.]*err" [0-9]+' "$SR_ROOT/scripts/release.sh" | grep -c .)
+[ "$nh" = 0 ] && [ "$ne" -ge 21 ] && pass "no stderr file cut with head in release.sh; $ne causes through errcut" || fail "stderr cuts: $nh with head, $ne through errcut"
+GW='warning: a long stand-in warning git could print ahead of its error, about a redirect or a setting of the remote, line'
+for nw in 3 0; do
+  : > "$FX/lserr"; i=0; while [ $i -lt $nw ]; do i=$((i + 1)); printf '%s %s\n' "$GW" $i >> "$FX/lserr"; done
+  printf "fatal: unable to access 'https://github.com/lukaso/sheepr/': Could not resolve host: github.com\n" >> "$FX/lserr"; : > "$FX/lsfail"
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/lsfail" "${FX:?}/lserr"
+  [ $r = 1 ] && head -1 "$OUTR/v0.1.0.ship-next.txt" | grep -q "fatal: unable to access 'https://github.com/lukaso/sheepr/'" && endsfix "$OUTR/v0.1.0.ship-next.txt" \
+    && pass "$( [ $nw = 0 ] && echo 'control: ')$nw git warnings ahead of its fatal: (ls-remote): the next file's cause holds it" || fail "$nw git warnings first: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-260)"
+done
 # gh at A4's release list: a definite answer (401) and a transient one (502), the same ending; the
 # cause keeps gh's words
 for ge in 'HTTP 401: Bad credentials (https://api.github.com/graphql)

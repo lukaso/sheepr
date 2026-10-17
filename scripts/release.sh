@@ -79,6 +79,14 @@ usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|pub
 # what `git remote get-url` answers, and a tool may name such a URL in its own message: neither is
 # ever printed, written to the next file or kept as the cause (die and the exit-5 text pass it here)
 redact() { printf '%s' "$*" | sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]*@#\1#g'; }
+# errcut FILE BYTES: a tool's stderr as one line of a cause, at most BYTES: its error lines first
+# (npm's `npm error` and `npm ERR!`, git's and gh's `error:` and `fatal:`), then its other lines in
+# order, so no warning ahead of them pushes them out of the cut; npm's ANSI colour dropped
+errcut() {
+  e_=$(printf '\033') ep_='^(npm error|npm ERR!|error:|fatal:)'
+  ec_=$(sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null); [ -n "$ec_" ] || return 0
+  { printf '%s\n' "$ec_" | grep -E "$ep_"; printf '%s\n' "$ec_" | grep -vE "$ep_"; } | head -c "$2" | tr '\n' ' '
+}
 die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$m_" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
@@ -639,7 +647,7 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   # the tap's cask: exactly one version line, never newer than this tag; this version only as these bytes
   tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$ct/tap.rb" 2> "$ct/tap.err" || {
     grep -q 'HTTP 404' "$ct/tap.err" && die "$TAP has no $CASK (add it by hand once)"
-    stopclass fix; die "gh: cannot read $TAP's $CASK ($(head -c 300 "$ct/tap.err" | tr '\n' ' '))"; }
+    stopclass fix; die "gh: cannot read $TAP's $CASK ($(errcut "$ct/tap.err" 300))"; }
   [ "$(grep -c '^  version "' "$ct/tap.rb")" = 1 ] || { stopclass fix; die "$TAP's $CASK has not exactly one version line"; }
   tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$ct/tap.rb")
   rel=$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz") || { stopclass fix; die "$TAP's $CASK has a version off the grammar ('$tv')"; }
@@ -650,7 +658,7 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
     *) cmp -s "$ct/tap.rb" "$ct/cask.rb" && cask_put=no \
          || { stopclass fix; die "$TAP's cask is $xyz with sha256 $(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$ct/tap.rb"), but this build's archive is $ah: refused (a swapped asset, or a tap edited by hand)"; } ;;
   esac
-  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push 2> "$ct/perm.err") || { stopclass fix; die "gh: cannot read $TAP ($(head -c 300 "$ct/perm.err" | tr '\n' ' '))"; }
+  pp=$(tool "$NETC" "$GH" api "repos/$TAP" --jq .permissions.push 2> "$ct/perm.err") || { stopclass fix; die "gh: cannot read $TAP ($(errcut "$ct/perm.err" 300))"; }
   [ "$pp" = true ] || { stopclass fix; die "this gh login cannot write $TAP"; }
 }
 cask_post() { # dir tmp release-path fail: the release is public; the cask put and read back
@@ -658,7 +666,7 @@ cask_post() { # dir tmp release-path fail: the release is public; the cask put a
   tool "$NETC" "$GH" api "repos/lukaso/sheepr/$rp" --jq '.draft, (.assets[] | select(.name == "'"$ARCHIVE"'" and .state == "uploaded") | .id)' \
     > "$ct/rel" 2> "$ct/rel.err" || {
     grep -q 'HTTP 404' "$ct/rel.err" && $f "no published release $tag on GitHub"
-    $f "gh: cannot read the release ($(head -1 "$ct/rel.err"))"; }
+    $f "gh: cannot read the release ($(errcut "$ct/rel.err" 300))"; }
   [ "$(sed -n 1p "$ct/rel")" = false ] || $f "the release reads as a draft"
   [ "$(sed 1d "$ct/rel" | wc -l | tr -d ' ')" = 1 ] || $f "the release has not exactly one uploaded $ARCHIVE"
   aid=$(sed -n 2p "$ct/rel"); case $aid in ''|*[!0-9]*) $f "no asset id ($aid)" ;; esac
@@ -670,7 +678,7 @@ cask_post() { # dir tmp release-path fail: the release is public; the cask put a
   [ "$(shasum -a 256 "$ct/brew" | cut -d' ' -f1)" = "$ah" ] || $f "$url is not the build's archive"
   if [ "$cask_put" = yes ]; then
     c=$(tool "$NETC" "$GH" api -X PUT "repos/$TAP/contents/$CASK" -f "message=sheepr $xyz" -f "content=$(base64 < "$ct/cask.rb" | tr -d '\n')" \
-      -f "sha=$cask_blob" --jq .commit.sha 2> "$ct/put.err") || $f "gh: the cask write was refused ($(head -1 "$ct/put.err"); a 409 means the tap changed since it was read)"
+      -f "sha=$cask_blob" --jq .commit.sha 2> "$ct/put.err") || $f "gh: the cask write was refused ($(errcut "$ct/put.err" 300); a 409 means the tap changed since it was read)"
     case $c in ''|*[!0-9a-f]*) $f "no commit id from the cask write ($c)" ;; esac
     tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK?ref=$c" > "$ct/back" || $f "gh: cannot read the cask back"
   else
@@ -775,7 +783,7 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
       grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); this step uploaded nothing"; }
-      stopclass fix; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' '))$(npmhint "$3/err"); this step uploaded nothing"
+      stopclass fix; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(errcut "$3/err" 200))$(npmhint "$3/err"); this step uploaded nothing"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
       || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; this step uploaded nothing"; }
@@ -815,7 +823,7 @@ publish_npm_exec() { # dir
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(head -c 200 "$pc/err" | tr '\n' ' '))$(npmhint "$pc/err")"
+    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")"
   [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); this step uploaded nothing"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
@@ -844,7 +852,7 @@ publish_npm_exec() { # dir
       echo "release: $p@$nv is already on npm (the same file): skipped"
       continue
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$pc/err" | grep -q 'E404'; }; then
-      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' '))$(npmhint "$pc/err"); $(notafter "$p")"
+      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(errcut "$pc/err" 300))$(npmhint "$pc/err"); $(notafter "$p")"
     fi
     # the operator may have left during a wait: a notification before each upload that follows one
     # (npm-approve-again for the main package, npm-approve-next for another), none before the first;
@@ -1082,7 +1090,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   notify npm-login
   logged_in=yes
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
-  who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(head -c 200 "$st/who.err" | tr '\n' ' '))$(npmhint "$st/who.err"); nothing is public"
+  who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(errcut "$st/who.err" 200))$(npmhint "$st/who.err"); nothing is public"
   [ "$who" = "$SR_NPM_USER" ] || die "logged in to npm as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), not as $SR_NPM_USER; nothing is public"
   # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
   # exactly A3's refspecs (the recorded object), atomic, no tag followed
@@ -1095,7 +1103,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
     # an atomic push moves both refs or neither: refused, when github.com/lukaso/sheepr shows no tag
     # and main not at the tag's commit (pushed, or held by it before)
     tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" 2>/dev/null \
-      || die "the push failed, and the refs of $UPSTREAM cannot be read to tell whether it landed ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
+      || die "the push failed, and the refs of $UPSTREAM cannot be read to tell whether it landed ($(errcut "$st/push.err" 300))"
     if ! awk -v t="refs/tags/$tag" '$2 == t {f = 1} END {exit !f}' "$st/ls.push" \
        && { [ $pushmain = no ] || ! awk -v c="$commit" '$2 == "refs/heads/main" && $1 == c {f = 1} END {exit !f}' "$st/ls.push"; }; then
       # why, from main as the remote shows it now (C5 read it as $amain): unmoved (the remote's own
@@ -1104,13 +1112,13 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
       if [ -n "$um" ] && [ "$um" = "$amain" ]; then why="main unmoved"
       else
         tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2>/dev/null \
-          || die "the push was refused and origin's main moved, but it cannot be fetched to tell where ($(head -c 300 "$st/push.err" | tr '\n' ' '))"
+          || die "the push was refused and origin's main moved, but it cannot be fetched to tell where ($(errcut "$st/push.err" 300))"
         if [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null; then why="main holds it"; else why="main moved"; fi
       fi
       progress "push refused: $why"
       # git's reason for each refused ref is its porcelain `!` line (stdout under --porcelain)
       rej=$(grep '^!' "$st/push" 2>/dev/null | cut -f2- | tr '\t\n' ' ;' | head -c 300)
-      die "the push was refused, and nothing of it landed (${rej:+git: $rej }$(head -c 300 "$st/push.err" | tr '\n' ' ')); nothing is public"
+      die "the push was refused, and nothing of it landed (${rej:+git: $rej }$(errcut "$st/push.err" 300)); nothing is public"
     fi
     die "the push failed, but $UPSTREAM shows a part of it ($(tr '\t\n' ' ;' < "$st/ls.push"))"
   fi
@@ -1169,7 +1177,7 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
   # record), and the version newer than GitHub's latest final release and npm's latest of each name
   xyz=${tag#v}
   tool "$NETC" "$GH" api repos/lukaso/sheepr/releases --paginate --jq '.[] | [.tag_name, .draft, .prerelease] | @tsv' > "$st/rels" 2> "$st/rels.err" \
-    || ship_unreadable "gh cannot list the releases ($(head -c 200 "$st/rels.err" | tr '\n' ' '))"
+    || ship_unreadable "gh cannot list the releases ($(errcut "$st/rels.err" 200))"
   [ -z "$(awk -F '\t' -v t="$tag" '$1 == t' "$st/rels")" ] || ship_public "GitHub has a release or a draft $tag"
   hi=""
   for v in $(awk -F '\t' '$2 == "false" && $3 == "false" {print $1}' "$st/rels"); do
@@ -1180,7 +1188,7 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
   # the tap's cask (A5 checks it further)
   if ! tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$st/tap.rb" 2> "$st/tap.err"; then
     grep -q 'HTTP 404' "$st/tap.err" && die "$TAP has no $CASK (add it by hand once)"
-    ship_unreadable "gh cannot read $TAP's $CASK ($(head -1 "$st/tap.err"))"
+    ship_unreadable "gh cannot read $TAP's $CASK ($(errcut "$st/tap.err" 300))"
   fi
   grep -qxF "  version \"$xyz\"" "$st/tap.rb" && ship_public "$TAP's cask is $xyz"
   # npm, each name: the version not there (E404), never there once ("time"), and newer than its latest
@@ -1188,14 +1196,14 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
   for p in $SR_NPM_PKGS; do
     vout=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p@$xyz" dist.integrity 2> "$st/err"); r=$?
     if [ $r = 0 ] && [ -n "$(printf '%s' "$vout" | tr -d ' "\n\r')" ]; then ship_public "npm has $p@$xyz"
-    elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"; fi
+    elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(errcut "$st/err" 200)$(npmhint "$st/err")"; fi
     # a name npm does not know answers E404 to every view (owner ls too, A6): not a read failure
     # (npm's --json says its E404 in the error object on stdout, and may say nothing on stderr)
     tm=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" time 2> "$st/err") || {
       printf '%s\n' "$tm" | cat - "$st/err" | grep -q E404 && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as ${SR_NPM_USER:-the owner}); this run made nothing public"; }
-      ship_unreadable "npm view $p time: $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"; }
+      ship_unreadable "npm view $p time: $(errcut "$st/err" 200)$(npmhint "$st/err")"; }
     if printf '%s\n' "$tm" | grep -q "\"$xyz\":"; then stopclass lost; die "$p@$xyz was published once and is gone: $xyz can never be published on npm again; release a new version"; fi
-    lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(head -c 200 "$st/err" | tr '\n' ' ')$(npmhint "$st/err")"
+    lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(errcut "$st/err" 200)$(npmhint "$st/err")"
     lt=$(printf '%s' "$lt" | tr -d ' "\n\r')
     [ -z "$lt" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$lt" "$xyz" 2>/dev/null)" = newer ] || die "$tag is not newer than npm's latest $p ($lt): tag a newer version"
   done
@@ -1206,7 +1214,7 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
   tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$st/tap.rb")
   [ "$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz" 2>/dev/null)" = newer ] || die "$TAP's cask is $tv, not below $xyz"
   for r_ in "$TAP" lukaso/sheepr; do
-    pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push 2> "$st/perm.err") || { stopclass fix; die "gh: cannot read $r_ ($(head -c 300 "$st/perm.err" | tr '\n' ' '))"; }
+    pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push 2> "$st/perm.err") || { stopclass fix; die "gh: cannot read $r_ ($(errcut "$st/perm.err" 300))"; }
     [ "$pp" = true ] || die "this gh login cannot write $r_"
   done
 }
@@ -1227,7 +1235,7 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
   # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
   # the remedy for its exact code (npmhint); the class is fix, whatever npm answered
   [ "$n" = 0 ] && [ "$(npmcode "$st/who.err")" = ENEEDAUTH ] && return 0
-  stopclass fix; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))$(npmhint "$st/who.err")"
+  stopclass fix; die "cannot tell whether an npm session exists (npm whoami: $(errcut "$st/who.err" 200))$(npmhint "$st/who.err")"
 }
 # npmcode FILE: the first error code npm wrote there: npm 11's `npm error code X`, npm 9's
 # `npm ERR! code X`; ANSI colour (an npmrc's color=always) dropped first; or nothing
@@ -1293,7 +1301,7 @@ ship_lsr() { # A2's read of the remote refs, again before the push: origin's and
              # sheepr's main and this tag (exactly refs/tags/vTAG and its peeled line; an rc tag of
              # the version is not one) must agree; sets amain (origin's main) and rtag
   for r_ in origin "$UPSTREAM"; do
-    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" 2> "$st/ls.err" || { stopclass fix; die "git: cannot list the refs of $r_ (ls-remote: $(head -c 300 "$st/ls.err" | tr '\n' ' '))"; }
+    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" 2> "$st/ls.err" || { stopclass fix; die "git: cannot list the refs of $r_ (ls-remote: $(errcut "$st/ls.err" 300))"; }
     awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' "$st/ls.raw" | sort > "$st/ls.$( [ "$r_" = origin ] && echo o || echo u)"
   done
   cmp -s "$st/ls.o" "$st/ls.u" || { stopclass network; die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u")); a push in between? run ship again"; }
@@ -1306,7 +1314,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   # pruneTags) and either an ancestor of the tag's commit (main pushed) or holding it (not pushed);
   # the dry-run push of exactly those refspecs, --no-follow-tags, lists exactly them
   [ -z "$rtag" ] || ship_public "the tag is on origin ($(printf '%s' "$rtag" | head -1))"
-  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2> "$st/fetch.err" || { stopclass fix; die "git: cannot fetch origin's main ($(head -c 300 "$st/fetch.err" | tr '\n' ' '))"; }
+  tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2> "$st/fetch.err" || { stopclass fix; die "git: cannot fetch origin's main ($(errcut "$st/fetch.err" 300))"; }
   fh=$(git -C "$root" rev-parse -q --verify FETCH_HEAD) || die "no FETCH_HEAD after the fetch"
   [ "$fh" = "$amain" ] || { stopclass network; die "origin's main moved between its read ($amain) and the fetch ($fh)"; }
   if git -C "$root" merge-base --is-ancestor "$commit" "$fh"; then pushmain=no
@@ -1314,7 +1322,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   else stopclass diverged; die "origin's main ($fh) has diverged from $tag's commit ($commit)"; fi
   set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
   tool "$NETC" "$GITCMD" -C "$root" push --dry-run --porcelain --atomic --no-follow-tags origin "$@" > "$st/dry" 2> "$st/dry.err" \
-    || die "the dry-run push failed ($(head -c 300 "$st/dry.err" | tr '\n' ' '))"
+    || die "the dry-run push failed ($(errcut "$st/dry.err" 300))"
   # git's porcelain lines, by tab-separated fields: the flag (a space for a fast-forward, measured;
   # * for a new ref), from:to, the summary
   want=$(printf '*\trefs/tags/%s\n' "$tag"; [ $pushmain = no ] || printf ' \trefs/heads/main\n')
