@@ -1377,14 +1377,15 @@ npm_file() {
   elif [ -n "${npm_config_userconfig:-}" ]; then printf '%s' "$npm_config_userconfig"
   else case ${NPMC:-} in npmdry) h_=${DRYHOME:-} ;; *) h_=${HOME:-} ;; esac; h_=${h_%/}; printf '%s' "$h_/.npmrc"; fi
 }
-# npm_ucheck DIR ENTRY [TAIL]: npm's own name for its userconfig must be F, the file it loads (REV 11
-# rule 1: a userconfig= key names another). ship's A1 makes it, and publish-npm (REV 11a rule 7: the
-# printed publish-npm step names F), before any other npm call. DIR holds npm's stderr; TAIL ends each
-# refusal
+# npm_ucheck DIR ENTRY [TAIL]: npm's own name for its userconfig must be F (REV 11 rule 1). npm names
+# another when a userconfig= key in $HOME/.npmrc names one (with no variable: the key counts nowhere
+# else), or when F is spelt in a way npm normalizes (notes/r14a/np/t1). ship's A1 makes the check, and
+# publish-npm (REV 11a rule 7: the printed publish-npm step names F), before any other npm call. DIR
+# holds npm's stderr; TAIL ends each refusal
 npm_ucheck() {
   F_=$(npm_file); uc_=$(tool "$NPMC" "$NPM" config get userconfig --scope= 2> "$1/uc.err") \
     || die "cannot ask npm which userconfig it names (npm config get userconfig: $(errcut "$1/uc.err" 200)), so $2 cannot tell which file npm uses: when npm answers, run $2 again${3:-}"
-  [ "$uc_" = "$F_" ] || die "npm names $uc_ as its userconfig (npm config get userconfig), but the file it loads is $F_: a userconfig= key names the other file. $2 reads and prints $F_ only: remove the userconfig= key from $F_, or set NPM_CONFIG_USERCONFIG to the file npm should use, then run $2 again${3:-}"
+  [ "$uc_" = "$F_" ] || die "npm names $uc_ as its userconfig (npm config get userconfig), but $2 reads and prints $F_. Two causes: a userconfig= key in $F_ names another file (npm counts that key in your home's .npmrc, when no variable names the userconfig), or $F_ is spelt in a way npm rewrites (a trailing space, a .. or // in the path, a trailing /). Set NPM_CONFIG_USERCONFIG to the absolute path of the file npm should use, spelt plainly, or remove the userconfig= key, then run $2 again${3:-}"
 }
 # pnstep: the next file's publish-npm step, one construction (REV 11a rule 7): F named in the line
 # itself, so the publish-npm it runs reads the file the printed login wrote, whatever the shell that

@@ -180,12 +180,16 @@ chmod +x "$S/gh"
 cat > "$S/npm" <<EOF
 #!/bin/sh
 # npm's userconfig, as npm picks it (REV 11): --userconfig on its command line, else the environment's
-# NPM_CONFIG_USERCONFIG or npm_config_userconfig, else \$HOME/.npmrc. npm's scope: --scope on its
+# NPM_CONFIG_USERCONFIG or npm_config_userconfig, else \$HOME/.npmrc; the path as npm normalizes it
+# (path.resolve: a trailing space trimmed, // and /./ collapsed, .. resolved, a trailing / dropped:
+# notes/r14a/np/t1 d). npm's scope: --scope on its
 # command line (--scope= empties it), else the userconfig's scope= line; the scope's registry SR, when
 # it is not registry.npmjs.org (npm routes login, logout, view, owner and publish to it: notes/builder/np13)
 UC=""; SC=""; scset=no
 for a_; do case \$a_ in --userconfig=*) UC=\${a_#--userconfig=} ;; --scope=*) SC=\${a_#--scope=}; scset=yes ;; esac; done
-[ -n "\$UC" ] || UC=\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-\$HOME/.npmrc}}
+[ -n "\$UC" ] || UC=\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-}}
+ucdef=no; [ -n "\$UC" ] || { UC=\$HOME/.npmrc; ucdef=yes; }
+case \$UC in *[[:space:]]|*//*|*/./*|*/../*|*/.|*/..|*/) UC=\$(printf '%s\n' "\$UC" | sed -E -e 's/[[:space:]]+\$//' -e 's#/+#/#g' -e ':d' -e 's#/\./#/#' -e 'td' -e 's#/\.\$##' -e ':u' -e 's#/[^/]+/\.\.(/|\$)#/#' -e 'tu' -e 's#(.)/\$#\1#') ;; esac
 [ \$scset = yes ] || SC=\$(sed -n 's/^scope=//p' "\$UC" 2>/dev/null | tail -1)
 SR=""; [ -z "\$SC" ] || SR=\$(sed -n "s|^\$SC:registry=||p" "\$UC" 2>/dev/null | tail -1)
 case \$SR in https://registry.npmjs.org/) SR="" ;; esac
@@ -258,10 +262,13 @@ case \$1 in
     [ -e "$FX/ownerfailafter" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     [ -e "$FX/owner404.\$3" ] && { echo "npm error code E404" >&2; exit 1; }
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
-  # (config get userconfig: a userconfig= key in the file npm loads, else that file, as npm answers;
-  # config delete KEY: that key's lines out of the userconfig)
+  # (config get userconfig, as npm answers it (notes/r14a/np/t1 a, b): the userconfig --userconfig or the
+  # environment names, normalized, even when that file holds a userconfig= key; with neither, a
+  # userconfig= key in \$HOME/.npmrc, else that file. \$FX/homekey: that key, put into the HOME's .npmrc
+  # at this call (a dry entry makes its HOME at the run). config delete KEY: that key's lines out of the userconfig)
   config) case "\$2 \$3" in
-      "get userconfig") k_=\$(sed -n 's/^userconfig=//p' "\$UC" 2>/dev/null | tail -1); echo "\${k_:-\$UC}"; exit 0 ;;
+      "get userconfig") [ \$ucdef = yes ] && [ -s "$FX/homekey" ] && ! grep -q '^userconfig=' "\$UC" 2>/dev/null && echo "userconfig=\$(cat "$FX/homekey")" >> "\$UC"
+        k_=""; [ \$ucdef = no ] || k_=\$(sed -n 's/^userconfig=//p' "\$UC" 2>/dev/null | tail -1); echo "\${k_:-\$UC}"; exit 0 ;;
       "delete //registry.npmjs.org/:_authToken") [ -f "\$UC" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }; exit 0 ;;
     esac ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
@@ -1695,14 +1702,32 @@ for k_ in C2 C8; do
 done
 # --- REV 11, npm routing (r13a F1-F4): F is the userconfig npm loads; every npm call ship makes has
 # --scope= (and --registry); every printed npm credential command names F
-# rule 1 (r13a F2): a userconfig= key in the file npm loads names another file: npm's config get
-# userconfig answers that file, while npm loads and saves F. A1 refuses before anything is made,
-# naming both files and the key
+# rule 1 (r13a F2; REV 11a, r14a F5): npm's config get userconfig must name F. Real npm answers the file
+# the environment or --userconfig names, even when it holds a userconfig= key (notes/r14a/np/t1 a, b):
+# the key counts only in the HOME's .npmrc, with no variable; and it answers the path normalized (t1 d).
+# A1 refuses before anything is made, naming both and both causes: no variable and a key in the dry
+# HOME's .npmrc; F with a trailing space; F with a .. in it. Control: the variable set and F holding the
+# key: the run completes
+for k_ in homekey space dotdot; do
+  case $k_ in
+    homekey) NO=NPM_CONFIG_USERCONFIG; echo "$FX/other.npmrc" > "$FX/homekey"; w_=$FX/other.npmrc ;;
+    space) SETX="NPM_CONFIG_USERCONFIG=$FX/npmrc "; w_=$FX/npmrc ;;
+    dotdot) mkdir -p "$FX/x" || exit 3; SETX="NPM_CONFIG_USERCONFIG=$FX/x/../npmrc"; w_=$FX/npmrc ;;
+  esac
+  rm -rf "${OUTR:?}"; ship; r=$?; SETX=; NO=; rm -f "${FX:?}/homekey" "${FX:?}/npmrc"; rm -rf "${FX:?}/x"
+  [ $r = 1 ] && grep -qF "npm names $w_ as its userconfig" "$FX/o" && grep -q 'a userconfig= key in' "$FX/o" && grep -q 'spelt in a way npm rewrites' "$FX/o" && grep -q 'stopped at preflight' "$NF" \
+    && grep -q '^npm config get userconfig' "$FX/calls" && ! grep -q -e '^build ' -e '^npm login' -e '^npm logout' -e '^notify' "$FX/calls" && gone \
+    && pass "REV 11 rule 1 (r14a F5): npm names another userconfig than F ($k_): A1 refuses, both named and both causes; nothing made" \
+    || fail "A1 ($k_): rc=$r $(grep -m1 -e 'userconfig' "$FX/o" | cut -c1-240)"
+done
 printf 'userconfig=%s\n' "$FX/other.npmrc" > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
-[ $r = 1 ] && grep -qF "$FX/other.npmrc" "$FX/o" && grep -qF "$FX/npmrc" "$FX/o" && grep -q 'userconfig=' "$FX/o" && grep -q 'stopped at preflight' "$NF" \
-  && ! grep -q -e '^build ' -e '^npm login' -e '^npm logout' -e '^notify' "$FX/calls" && gone \
-  && pass "REV 11 rule 1: npm names another userconfig than the one it loads: A1 refuses, both files and the userconfig= key named; nothing made" \
-  || fail "userconfig= key at A1: rc=$r $(grep -m1 -e 'userconfig' "$FX/o" | cut -c1-200)"
+completed && ! grep -q 'as its userconfig' "$FX/o" && pass "  control: NPM_CONFIG_USERCONFIG names F and F holds a userconfig= key (npm answers F): the run completes" \
+  || fail "  A1 control (the variable, a key in F): rc=$r $(grep -m1 'userconfig' "$FX/o" | cut -c1-200)"
+# F by default (no variable: the dry HOME's .npmrc): A1 passes, and the run reaches the login (r14a R4;
+# its MH, npm_file naming $HOME/npmrc, goes red here)
+rm -rf "${OUTR:?}"; NO=NPM_CONFIG_USERCONFIG; ship; r=$?; NO=
+grep -q '^npm config get userconfig' "$FX/calls" && grep -q '^npm login' "$FX/calls" && ! grep -q 'as its userconfig' "$FX/o" \
+  && pass "  F by default (no variable: the HOME's .npmrc): A1 passes, the run reaches the login" || fail "  default F: rc=$r $(grep -m1 'userconfig' "$FX/o" | cut -c1-220)"
 # (r13a X1) the key appears after A1 (here at C4's login); the logout fails (ETIMEDOUT) and leaves
 # ship's line in F: ship reads F, so the remedy, logout-failed, exit 1. Control: no key
 for k_ in key control; do

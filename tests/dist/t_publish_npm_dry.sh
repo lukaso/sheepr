@@ -184,7 +184,7 @@ mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail
 # file it loads (F) is refused before whoami, both files named. (Control: every run above, npm naming F)
 mkout "$D" v0.1.0; : > "$FX/ucother"; pub v0.1.0; r=$?; rm -f "$FX/ucother"
 [ $r = 1 ] && grep -q '^npm config get userconfig' "$FX/calls" && ! grep -q -e '^npm whoami' -e '^npm view' -e '^npm publish' "$FX/calls" \
-  && grep -qF "npm names $FX/other.npmrc as its userconfig" "$FX/o" && grep -qF "the file it loads is $FX/decoy-npmrc" "$FX/o" \
+  && grep -qF "npm names $FX/other.npmrc as its userconfig" "$FX/o" && grep -qF "but publish-npm reads and prints $FX/decoy-npmrc" "$FX/o" \
   && pass "REV 11a rule 7: npm names another userconfig than F: publish-npm refuses before whoami, both files named" \
   || fail "publish-npm, another userconfig: rc=$r, $(grep -c '^npm whoami' "$FX/calls") whoami; $(grep -m1 'userconfig' "$FX/o" | cut -c1-200)"
 # npm's E401, a counted login line in npm's userconfig, at each npm call of publish-npm that can answer
