@@ -11,7 +11,7 @@
 # gave no words: a refusal with no verdict is no finding about the bytes (r12b F1)
 rt_judge() {
   o_=${RT_OUT:-/dev/null}
-  "$@" > "$o_" 2>&1 && return 0
+  "$@" > "$o_" 2>&1 8>&- 9>&- && return 0   # (fds 8 and 9: ship's own, never a child's)
   r_=$?
   case $r_ in 126|127) return 2 ;; esac
   [ -s "$o_" ] || return 2

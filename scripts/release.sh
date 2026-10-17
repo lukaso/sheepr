@@ -208,16 +208,18 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
           # git/gh transport: SSH_AUTH_SOCK GIT_SSH_COMMAND GH_CONFIG_DIR, never GH_TOKEN, since gh
           # uses its own stored login)
   cls=$1; shift
+  # (every arm closes fds 8 and 9, ship's own stdout and stderr kept for its handler: a child that
+  # outlives its call, a daemon git starts, a stand-in's own child, must not hold ship's reader; r12b F3)
   case $cls in
     base) /usr/bin/env -i HOME="${HOME:-}" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" \
-            ${DEVELOPER_DIR:+DEVELOPER_DIR="$DEVELOPER_DIR"} "$@" ;;
+            ${DEVELOPER_DIR:+DEVELOPER_DIR="$DEVELOPER_DIR"} "$@" 8>&- 9>&- ;;
     net) /usr/bin/env -i HOME="${HOME:-}" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" \
             ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$SSH_AUTH_SOCK"} ${GIT_SSH_COMMAND:+GIT_SSH_COMMAND="$GIT_SSH_COMMAND"} \
             ${GH_CONFIG_DIR:+GH_CONFIG_DIR="$GH_CONFIG_DIR"} ${XDG_CONFIG_HOME:+XDG_CONFIG_HOME="$XDG_CONFIG_HOME"} \
             ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
             ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
             ${ALL_PROXY:+ALL_PROXY="$ALL_PROXY"} ${all_proxy:+all_proxy="$all_proxy"} \
-            ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} "$@" ;;
+            ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} "$@" 8>&- 9>&- ;;
     # npm: its login is the operator's own npmrc (~/.npmrc, or where NPM_CONFIG_USERCONFIG says),
     # never a token from the environment; the dry run's npm gets a temp HOME and no npmrc
     # web: curl's fetch of the public archive: base and the proxies, no credential and no git/gh
@@ -226,12 +228,12 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
             ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
             ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
             ${ALL_PROXY:+ALL_PROXY="$ALL_PROXY"} ${all_proxy:+all_proxy="$all_proxy"} \
-            ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} "$@" ;;
+            ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} "$@" 8>&- 9>&- ;;
     npm) npm_env "${HOME:-}" "${NPM_CONFIG_USERCONFIG:-${npm_config_userconfig:-}}" "$@" ;;
     npmdry) npm_env "$DRYHOME" "" "$@" ;;
     # the dry publish: a fresh temp HOME and nothing else of the caller's, so even a real gh reached
     # through a stand-in would have no login
-    dry) /usr/bin/env -i HOME="$DRYHOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" "$@" ;;
+    dry) /usr/bin/env -i HOME="$DRYHOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" "$@" 8>&- 9>&- ;;
     # any other class, an empty one too (an entry that set none): nothing runs, and the step's own
     # failure path stops (a class that ran nothing and answered 0 let a step look done)
     *) echo "release: no tool class '$cls' for ${1:-a command}: nothing was run" >&2; return 2 ;;
@@ -274,8 +276,11 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
     ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \
-    ${ca:+NODE_EXTRA_CA_CERTS="$ca"} "$@" )
+    ${ca:+NODE_EXTRA_CA_CERTS="$ca"} "$@" 8>&- 9>&- )
 }
+# git by name, for every git ship runs itself (not through tool): fds 8 and 9 closed, as in tool (git
+# may leave a gc or maintenance child running, or start fsmonitor's daemon, with whatever it inherits)
+git() { command git "$@" 8>&- 9>&-; }
 # npm_ucbad: why npm's userconfig variable is refused, or nothing (1): each spelling must be empty or
 # an absolute path. npm expands ~ and ${VAR} in it itself, and ship runs npm from /, so any other
 # spelling names another file than the one meant (made absolute here, '~/rc' was <cwd>/~/rc)
@@ -296,7 +301,7 @@ docker_env() { # the docker class
 }
 
 step() { echo "release: step: $*"; }
-npy() { /usr/bin/env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS /usr/bin/python3 -I "$root/scripts/lib/npm-same.py" "$@"; }
+npy() { /usr/bin/env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS /usr/bin/python3 -I "$root/scripts/lib/npm-same.py" "$@" 8>&- 9>&-; }
 npm_pack() { # the four npm tarballs into $dest; sets files_npm
   files_npm=$(tool base sh "$S/lib/npm-pack.sh" "${tag#v}" "$dest/sheepr-macos-universal.tar.gz" "$dest/sheepr-linux-aarch64" \
     "$dest/sheepr-linux-x86_64" "$src/npm/sheepr/bin/sheepr" "$dest") || return 1
@@ -1050,13 +1055,22 @@ verify() { # dir -> exit 1 naming the tool that refused
 # --- ship: the whole release of a final tag in one run (the ship plan; PHASE3.md §5) ------------
 # One orchestration, ship_run, serves `ship` (the real tools; behind the gate and its one question)
 # and `__ship-dry` (stand-ins; the cells). The real entry's values are pinned by text in t_ship_dry.
+# ship_fds: fds 1 and 2 open, checked before anything is made. ship keeps both on fds 8 and 9 for its
+# handler, and that exec, with one of them closed, killed the shell before the handler was set, leaving
+# the run's temp dir (r12b F5). The refusal goes to the one that is open
+ship_fds() {
+  if ! ( exec 3>&1 ) 2>/dev/null; then echo "release: ship's stdout (fd 1) is closed: run ship with its stdout open (nothing was done)" >&2; exit 2; fi
+  if ! ( exec 3>&2 ); then echo "release: ship's stderr (fd 2) is closed: run ship with its stderr open (nothing was done)"; exit 2; fi
+}
 ship() {
+  ship_fds
   SHIP_BUILD=/bin/sh SHIP_NPMCHECK=npm_check SHIP_VERIFY=verify NOTIFY=frozen-tree CAFFEINATE=/usr/bin/caffeinate SHIP_IDENTITY=/usr/bin/security SHIP_DOCKER=docker
   real_tools
   shipping=yes
   ship_run
 }
 ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no gate, no question
+  ship_fds
   dryentry=yes
   standins SR_SHIP_DRY_BUILD SR_SHIP_DRY_NPMCHECK SR_SHIP_DRY_NOTIFY SR_SHIP_DRY_CAFFEINATE SR_SHIP_DRY_IDENTITY SR_SHIP_DRY_DOCKER \
     SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
@@ -1261,7 +1275,7 @@ drysub() { # in a dry entry's phase subshell: a temp HOME of its own (the phase'
 }
 # shipcall TOOL ARGS...: a ship tool, in the dry class in a dry entry; with the caller's environment in
 # the real one (the build needs the terminal, cargo and Docker as the operator has them)
-shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@"; fi; }
+shipcall() { if [ "$dryentry" = yes ]; then tool dry "$@"; else "$@" 8>&- 9>&-; fi; }   # (fds 8 and 9 closed: as in tool)
 shipdocker() { # the docker class, with SHIP_DOCKER
   if [ "$dryentry" = yes ]; then tool dry "$SHIP_DOCKER" "$@"
   else tool base /usr/bin/env ${DOCKER_HOST:+DOCKER_HOST="$DOCKER_HOST"} ${DOCKER_CONFIG:+DOCKER_CONFIG="$DOCKER_CONFIG"} "$SHIP_DOCKER" "$@"; fi

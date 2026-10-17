@@ -32,6 +32,7 @@ for t in gh npm curl docker caffeinate security; do
 done
 cat > "$B/git" <<EOF
 #!/bin/sh
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ git \$*" >> "$FX/fds"; done
 # skip git's global options, then classify the subcommand
 i=1; sub=""; skip=0
 for x; do
@@ -70,7 +71,8 @@ chmod +x "$B/mktemp"
 # HOME exists
 S=$FX/st; mkdir -p "$S"
 standin() { # name body
-  { printf '#!/bin/sh\n[ -d "$HOME" ] || echo "NOHOME %s" >> "%s/calls"\necho "%s $*" >> "%s/calls"\n' "$1" "$FX" "$1" "$FX"; printf '%s\n' "$2"; } > "$S/$1"
+  { printf '#!/bin/sh\n[ -d "$HOME" ] || echo "NOHOME %s" >> "%s/calls"\necho "%s $*" >> "%s/calls"\n' "$1" "$FX" "$1" "$FX"
+    printf 'for f_ in 8 9; do ( exec 3>&$f_ ) 2>/dev/null && echo "FD$f_ %s" >> "%s/fds"; done\n' "$1" "$FX"; printf '%s\n' "$2"; } > "$S/$1"
   chmod +x "$S/$1"
 }
 standin notify 'exit 0'
@@ -83,8 +85,12 @@ standin curl "cat '$FX/up/sheepr-macos-universal.tar.gz'"
 cat > "$S/build" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME build" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ build" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "build \$*" >> "$FX/calls"
 [ -e "$FX/onbuild" ] && sh "$FX/onbuild"
+# (\$FX/buildlinger: a child left behind, fds 0-2 closed, any other kept; \$FX/buildlinger1: fd 1 kept too)
+[ -e "$FX/buildlinger" ] && { /bin/sleep 15 < /dev/null > /dev/null 2>&1 & echo \$! > "$FX/linger.pid"; }
+[ -e "$FX/buildlinger1" ] && { /bin/sleep 15 < /dev/null 2>/dev/null & echo \$! > "$FX/linger.pid"; }
 if [ -e "$FX/buildint" ]; then
   # only in a process group ship leads (the row's own session): never the cell's group
   [ "\$(/usr/bin/perl -e 'print getpgrp()')" = "\$PPID" ] || { echo "UNSAFE buildint" >> "$FX/calls"; exit 1; }
@@ -113,6 +119,7 @@ chmod +x "$S/build"
 cat > "$S/npmcheck" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME npmcheck" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ npmcheck" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "npmcheck \$*" >> "$FX/calls"
 [ -e "$FX/onnpmcheck" ] && sh "$FX/onnpmcheck"   # (\$FX/onnpmcheck: a hook at C2's npm-check)
 # (\$FX/npmcheckfail: npm-check refuses the build's bytes, as npm_check's own checks do: its words for
@@ -142,6 +149,7 @@ mkdir -p "$FX/tap"
 cat > "$S/gh" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME gh" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ gh" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "gh \$*" >> "$FX/calls"
 case "\$*" in
   *"@tsv"*) [ -e "$FX/relsfail" ] && { if [ -e "$FX/relserr" ]; then cat "$FX/relserr" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; tr ' ' '\t' < "$FX/rels" ;;
@@ -181,6 +189,7 @@ if [ -z "\${SR_NPM_INNER:-}" ]; then
   fi
 fi
 [ -d "\$HOME" ] || echo "NOHOME npm" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ npm" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
 last=""; for a; do last=\$a; done
@@ -285,6 +294,7 @@ chmod +x "$S/npm"
 cat > "$S/docker" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME docker" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ docker" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "docker \$*" >> "$FX/calls"
 case \$1 in info) [ -e "$FX/oninfo" ] && sh "$FX/oninfo"; [ -e "$FX/nodocker" ] && exit 1; exit 0 ;;   # (\$FX/oninfo: a hook at A7's docker info)
   image) case \$3 in rust:*) [ -e "$FX/nobase" ] && exit 1 ;; sr-amd64-*) [ -e "$FX/noamd64" ] && exit 1 ;; esac; exit 0 ;; esac
@@ -319,6 +329,7 @@ mkbuild() { # dir tag commit [control]
 cat > "$S/sgit" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME sgit" >> "$FX/calls"
+for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ sgit" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "sgit \$*" >> "$FX/calls"
 c=""; if [ "\$1" = -C ]; then c=\$2; shift 2; fi
 if [ "\$1 \$2" = "remote get-url" ]; then
@@ -377,6 +388,7 @@ exit \$r
 EOF
 chmod +x "$S/sgit"
 
+tnow() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }   # the clock, in seconds, to 1/100
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
   rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/pipe.rc" "$FX/made"
@@ -388,7 +400,23 @@ $a" ;; esac; done
   # the assignments as arguments to env, one per line (a value may hold spaces)
   printf '%s\n' "$envs" | sed '/^$/d' > "$FX/envs"
   set --; [ -z "${SETSID:-}" ] || set -- /usr/bin/perl -e 'use POSIX; setsid() or die "setsid: $!"; $SIG{$_} = "DEFAULT" for qw(INT QUIT); exec @ARGV or die' --
-  if [ -z "${PIPEQ:-}" ]; then
+  if [ -n "${PIPEEOF:-}" ]; then   # stdout into a pipe: its reader notes when it reads EOF; ship's own end too
+    { (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+      $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 2> "$FX/o.err"; echo $? > "$FX/pipe.rc"; tnow > "$FX/t.end"; } \
+      | { cat > "$FX/o"; tnow > "$FX/t.eof"; }
+    cat "$FX/o.err" >> "$FX/o"; r_=$(cat "$FX/pipe.rc")
+  elif [ -n "${CLOSEFD:-}" ]; then   # fd CLOSEFD closed at the start (the other to $FX/o); SHX: the shell
+    if [ "$CLOSEFD" = 1 ]; then
+      (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        $(cat "$FX/envs") ${SHX:-sh} scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") >&- 2> "$FX/o"; r_=$?
+    else
+      (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        $(cat "$FX/envs") ${SHX:-sh} scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 2>&- > "$FX/o"; r_=$?
+    fi
+  elif [ -z "${PIPEQ:-}" ]; then
     (cd "$REPO" && IFS='
 '; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
       $(cat "$FX/envs") ${SETX:+"$SETX"} sh scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") > "$FX/o" 2>&1; r_=$?
@@ -1495,6 +1523,38 @@ grep -q '^SIG KILL at mv$' "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -
   && pass "a KILL at the rename after the logout: the next file whole, as written before the logout ($PFN lines and the step); the new text in the temp file beside it" \
   || fail "KILL at the rewrite: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') next file: $(grep -c . "$NF" 2>/dev/null) lines, step at $(lnof "$NF" "$LG"), last '$(tail -1 "$NF" 2>/dev/null | cut -c1-80)'"
 killclean
+# r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
+# child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
+# with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a
+# child that keeps fd 1 (ship's stdout) holds the reader
+for k_ in buildlinger buildlinger1; do
+  rm -f "$FX/linger.pid" "$FX/t.end" "$FX/t.eof"; : > "$FX/$k_"; rm -rf "${OUTR:?}"; PIPEEOF=1; ship; r=$?; PIPEEOF=; rm -f "${FX:?}/$k_"
+  lp_=$(cat "$FX/linger.pid" 2>/dev/null); d_=$(/usr/bin/perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$(cat "$FX/t.end" 2>/dev/null)" "$(cat "$FX/t.eof" 2>/dev/null)")
+  if [ $k_ = buildlinger ]; then
+    completed && [ -n "$lp_" ] && /usr/bin/perl -e 'exit !($ARGV[0] <= 2)' "$d_" \
+      && pass "r12b F3: ship | reader, a child left behind with fds 0-2 closed: the reader ends ${d_} s after ship" || fail "linger: rc=$r child '$lp_' reader ${d_} s after ship"
+  else
+    completed && [ -n "$lp_" ] && /usr/bin/perl -e 'exit !($ARGV[0] >= 3)' "$d_" \
+      && pass "  control: a child that keeps fd 1 holds the reader (${d_} s after ship)" || fail "  control linger: rc=$r child '$lp_' reader ${d_} s after ship"
+  fi
+  # the child ends by itself (15 s); wait for it, so no row after this one sees it
+  n_=0; while [ -n "$lp_" ] && kill -0 "$lp_" 2>/dev/null && [ $n_ -lt 80 ]; do /bin/sleep 0.25; n_=$((n_ + 1)); done
+done
+# r12b F5: a closed fd 1 or fd 2 at the start (ship keeps both on fds 8 and 9: the exec that keeps them
+# killed the shell before its handler, leaving its temp dir): a refusal on the open channel, a
+# non-zero exit, no temp dir left, nothing public. Under sh (bash 3.2), dash and zsh as sh
+for sx_ in /bin/sh /bin/dash '/bin/zsh
+--emulate
+sh'; do
+  for cf_ in 1 2; do
+    rm -rf "${OUTR:?}"; SHX=$sx_; CLOSEFD=$cf_; ship; r=$?; SHX=; CLOSEFD=
+    unnamed > /dev/null; ch_=stderr; [ $cf_ = 2 ] && ch_=stdout
+    [ $r != 0 ] && grep -q "ship's $( [ $cf_ = 1 ] && echo stdout || echo stderr) (fd $cf_) is closed" "$FX/o" && [ -z "$(leftover)" ] && [ ! -e "$OUTR/.ship.lock" ] \
+      && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' -e '^build ' "$FX/calls" 2>/dev/null \
+      && pass "r12b F5: fd $cf_ closed at the start, $(echo "$sx_" | tr '\n' ' '): refused on $ch_, exit $r, no temp dir left, nothing public" \
+      || fail "fd $cf_ closed, $(echo "$sx_" | tr '\n' ' '): rc=$r left '$(leftover | tr '\n' ' ')' out: $(head -3 "$FX/o" | tr '\n' '|' | cut -c1-200)"
+  done
+done
 # a signal while a function call with redirections runs: bash 3.2 runs the trap and the exit handler with
 # that call's redirections still on, so the stop text went into the call's file. ship's own stdout
 # must hold it: INT to ship's group (SETSID) from the push stand-in during C5's real push (stdout to
@@ -1507,9 +1567,12 @@ echo "SIG INT at \$1" >> "$FX/calls"; kill -INT 0; /bin/sleep 1
 EOS
 for pt in 'onpush|push' 'oninfo|preflight' 'onlogin|npm-login'; do
   hk=${pt%%|*} ph=${pt#*|}
-  printf 'sh "%s/sigint" %s\n' "$FX" "$hk" > "$FX/$hk"; rm -f "${FX:?}/onpush.done"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/$hk" "${FX:?}/onpush.done"
+  # (at the push, ship is logged in: its logout fails, and npm's words go only to ship's stderr)
+  [ $hk = onpush ] && echo ETIMEDOUT > "$FX/logoutcode"
+  printf 'sh "%s/sigint" %s\n' "$FX" "$hk" > "$FX/$hk"; rm -f "${FX:?}/onpush.done"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/$hk" "${FX:?}/onpush.done" "${FX:?}/logoutcode"
   [ $r = 1 ] && grep -q "^SIG INT at $hk" "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -q "^release: ship v0.1.0 stopped at $ph" "$FX/o" && grep -q '(these steps are also in' "$FX/o" \
-    && pass "$( [ $hk = onlogin ] && echo 'control: ')INT to ship's group at $hk: the stop text (stopped at $ph) reaches ship's own stdout" \
+    && { [ $hk != onpush ] || grep -q '^npm error code ETIMEDOUT' "$FX/o"; } \
+    && pass "$( [ $hk = onlogin ] && echo 'control: ')INT to ship's group at $hk: the stop text (stopped at $ph) reaches ship's own stdout$( [ $hk = onpush ] && echo "; npm logout's error, ship's own stderr")" \
     || fail "INT at $hk: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') stdout: $(grep -c 'stopped at' "$FX/o") stop lines, $(grep -c 'these steps are also in' "$FX/o") file lines"
 done
 rm -f "${FX:?}/sigint"
@@ -1890,6 +1953,22 @@ n_pp=$(cat "$FX/postpush.runs" 2>/dev/null | grep -c .)
   || fail "after the push started ($n_pp runs), a stop text says nothing is public: $(head -3 "$FX/postpush.bad" 2>/dev/null | cut -c1-200 | tr '\n' '|')"
 # --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
 # tag off the grammar are refused before ship's own exit handler is set)
+# r12b F4, the source half: every place ship starts a program that can outlive its call closes fds 8
+# and 9: tool's four exec arms (base, net, web, dry), npm_env, shipcall's direct arm (the real entry's:
+# no cell runs it), npy, git by name, and rt_judge (realtools.sh)
+RSX=$SR_ROOT/scripts/release.sh RTX=$SR_ROOT/scripts/lib/realtools.sh
+c1_=$(grep -c '"\$@" 8>&- 9>&- ;;' "$RSX"); c2_=$(grep -c '"\$@" 8>&- 9>&- )$' "$RSX")
+c3_=$(grep -c '^shipcall() { if \[ "\$dryentry" = yes \]; then tool dry "\$@"; else "\$@" 8>&- 9>&-; fi; }' "$RSX")
+c4_=$(grep -c '^npy() {.*"\$@" 8>&- 9>&-; }$' "$RSX"); c5_=$(grep -c '^git() { command git "\$@" 8>&- 9>&-; }$' "$RSX")
+c6_=$(grep -c '"\$@" > "\$o_" 2>&1 8>&- 9>&- ' "$RTX")
+[ "$c1_ $c2_ $c3_ $c4_ $c5_ $c6_" = "4 1 1 1 1 1" ] && pass "every place ship starts a program that can outlive its call closes fds 8 and 9 (tool 4, npm_env, shipcall, npy, git, rt_judge)" \
+  || fail "fds 8 and 9 closed at: tool $c1_ of 4, npm_env $c2_, shipcall $c3_, npy $c4_, git $c5_, rt_judge $c6_"
+# r12b F4: the census of the children ship starts: no stand-in (the build, npm-check, gh, npm, docker,
+# git, notify, caffeinate, the identity check, curl) and no git by name started with fd 8 or 9 open,
+# in any ship run of this cell. Control: a stand-in started with fd 8 open records it
+[ ! -s "$FX/fds" ] && pass "no child ship started, in any run of this cell, held its fd 8 or 9" || fail "children with fd 8 or 9: $(sort "$FX/fds" | uniq -c | sort -rn | head -6 | tr '\n' '|' | cut -c1-300)"
+(HOME=$FX/ghome; export HOME; "$S/caffeinate" -i 8> /dev/null) > /dev/null 2>&1
+grep -q '^FD8 caffeinate' "$FX/fds" 2>/dev/null && pass "  control: a stand-in started with fd 8 open records it" || fail "  control: no FD8 record"
 n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .); n_mk=$(sort -u "$FX/allmade" 2>/dev/null | grep -c .)
 left_dh=$(sort -u "$FX/dryhomes" "$FX/allmade" 2>/dev/null | while read -r d; do [ ! -e "$d" ] || echo "$d"; done)
 un_dh=$(sort -u "$FX/allmade" 2>/dev/null | grep -v -x -F -f "$FX/dryhomes")
