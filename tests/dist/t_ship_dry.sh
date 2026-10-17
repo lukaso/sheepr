@@ -527,11 +527,12 @@ topsrc() { # file -> "LINE top WORDS" for each source command (`.` or `source`, 
 topsrc "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
 [ "$(grep -c . "$FX/top.src")" = 1 ] && grep -q '\. "\$root/\$sourced"' "$FX/top.src" && grep -q '^sourced=scripts/lib/sigs\.sh$' "$SR_ROOT/scripts/release.sh" \
   && pass "ship's parent sources one file from the checkout before its frozen tree, the one it compares" || fail "top-level source commands: $(tr '\n' '|' < "$FX/top.src")"
-# the controls, each a copy of release.sh with one more top-level source command: at line 100 (after
-# the one-line functions), before the dispatch, unquoted, and spelled `source`: each must count 2
-RSL=$SR_ROOT/scripts/release.sh; dl=$(grep -n '^case \$sub in$' "$RSL" | tail -1 | cut -d: -f1)
-for pc in "100:. \"\$root/scripts/lib/realtools.sh\" || exit 1" "$dl:. \"\$root/scripts/lib/realtools.sh\" || exit 1" \
-          "100:. \$root/scripts/lib/realtools.sh" "100:source \"\$root/scripts/lib/realtools.sh\""; do
+# the controls, each a copy of release.sh with one more top-level source command: before die (a
+# top-level line after the first functions, found by its text), before the dispatch, unquoted, and
+# spelled `source`: each must count 2
+RSL=$SR_ROOT/scripts/release.sh; dl=$(grep -n '^case \$sub in$' "$RSL" | tail -1 | cut -d: -f1); fl=$(grep -n '^die() {' "$RSL" | head -1 | cut -d: -f1)
+for pc in "$fl:. \"\$root/scripts/lib/realtools.sh\" || exit 1" "$dl:. \"\$root/scripts/lib/realtools.sh\" || exit 1" \
+          "$fl:. \$root/scripts/lib/realtools.sh" "$fl:source \"\$root/scripts/lib/realtools.sh\""; do
   pl=${pc%%:*} pt=${pc#*:}
   awk -v L="$pl" -v T="$pt" 'NR == L {print T} {print}' "$RSL" > "$FX/rs.plant"
   [ "$(sed -n "${pl}p" "$FX/rs.plant")" = "$pt" ] || fail "control: the plant '$pt' is not at line $pl"
@@ -550,12 +551,44 @@ echo git@gh-alias:lukaso/sheepr.git > "$FX/pushurl"; pt_row "an ssh host alias" 
 # github.com/lukaso/sheepr, rewritten the same way). Each refusal names the host and the path; no
 # SECRET in stdout, stderr or the next file
 echo 'https://user:SECRET1@host.invalid/lukaso/sheepr.git' > "$FX/pushurl"; pt_row "origin's URL with a credential in it" "is not lukaso/sheepr"; rm -f "${FX:?}/pushurl"
-! grep -q SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -q 'https://host.invalid/lukaso/sheepr.git is not lukaso/sheepr' "$OUTR/v0.1.0.ship-next.txt" \
-  && pass "  no credential in stdout or the next file; the host and the path named" || fail "  credential printed: $(grep -c SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ')"
+! grep -q SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF 'https://<redacted>@host.invalid/lukaso/sheepr.git is not lukaso/sheepr' "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "  no credential in stdout or the next file; the host and the path named, <redacted> in the userinfo's place" || fail "  credential printed: $(grep -c SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ')"
 printf "fatal: unable to access 'https://user:SECRET2@host.invalid/lukaso/sheepr/': Could not resolve host: host.invalid\n" > "$FX/lserr"; : > "$FX/lsfail"
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/lsfail" "${FX:?}/lserr"
-[ $r = 1 ] && ! grep -q SECRET2 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -q "https://host.invalid/lukaso/sheepr/" "$OUTR/v0.1.0.ship-next.txt" \
+[ $r = 1 ] && ! grep -q SECRET2 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "https://<redacted>@host.invalid/lukaso/sheepr/" "$OUTR/v0.1.0.ship-next.txt" \
   && pass "git's message naming a URL with a credential: kept in the cause without the credential" || fail "git's message: rc=$r $(grep -c SECRET2 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-160)"
+# a user name or password in origin's URL at github.com/lukaso/sheepr (an insteadOf rule adds one;
+# a token as the user is one too), in the push URL or the fetch URL, https, ssh:// or scp form: refused
+# before any push as what it is, the URL shown with <redacted> in the userinfo's place; never the
+# bare accepted spelling as "not lukaso/sheepr"; no part of the token in stdout, stderr or the next file
+for cu in 'pushurl https://lukaso:ghp_FAKE0r9a@github.com/lukaso/sheepr.git https://<redacted>@github.com/lukaso/sheepr.git' \
+  'fetchurl https://ghp_FAKE1r9b@github.com/lukaso/sheepr.git https://<redacted>@github.com/lukaso/sheepr.git' \
+  'pushurl ssh://git:FAKE2r9c@github.com/lukaso/sheepr.git ssh://<redacted>@github.com/lukaso/sheepr.git' \
+  'pushurl user:FAKE3r9d@github.com:lukaso/sheepr.git <redacted>@github.com:lukaso/sheepr.git'; do
+  sw=${cu%% *}; cr=${cu#* }; url=${cr%% *}; shown=${cr#* }
+  echo "$url" > "$FX/$sw"; pt_row "origin's $sw $shown" "holds a user name or password"; rm -f "${FX:?}/$sw"
+  ! grep -q FAKE "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "origin's URL $shown holds a user name or password" "$OUTR/v0.1.0.ship-next.txt" \
+    && ! grep -q 'is not lukaso/sheepr' "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && pass "  named as a user name or password, shown as $shown; no FAKE anywhere" \
+    || fail "  $sw $url: $(grep -c FAKE "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+done
+# userinfo runs to the last @ of the authority (a password may hold an @): no part of it printed, in
+# origin's URL at another host (still "is not lukaso/sheepr") or at an ssh alias in the scp form
+for cu in 'https://u:SEC9x@RET9y@host.invalid/lukaso/sheepr.git https://<redacted>@host.invalid/lukaso/sheepr.git is not lukaso/sheepr' \
+  'user:SEC9z@RET9w@gh-alias:lukaso/sheepr.git <redacted>@gh-alias:lukaso/sheepr.git names an ssh host alias'; do
+  url=${cu%% *}; want=${cu#* }
+  echo "$url" > "$FX/pushurl"; pt_row "origin's URL $url" "$want"; rm -f "${FX:?}/pushurl"
+  ! grep -q -e SEC9 -e RET9 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "origin's URL $want" "$OUTR/v0.1.0.ship-next.txt" \
+    && pass "  no part of the userinfo printed; '$want'" || fail "  $url: $(grep -c -e SEC9 -e RET9 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+done
+# a tool's message naming such a URL (git's, at the ls-remote): the same, in the URL form and the scp form
+for le in "fatal: unable to access 'https://u:SEC5x@RET5y@host.invalid/lukaso/sheepr/': Could not resolve host: host.invalid|https://<redacted>@host.invalid/lukaso/sheepr/" \
+  "user:SEC6x@RET6y@github.com: Permission denied (publickey).
+fatal: Could not read from remote repository.|<redacted>@github.com: Permission denied"; do
+  printf '%s\n' "${le%|*}" > "$FX/lserr"; : > "$FX/lsfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/lsfail" "${FX:?}/lserr"
+  [ $r = 1 ] && ! grep -q -e SEC5 -e RET5 -e SEC6 -e RET6 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "${le#*|}" "$OUTR/v0.1.0.ship-next.txt" \
+    && pass "git's message naming '${le#*|}': no part of the userinfo printed, <redacted> in its place" \
+    || fail "git's message ${le#*|}: rc=$r $(grep -c -e SEC5 -e RET5 -e SEC6 -e RET6 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+done
 printf 'https://github.com/lukaso/sheepr.git\ngit@github.com:lukaso/sheepr.git\n' > "$FX/pushurl"; pt_row "two push URLs" "push URLs"; rm -f "$FX/pushurl"
 echo https://example.com/lukaso/sheepr.git > "$FX/fetchurl"; pt_row "a fetch URL that is not lukaso/sheepr" "is not lukaso/sheepr"; rm -f "$FX/fetchurl"
 for u in git@github.com:lukaso/sheepr.git https://github.com/lukaso/sheepr ssh://git@github.com/lukaso/sheepr.git; do

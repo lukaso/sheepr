@@ -75,10 +75,23 @@ root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 sourced=scripts/lib/sigs.sh
 . "$root/$sourced" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
-# redact TEXT: every URL's userinfo (user:password@) removed. An insteadOf rule puts a credential in
-# what `git remote get-url` answers, and a tool may name such a URL in its own message: neither is
-# ever printed, written to the next file or kept as the cause (die and the exit-5 text pass it here)
-redact() { printf '%s' "$*" | sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]*@#\1#g'; }
+# redact TEXT: every URL's userinfo replaced by <redacted>, so a text still says one was there: in
+# scheme://userinfo@host it runs to the authority's last @ (a password may hold one), and in the scp
+# form userinfo@host:path one with a password (a colon) is replaced too; an image digest
+# (name:tag@sha256:<64 hex>) is not one. The ssh user git alone is kept: ship's own accepted spellings
+# name it. An insteadOf rule puts a credential in what `git remote
+# get-url` answers, and a tool may name such a URL in its own message: neither is ever printed,
+# written to the next file or kept as the cause (die and the exit-5 text pass it here)
+redact() { printf '%s' "$*" | sed -E -e 's#@(sha256:[0-9a-f]{64})#<sr-digest>\1#g' \
+  -e 's#([A-Za-z][A-Za-z0-9+.-]*://)([^/[:space:]]{4,}|[^/[:space:]]{1,2}|[^g/[:space:]][^/[:space:]]{2}|g[^i/[:space:]][^/[:space:]]|gi[^t/[:space:]])@#\1<redacted>@#g' \
+  -e "s#(^|[[:space:]'\"(<])[^/[:space:]'\"(<]*:[^/[:space:]]*@([A-Za-z0-9._-]+:)#\\1<redacted>@\\2#g" -e 's#<sr-digest>#@#g'; }
+# urluser URL: its userinfo, up to the last @ of its authority (scheme://userinfo@host/..., or the
+# scp form userinfo@host:path), or nothing
+urluser() {
+  case $1 in *://*) a_=${1#*://} ;; *) a_=$1 ;; esac
+  a_=${a_%%/*}
+  case $a_ in *@*) printf '%s' "${a_%@*}" ;; esac
+}
 # errcut FILE BYTES: a tool's stderr as one line of a cause, at most BYTES: its error lines first
 # (npm's `npm error` and `npm ERR!`, git's and gh's `error:` and `fatal:`), then its other lines in
 # order, so no warning ahead of them pushes them out of the cut; npm's ANSI colour dropped
@@ -1291,9 +1304,23 @@ ship_target() { # A2: origin is lukaso/sheepr on github.com (exactly one push UR
   fu=$(tool "$NETC" "$GITCMD" -C "$root" remote get-url origin) || die "git: cannot read origin's URL"
   for u in "$pu" "$fu"; do
     case $u in
-      https://github.com/lukaso/sheepr|https://github.com/lukaso/sheepr.git|git@github.com:lukaso/sheepr|git@github.com:lukaso/sheepr.git|ssh://git@github.com/lukaso/sheepr|ssh://git@github.com/lukaso/sheepr.git) ;;
-      *:lukaso/sheepr|*:lukaso/sheepr.git) die "origin's URL $u names an ssh host alias: ship accepts github.com itself (git@github.com:lukaso/sheepr.git or https://github.com/lukaso/sheepr.git)" ;;
-      *) die "origin's URL $u is not lukaso/sheepr on github.com" ;;
+      https://github.com/lukaso/sheepr|https://github.com/lukaso/sheepr.git|git@github.com:lukaso/sheepr|git@github.com:lukaso/sheepr.git|ssh://git@github.com/lukaso/sheepr|ssh://git@github.com/lukaso/sheepr.git) continue ;;
+    esac
+    # a user name or password in it (an insteadOf rule may add one; a token may be the user name): the
+    # URL is shown with <redacted> in its place, and when the rest is lukaso/sheepr on github.com the
+    # refusal says that is the reason (a bare accepted spelling is never called "not lukaso/sheepr")
+    d_=$u ui_=$(urluser "$u")
+    if [ -n "$ui_" ] && [ "$ui_" != git ]; then
+      r_=${u#*"$ui_"@}
+      case $u in *://*) d_="${u%%://*}://<redacted>@$r_" b_="${u%%://*}://$r_" ;; *) d_="<redacted>@$r_" b_=$r_ ;; esac
+      case $b_ in
+        https://github.com/lukaso/sheepr|https://github.com/lukaso/sheepr.git|ssh://github.com/lukaso/sheepr|ssh://github.com/lukaso/sheepr.git|github.com:lukaso/sheepr|github.com:lukaso/sheepr.git)
+          die "origin's URL $d_ holds a user name or password: ship pushes with git's own login, never with one in the URL. Remove it from origin's URL, or from the url.<base>.insteadOf rule that adds it" ;;
+      esac
+    fi
+    case $u in
+      *:lukaso/sheepr|*:lukaso/sheepr.git) die "origin's URL $d_ names an ssh host alias: ship accepts github.com itself (git@github.com:lukaso/sheepr.git or https://github.com/lukaso/sheepr.git)" ;;
+      *) die "origin's URL $d_ is not lukaso/sheepr on github.com" ;;
     esac
   done
   ship_lsr
