@@ -1309,7 +1309,9 @@ npmcode() {
 # class comes from ship's own checks). Each text that removes a login line or names npm config delete
 # names how each token ends first (npm_tokens); the count only picks the words. Lines whose tokens are
 # all ${VAR} references hold no token: ship's npm gets no environment variable, so they cannot work
-# under ship (no revoke, no "expired"). E401 names npm config delete
+# under ship (no revoke, no "expired"). ERR_INVALID_AUTH (a top-level _authToken): npm config fix, run
+# with no --registry, names it with the registry the userconfig names; a text never names the
+# registry.npmjs.org key for it (that would send a private registry's token to registry.npmjs.org). E401 names npm config delete
 # only when npmauth counts exactly one registry.npmjs.org login line and it is the root _authToken one;
 # with more, or another one, npm may have refused another token than a delete would remove; with none,
 # the token is outside the lines ship counts. ENEEDAUTH with lines: lines whoami does not use (an empty
@@ -1329,7 +1331,7 @@ npmhint() {
     E401:*) printf '%s' ". npm answered E401, and npm's userconfig holds ${hn_%% *} registry.npmjs.org login lines, or one that is not the //registry.npmjs.org/:_authToken line: npm may have refused another token than the one a delete would remove. $npm_tokens. Then remove those lines" ;;
     "ENEEDAUTH:0 no"|ENEEDAUTH:unreadable) ;;
     ENEEDAUTH:*) printf '%s' ". whoami does not use the registry.npmjs.org login lines in npm's userconfig (an empty token, one from a variable that is not set, or a line only other npm commands send). $npm_tokens. Then remove those lines" ;;
-    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry. $npm_tokens. Then write it as //registry.npmjs.org/:_authToken=, or remove it" ;;
+    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry: run npm config fix, with no --registry (it names that line with the registry your userconfig names, registry.npmjs.org when it names none)" ;;
   esac
 }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files

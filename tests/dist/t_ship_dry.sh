@@ -793,7 +793,16 @@ rvfirst "$A6NF" && pass "  how each token ends named before removing the line" |
 echo ERR_INVALID_AUTH > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/ownercode"
 pre_row "npm owner ls answering ERR_INVALID_AUTH" "an _authToken line that names no registry"
 endsfix "$A6NF" && pass "  when the cause is fixed, run ship again" || fail "  owner ls ERR_INVALID_AUTH: last line '$(tail -1 "$A6NF")'"
-rvfirst "$A6NF" && pass "  how each token ends named before removing the line" || fail "  ERR_INVALID_AUTH: $(head -1 "$A6NF" | cut -c1-200)"
+# ERR_INVALID_AUTH: a top-level _authToken line. The remedy is npm config fix, with no --registry (it
+# names the line with the registry the userconfig names); never the registry.npmjs.org key for it,
+# which would send a private registry's token to registry.npmjs.org. Control above: no registry= line
+grep -q 'npm config fix' "$A6NF" && ! grep -q -e 'Write it as //registry.npmjs.org' -e 'npm config fix --registry' "$A6NF" \
+  && pass "  the remedy: npm config fix, with no --registry; never the registry.npmjs.org key" || fail "  ERR_INVALID_AUTH remedy: $(head -1 "$A6NF" | cut -c1-200)"
+printf 'registry=https://npm.example.invalid/\n_authToken=npm_private\n' > "$FX/npmrc"; echo ERR_INVALID_AUTH > "$FX/ownercode"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/ownercode" "${FX:?}/npmrc"
+[ $r = 1 ] && nobuild && grep -q 'npm config fix' "$A6NF" && ! grep -q -e 'Write it as //registry.npmjs.org' -e '//registry.npmjs.org/:_authToken=' "$A6NF" && endsfix "$A6NF" \
+  && pass "a private registry's top-level _authToken, ERR_INVALID_AUTH: npm config fix; no registry.npmjs.org key named for it" \
+  || fail "private registry, ERR_INVALID_AUTH: rc=$r $(head -1 "$A6NF" | cut -c1-240)"
 # every npm command that reaches the registry answers E401, a counted token line in the userconfig:
 # A4's views fail first, and the stop still names the remedy
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"
