@@ -1213,11 +1213,19 @@ LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1)
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
   && pass "a failure after the login: one logout, one notification (failed-npm-main)" || fail "failure after login: rc=$r '$(nots)' $(lastline)"
+! grep -q 'npm logout did not end' "$NF" "$FX/o" && pass "  control: a logout that ends ship's session: no logout text" || fail "  pubfail alone: a logout text"
 [ -z "$(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | grep -v -e '^npm logout --registry=https://registry.npmjs.org/$' -e '^npm config get userconfig$' -e '^notify ')" ] \
   && pass "  after the stop: no read but the logout and the token count (the stop text reads nothing)" || fail "  calls after the stop: $(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | tr '\n' ' ')"
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail" "$FX/pubfail.sheepr"
-[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF" | hm)" = "$LOGOUT_TEXT" ] && gone \
-  && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null | hm)'"
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && hm < "$NF" | grep -qxF "$LOGOUT_TEXT" && gone \
+  && pass "a failure, and the logout leaves the token: one notification naming both; the next file holds the npm logout text" || fail "failure + logout fails: rc=$r '$(nots)' '$(grep 'npm logout did not end' "$NF" 2>/dev/null | hm)'"
+# (X1) its order: the logout remedy comes before any `  npm login` line, in the next file and on
+# stdout (following the steps in order must not replace ship's session before it ends)
+ll=$(grep -n '^  npm login' "$NF" | head -1 | cut -d: -f1); lo=$(grep -n "npm logout did not end ship's npm login" "$NF" | head -1 | cut -d: -f1)
+llo=$(grep -n '^  npm login' "$FX/o" | head -1 | cut -d: -f1); loo=$(grep -n "npm logout did not end ship's npm login" "$FX/o" | head -1 | cut -d: -f1)
+[ -n "$ll" ] && [ -n "$lo" ] && [ "$lo" -lt "$ll" ] && [ -n "$llo" ] && [ -n "$loo" ] && [ "$loo" -lt "$llo" ] \
+  && pass "  the logout remedy before the npm login line: in the next file (line $lo < $ll) and on stdout ($loo < $llo)" \
+  || fail "  order: next file npm login at ${ll:-none}, logout text at ${lo:-none}; stdout ${llo:-none}, ${loo:-none}"
 # an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
 # goes on; the token left: logout-failed, everything removed, exit 1
 : > "$FX/logoutint"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/logoutint"

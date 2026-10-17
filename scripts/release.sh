@@ -1432,14 +1432,15 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop before A8 that
   # cannot vouch for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before
   # the push) keeps it; from A8 on, this run's own text is the file (C5's A4 refusal included)
+  # (the stop text goes to stdout once the logout below has run: when it fails, its remedy is the
+  # text's second line, before any `npm login` line, here and in the file: REV 9 rule 6)
+  txt="" keep=no lo=""
   if [ "$shipok" != yes ] && [ "$locked" = yes ]; then
     txt=$(ship_stoptext)
     if [ -f "$nf" ] && [ $armed = no ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
-      printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
-      cat "$nf" 2>/dev/null
+      keep=yes
     else
       printf '%s\n' "$txt" > "$nf" 2>/dev/null && wrote=yes
-      printf '%s\n' "$txt" "release: (these steps are also in $nf)"
     fi
   fi
   # 2. the npm session ship made: logout, then the count of login tokens decides, not logout's code
@@ -1463,8 +1464,21 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     else
       lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can end ship's session sooner only while that line is there. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login)."
     fi
+  fi
+  # the stop text, with the logout's remedy second when there is one (to the file again, then stdout);
+  # with no stop text (a release done), the remedy alone
+  if [ -n "$txt" ]; then
+    [ -z "$lo" ] || txt=$(printf '%s\n' "$txt" | sed -n 1p; printf '%s\n' "$lo"; printf '%s\n' "$txt" | sed 1d)
+    drain
+    if [ $keep = yes ]; then
+      printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
+      cat "$nf" 2>/dev/null
+    else
+      [ $wrote = no ] || printf '%s\n' "$txt" > "$nf" 2>/dev/null
+      printf '%s\n' "$txt" "release: (these steps are also in $nf)"
+    fi
+  elif [ -n "$lo" ]; then
     echo "release: $lo"
-    drain; [ $wrote = no ] || printf '%s\n' "$lo" >> "$nf" 2>/dev/null
   fi
   # 3. one notification, once armed: done only after a count of 0
   if [ "$armed" = yes ]; then
