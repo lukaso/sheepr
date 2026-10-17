@@ -239,7 +239,8 @@ case \$1 in
     [ -e "$FX/loginfail" ] && exit 1
     [ -e "$FX/loginnormalizes" ] && [ -f "$FX/npmrc" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"; }
     echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
-  logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
+  logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
+    [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
     # (\$FX/logoutcode: the logout fails with that npm error code, and the line stays)
     [ -e "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
     # (a username and _password pair and no token line: npm logout removes the pair, as npm does)
@@ -1262,8 +1263,9 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 hm() { sed -E 's/[0-9]{2}:[0-9]{2} on [0-9]{4}-[0-9]{2}-[0-9]{2}/HH:MM on DATE/g'; }   # the session's clock time, normalized
 LOGOUT_TEXT="ship's npm login line is still in npm's userconfig after npm logout. Deleting or editing a login line ends no token. A session from npm login ends by itself 2 hours after that login and is not on npmjs.com's Access Tokens list; an access token ends when you revoke it under Access Tokens on npmjs.com; a \${VAR} line holds no token in the file, and ship runs npm with no environment variables. npm logout asks npm's server to end the token npm sends for registry.npmjs.org, wherever that token is used, and removes its line only when the server accepted. Remove a login line only once that line's token has ended (an _auth line holds a user name and password, not a token). Run cd / && npm logout --registry=https://registry.npmjs.org/ again until it ends with no error. ship's session ends by itself at HH:MM on DATE (2 hours after its login); after that time its line holds no live token, and you may run cd / && npm config delete //registry.npmjs.org/:_authToken."
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
-[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hm < "$FX/o" | grep -qxF "release: $LOGOUT_TEXT" && [ ! -e "$NF" ] && gone \
-  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, the line left, the session's own end" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
+[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hm < "$FX/o" | grep -qxF "release: $LOGOUT_TEXT" \
+  && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:" ] && [ "$(sed -n 2p "$NF" | hm)" = "$LOGOUT_TEXT" ] && [ "$(grep -c . "$NF")" = 2 ] && gone \
+  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, the line left, the session's own end; the next file keeps that step" || fail "success, logout fails: rc=$r '$(nots)' next: $(head -2 "$NF" 2>/dev/null | cut -c1-120 | tr '\n' '|') $(lastline)"
 # a failure after the login: one logout, one failed-PHASE; with the token left, one notification naming both
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
@@ -1277,9 +1279,9 @@ LOGOUT_TEXT="ship's npm login line is still in npm's userconfig after npm logout
 # (X1) its order: the logout remedy comes before any `  npm login` line, in the next file and on
 # stdout (following the steps in order must not replace ship's session before it ends)
 ll=$(grep -n '^  cd / && npm login' "$NF" | head -1 | cut -d: -f1); lo=$(grep -n "ship's npm login line is still in npm's userconfig after npm logout" "$NF" | head -1 | cut -d: -f1)
-llo=$(grep -n '^  cd / && npm login' "$FX/o" | head -1 | cut -d: -f1); loo=$(grep -n "ship's npm login line is still in npm's userconfig after npm logout" "$FX/o" | head -1 | cut -d: -f1)
+llo=$(grep -n '^  cd / && npm login' "$FX/o" | head -1 | cut -d: -f1); loo=$(grep -nF 'cd / && npm logout --registry=https://registry.npmjs.org/' "$FX/o" | head -1 | cut -d: -f1)
 [ -n "$ll" ] && [ -n "$lo" ] && [ "$lo" -lt "$ll" ] && [ -n "$llo" ] && [ -n "$loo" ] && [ "$loo" -lt "$llo" ] \
-  && pass "  the logout remedy before the npm login line: in the next file (line $lo < $ll) and on stdout ($loo < $llo)" \
+  && pass "  the logout remedy before the npm login line: in the next file (line $lo < $ll); on stdout, the logout step ($loo < $llo)" \
   || fail "  order: next file npm login at ${ll:-none}, logout text at ${lo:-none}; stdout ${llo:-none}, ${loo:-none}"
 # an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
 # goes on; the token left: logout-failed, everything removed, exit 1
@@ -1368,6 +1370,72 @@ rm -f "${FX:?}/npmrc"
 completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && ! grep -q "ship's npm login" "$FX/o" \
   && pass "an older line the login rewrote into a counted spelling: not ship's; done, exit 0, no text about ship's npm login" \
   || fail "older line after the login: rc=$r '$(nots)' $(grep "ship's npm login" "$FX/o" | cut -c1-200)"
+# REV 10 rule 6 (r12a F8, F11): when ship logged in, its next file is written before its logout runs,
+# with the logout step on line 2 (before any `npm login` line), and printed at once. A KILL to ship's
+# group while the logout runs (the hook copies stdout first) leaves that step in the file and on stdout,
+# after a stop (C8's upload refused: the text names npm login) and after a release done
+cat > "$FX/killer" <<EOS
+#!/bin/sh
+lp=\$(cat "$OUTR/.ship.lock/pid" 2>/dev/null); pg=\$(/usr/bin/perl -e 'print getpgrp()')
+[ -n "\$lp" ] && [ "\$pg" = "\$lp" ] || { echo "UNSAFE killer" >> "$FX/calls"; exit 0; }
+cp "$FX/o" "$FX/o.atkill"; echo "SIG KILL at \$1" >> "$FX/calls"; kill -KILL 0
+EOS
+killclean() { # after a KILLed run: its lock and next file ($OUTR), the temp dirs its mktemp recorded, its frozen tree
+  rm -rf "${OUTR:?}"
+  sort -u "$FX/made" 2>/dev/null | while read -r d_; do case $d_ in /private/tmp/sr-*) [ ! -e "$d_" ] || rm -rf "${d_:?}" ;; esac; done
+  g worktree prune; unnamed > /dev/null; [ -z "$(leftover)" ] && [ "$(g worktree list | grep -c .)" = 1 ] || fail "  the KILLed run's dirs: left $(leftover | tr '\n' ' ')"
+}
+LG='cd / && npm logout --registry=https://registry.npmjs.org/'
+lnof() { grep -nF -e "$2" "$1" 2>/dev/null | head -1 | cut -d: -f1; }   # FILE TEXT: the first line holding TEXT
+for k_ in stop done; do
+  [ $k_ = stop ] && : > "$FX/pubfail.sheepr"
+  printf 'sh "%s/killer" logout\n' "$FX" > "$FX/onlogout"; rm -f "$FX/o.atkill"
+  rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/onlogout" "${FX:?}/pubfail.sheepr"
+  ll=$(grep -n '^  cd / && npm login' "$NF" 2>/dev/null | head -1 | cut -d: -f1); lg=$(lnof "$NF" "$LG")
+  llo=$(grep -n '^  cd / && npm login' "$FX/o.atkill" 2>/dev/null | head -1 | cut -d: -f1); lgo=$(lnof "$FX/o.atkill" "$LG")
+  if [ $k_ = stop ]; then
+    h_='release: ship v0.1.0 stopped at npm-main'; ok_=no
+    [ -n "$ll" ] && [ "${lg:-0}" = 2 ] && [ -n "$llo" ] && [ -n "$lgo" ] && [ "$lgo" -lt "$llo" ] && ok_=yes
+  else
+    h_="release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:"; ok_=no
+    [ -z "$ll" ] && [ "${lg:-0}" = 2 ] && [ -n "$lgo" ] && ok_=yes
+  fi
+  grep -q '^SIG KILL at logout$' "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && [ $ok_ = yes ] && grep -q "^$h_" "$NF" && grep -q "^$h_" "$FX/o.atkill" \
+    && grep -q '_authToken=npm_dry$' "$FX/npmrc.after" && dlate "$NF" && [ "$(unconditional "$NF")" = 0 ] \
+    && pass "r12a F8, F11: a KILL while ship's logout runs ($k_): the next file holds the logout step (line ${lg:-none}) before any npm login (${ll:-none}); stdout held it before the logout returned (${lgo:-none} < ${llo:-none})" \
+    || fail "KILL in the logout ($k_): rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') next file: logout ${lg:-none}, npm login ${ll:-none}; stdout: ${lgo:-none}, ${llo:-none}; $(head -2 "$NF" 2>/dev/null | cut -c1-150 | tr '\n' '|')"
+  killclean
+done
+# a stop, and a logout that removes ship's line: the next file is the stop text alone (the step taken
+# out); stdout named the step before the logout ran, then says that step is done. Its control, the
+# same run's text with no login (a stop before C4), has no step. Then the class: no redirection opens
+# the next file; every write is a temp file beside it, then a rename
+: > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/pubfail.sheepr"
+DONE_L="release: ship's line is no longer in npm's userconfig after ship's own npm logout: the npm logout step above is done."
+[ $r = 1 ] && ! grep -qF "$LG" "$NF" && grep -q '^release: ship v0.1.0 stopped at npm-main' "$NF" && [ "$(grep -c '^release:' "$NF")" = 1 ] \
+  && [ "$(lnof "$FX/o" "$LG")" -lt "$(grep -n '^  cd / && npm login' "$FX/o" | head -1 | cut -d: -f1)" ] && [ "$(grep -n . "$FX/o" | grep -F "$DONE_L" | cut -d: -f1)" -gt "$(lnof "$FX/o" "$LG")" ] && gone \
+  && pass "a stop and a logout that removes ship's line: the next file without the logout step; stdout named it before the logout, then that it is done" \
+  || fail "stop + logout removes the line: rc=$r next file logout at $(lnof "$NF" "$LG"); stdout logout at $(lnof "$FX/o" "$LG"), done line at $(lnof "$FX/o" "$DONE_L")"
+PFL=$(tail -1 "$NF"); PFN=$(grep -c . "$NF")
+rm -rf "${OUTR:?}"; : > "$FX/build.nomanifest"; ship; r=$?; rm -f "$FX/build.nomanifest"
+[ $r = 1 ] && ! grep -q 'npm logout' "$NF" "$FX/o" && pass "  control: a stop before the login: no logout step, in the file or on stdout" || fail "  no login: a logout step"
+nfr_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE '>>? *"?\$nf"?([^.A-Za-z_]|$)'); nfm_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'mv -f "\$out/\.\$tag\.ship-next\.tmp" "\$nf"')
+[ "$nfr_" = 0 ] && [ "$nfm_" = 1 ] && pass "the next file: no redirection opens it ($nfr_); one rename onto it, from the temp file beside it ($nfm_)" || fail "the next file: $nfr_ redirections open it; $nfm_ renames"
+# the rewrite is a rename: a KILL at the mv onto the next file, after the logout ran, leaves the
+# earlier text whole (the stop text with the logout step); the temp file beside it holds the new one
+cat > "$B/mv" <<EOS
+#!/bin/sh
+for a_; do l_=\$a_; done
+[ "\$l_" = "$NF" ] && [ -e "$FX/logout.ran" ] && sh "$FX/killer" mv
+exec /bin/mv "\$@"
+EOS
+chmod +x "$B/mv"; printf ': > "%s/logout.ran"\n' "$FX" > "$FX/onlogout"; : > "$FX/pubfail.sheepr"; rm -f "$FX/logout.ran"
+rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/onlogout" "${FX:?}/pubfail.sheepr" "${FX:?}/logout.ran" "${B:?}/mv"
+grep -q '^SIG KILL at mv$' "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -q '^release: ship v0.1.0 stopped at npm-main' "$NF" && [ "$(lnof "$NF" "$LG")" = 2 ] \
+  && [ "$(tail -1 "$NF")" = "$PFL" ] && [ "$(grep -c . "$NF")" = "$((PFN + 1))" ] && ! grep -qF "$LG" "$OUTR/.v0.1.0.ship-next.tmp" && [ "$(head -1 "$OUTR/.v0.1.0.ship-next.tmp")" = "$(head -1 "$NF")" ] \
+  && pass "a KILL at the rename after the logout: the next file whole, as written before the logout ($PFN lines and the step); the new text in the temp file beside it" \
+  || fail "KILL at the rewrite: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') next file: $(grep -c . "$NF" 2>/dev/null) lines, step at $(lnof "$NF" "$LG"), last '$(tail -1 "$NF" 2>/dev/null | cut -c1-80)'"
+killclean
 # a signal while a function call with redirections runs: bash 3.2 runs the trap and the exit handler with
 # that call's redirections still on, so the stop text went into the call's file. ship's own stdout
 # must hold it: INT to ship's group (SETSID) from the push stand-in during C5's real push (stdout to

@@ -1430,21 +1430,37 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # drains them, before each of those here (notify's own stderr line may carry them: the terminal)
   drain
   # 1. a stop of a run that holds the lock: what to run next, built from this run's own record, to
-  # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop before A8 that
-  # cannot vouch for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before
-  # the push) keeps it; from A8 on, this run's own text is the file (C5's A4 refusal included)
-  # (the stop text goes to stdout once the logout below has run: when it fails, its remedy is the
-  # text's second line, before any `npm login` line, here and in the file: REV 9 rule 6)
-  txt="" keep=no lo=""
-  if [ "$shipok" != yes ] && [ "$locked" = yes ]; then
+  # its file first (a closed terminal or pipe cannot lose it), then to stdout, at once. A stop before
+  # A8 that cannot vouch for an earlier run's file (an A4 refusal, or a stop before A4 passed: both
+  # before the push) keeps it; from A8 on, this run's own text is the file (C5's A4 refusal included).
+  # When ship logged in (REV 10 rule 6), the text's line 2 is the logout step, before any `npm login`
+  # line, in the file before the logout runs: a KILL during the logout leaves the step in place. A
+  # release done has a file then too, the step alone
+  txt="" keep=no lo="" pl=""
+  if [ "$logged_in" = yes ]; then
+    pl="ship logged in to npm in this run, and runs $npm_logout as it ends. Unless a line after this one says that ship's line is no longer in npm's userconfig, run that command until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login); after that time its line holds no live token, and you may run $npm_delete."
+  fi
+  if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
     txt=$(ship_stoptext)
     if [ -f "$nf" ] && [ $armed = no ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
       keep=yes
+    fi
+  elif [ "$locked" = yes ] && [ -n "$pl" ]; then
+    txt="release: ship $tag is public on GitHub, Homebrew and npm; ship's npm session is left:"
+  fi
+  if [ -n "$txt" ]; then
+    drain
+    if [ $keep = yes ]; then
+      printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
+      cat "$nf" 2>/dev/null
     else
-      printf '%s\n' "$txt" > "$nf" 2>/dev/null && wrote=yes
+      body=$txt; [ -z "$pl" ] || body=$(line2 "$txt" "$pl")
+      nfput "$body" && wrote=yes
+      printf '%s\n' "$body"
+      [ -n "$pl" ] || printf '%s\n' "release: (these steps are also in $nf)"
     fi
   fi
-  # 2. the npm session ship made: logout, then the count of login tokens decides, not logout's code
+  # 2. the npm session ship made: logout, then ship's own login key decides, not logout's code
   # (in a dry entry the temp HOME still exists here)
   if [ "$logged_in" = yes ]; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" 2> "$st/logout.err"; cat "$st/logout.err" >&2
@@ -1461,20 +1477,20 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     [ "$sk" != unreadable ] || lo="ship cannot tell whether its npm login line is still in npm's userconfig after npm logout (the userconfig cannot be read)$( [ -n "$lw" ] && printf ' (npm logout: %s)' "$(redact "$lw")")"
     lo="$lo. $npm_tokens. Run $npm_logout again until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login); after that time its line holds no live token, and you may run $npm_delete."
   fi
-  # the stop text, with the logout's remedy second when there is one (to the file again, then stdout);
-  # with no stop text (a release done), the remedy alone
-  if [ -n "$txt" ]; then
-    [ -z "$lo" ] || txt=$(printf '%s\n' "$txt" | sed -n 1p; printf '%s\n' "$lo"; printf '%s\n' "$txt" | sed 1d)
+  # the logout's outcome (REV 10 rule 6): the file rewritten whole (nfput), the logout's remedy in the
+  # step's place, or the step taken out (a release done: no file); then stdout
+  if [ -n "$pl" ] && [ -n "$txt" ] && [ $keep = no ]; then
     drain
-    if [ $keep = yes ]; then
-      printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
-      cat "$nf" 2>/dev/null
+    if [ -n "$lo" ]; then
+      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")"
+      printf '%s\n' "release: $lo" "release: (these steps are also in $nf)"
     else
-      [ $wrote = no ] || printf '%s\n' "$txt" > "$nf" 2>/dev/null
-      printf '%s\n' "$txt" "release: (these steps are also in $nf)"
+      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt"; fi
+      printf '%s\n' "release: ship's line is no longer in npm's userconfig after ship's own npm logout: the npm logout step above is done."
+      [ "$shipok" = yes ] || printf '%s\n' "release: (these steps are also in $nf)"
     fi
   elif [ -n "$lo" ]; then
-    echo "release: $lo"
+    drain; echo "release: $lo"
   fi
   # 3. one notification, once armed: done only after a count of 0
   if [ "$armed" = yes ]; then
@@ -1483,7 +1499,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     elif [ "$n" = 0 ]; then notify "failed-$phase"
     else notify "logout-failed-$phase"; fi
   fi
-  [ "$shipok" != yes ] || rm -f "$nf"   # a release done: no steps left
+  [ "$shipok" != yes ] || [ "$n" != 0 ] || rm -f "$nf"   # a release done, ship's line gone: no steps left
   # 4. the frozen tree, the temp dirs, the lock (only this run's)
   [ -z "$wt" ] || git -C "$oroot" worktree remove --force "$wt" >/dev/null 2>&1
   rm -rf "${st:?}"
@@ -1492,6 +1508,14 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   exit "$rc"
 }
 drain() { printf '\n' > /dev/null 2>&1; }
+# line2 TEXT LINE: TEXT with LINE as its second line
+line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1" | sed 1d; }
+# nfput TEXT: the next file holds TEXT, whole or not at all (REV 10 rule 6): written to a temp file
+# beside it (the lock is held: one writer), then renamed onto it; a failed write leaves it as it was
+nfput() {
+  printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && return 0
+  rm -f "$out/.$tag.ship-next.tmp"; return 1
+}
 # ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started
 # or finished), the stop's class and its cause; no network read. Every command names --out
 ship_stoptext() {
