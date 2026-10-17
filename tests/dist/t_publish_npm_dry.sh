@@ -154,7 +154,9 @@ case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private
 bad=""; for f in "$FX"/env.npm.*; do for k in $(sed 's/=.*//' "$f"); do
   # npm_env's named set (a caller's proxy and CA settings pass by design; npm's colour and log level
   # are npm_env's own) and what sh adds
-  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS|npm_config_color|npm_config_loglevel) ;; *) bad="$bad $k" ;; esac
+  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS) ;;
+    npm_config_color|npm_config_dry_run|npm_config_heading|npm_config_json|npm_config_loglevel|npm_config_offline|npm_config_prefer_offline|npm_config_provenance|npm_config_tag|npm_config_update_notifier|npm_config_usage|npm_config_workspaces) ;;   # npm_env's pins (the e3 row)
+    *) bad="$bad $k" ;; esac
 done; done
 [ -z "$bad" ] && pass "npm got only the named environment" || fail "extra environment:$(printf '%s\n' $bad | sort -u | tr '\n' ' ')"
 grep -q '^HTTPS_PROXY=http://127.0.0.1:9$' "$FX/env.npm.0" && pass "control: the proxy reaches npm" || fail "control: no HTTPS_PROXY for npm"
@@ -257,12 +259,32 @@ printf '%s\n' "$e1" | grep -qx "NPM_CONFIG_USERCONFIG=$FX/u1/npmrc" && printf '%
   && printf '%s\n' "$e1" | grep -qx 'HTTPS_PROXY=http://127.0.0.1:9' && printf '%s\n' "$e1" | grep -qx "HOME=$FX/ghome" \
   && pass "the real npm class: the operator's npmrc (either spelling), HOME and a proxy pass" || fail "the npm class: $(printf '%s' "$e1" | tr '\n' ' ')"
 printf '%s\n%s\n' "$e1" "$e2" | grep -q -e "$DECOY" -e '^SSH_AUTH_SOCK=' -e '^GH_' && fail "the npm class let a token or a transport through" || pass "the real npm class: no token, no git/gh transport"
-# npm's colours off and its log level at npm's default, whatever the operator's npmrc says (an
-# environment setting wins over the userconfig): its `npm error code X` line stays readable (color=always
-# writes it in ANSI; loglevel=silent writes nothing), so a clean state is never refused for its form
-e3=$(ne NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" npm_config_color=always npm_config_loglevel=silent)
-printf '%s\n' "$e3" | grep -qx 'npm_config_color=false' && printf '%s\n' "$e3" | grep -qx 'npm_config_loglevel=notice' && [ "$(printf '%s\n' "$e3" | grep -c '^npm_config_')" = 2 ] \
-  && pass "the real npm class: npm_config_color=false and npm_config_loglevel=notice, the caller's own dropped" || fail "the npm class's npm settings: $(printf '%s\n' "$e3" | grep '^npm_config_' | tr '\n' ' ')"
+# every npm setting that changes what ship reads from npm (an answer, an exit status, npm's error
+# code, what reaches the registry) is pinned to npm's default, whatever the operator's npmrc says (an
+# environment setting wins over the userconfig): the list is the census of npm's own config
+# definitions (heading=xyz hides `npm error code X`; json=true quotes whoami's name; usage=true and
+# dry-run=true exit 0 with nothing published; tag=xyz publishes under another dist-tag and makes a
+# view without a version E404; prefer-offline, or an npmrc's cache-min=9999, answers a view from the
+# cache, over --prefer-online: the pinned prefer-offline undoes both). The caller's own values, either
+# case, never reach npm
+e3=$(ne NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" npm_config_color=always npm_config_loglevel=silent npm_config_heading=xyz npm_config_json=true \
+  npm_config_usage=true npm_config_dry_run=true npm_config_tag=xyz npm_config_offline=true npm_config_prefer_offline=true npm_config_cache_min=99999 \
+  npm_config_workspaces=true npm_config_provenance=true npm_config_update_notifier=true NPM_CONFIG_HEADING=xyz NPM_CONFIG_JSON=true)
+PINS='npm_config_color=false
+npm_config_dry_run=false
+npm_config_heading=npm
+npm_config_json=false
+npm_config_loglevel=notice
+npm_config_offline=false
+npm_config_prefer_offline=false
+npm_config_provenance=false
+npm_config_tag=latest
+npm_config_update_notifier=false
+npm_config_usage=false
+npm_config_workspaces=false'
+[ "$(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v '^NPM_CONFIG_USERCONFIG=' | LC_ALL=C sort)" = "$PINS" ] \
+  && pass "the real npm class: every npm output setting pinned ($(printf '%s\n' "$PINS" | grep -c .): heading=npm, json=false, ...), the caller's own dropped" \
+  || fail "the npm class's npm settings: $(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v '^NPM_CONFIG_USERCONFIG=' | LC_ALL=C sort | tr '\n' ' ')"
 
 # nothing at all without the stamp, with a stamp for another manifest, or with a control manifest
 rm "$D/NPM-CHECKED"; pub v0.1.0; r=$?

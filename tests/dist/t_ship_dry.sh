@@ -154,6 +154,15 @@ chmod +x "$S/gh"
 # userconfig and the session it holds ($FX/npmrc: a token line is a session), login, logout, publish
 cat > "$S/npm" <<EOF
 #!/bin/sh
+# npm's heading (the first word of each of its log lines): the environment's npm_config_heading, else
+# the userconfig's heading= line, else npm, as npm reads it; another heading rewrites this stand-in's
+# stderr (its \`npm error code X\` lines among them)
+if [ -z "\${SR_NPM_INNER:-}" ]; then
+  hd_=\${npm_config_heading:-\$(sed -n 's/^heading=//p' "$FX/npmrc" 2>/dev/null | tail -1)}
+  if [ -n "\$hd_" ] && [ "\$hd_" != npm ]; then
+    SR_NPM_INNER=1 "\$0" "\$@" 2> "$FX/npmhd.err"; r_=\$?; sed "s/^npm /\$hd_ /" "$FX/npmhd.err" >&2; exit \$r_
+  fi
+fi
 [ -d "\$HOME" ] || echo "NOHOME npm" >> "$FX/calls"
 echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
@@ -731,6 +740,14 @@ completed && pass "A6, whoami's ENEEDAUTH in npm's colours (no token line): pass
 printf 'npm ERR! code ENEEDAUTH\nnpm ERR! need auth This command requires you to be logged in.\n' > "$FX/whoamierr"
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamierr"
 completed && pass "A6, npm 9's 'npm ERR! code ENEEDAUTH' (no token line): passes, the run completes" || fail "npm 9 ENEEDAUTH: $(lastline)"
+# the operator's npmrc sets npm's heading (heading=xyz: `xyz error code ENEEDAUTH`): ship's npm pins
+# it (the environment over the userconfig), so A6 reads ENEEDAUTH and passes a clean state. Control:
+# the stand-in honours the npmrc line when the environment sets no heading, and the pin when it does
+echo "heading=xyz" > "$FX/npmrc"
+hx=$(env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" whoami 2>&1 >/dev/null); hn=$(env -i PATH=/usr/bin:/bin HOME="$FX/ghome" npm_config_heading=npm "$S/npm" whoami 2>&1 >/dev/null)
+[ "$hx" = "xyz error code ENEEDAUTH" ] && [ "$hn" = "npm error code ENEEDAUTH" ] && pass "control: the npm stand-in writes the npmrc's heading, and the environment's over it" || fail "control: the stand-in's heading: '$hx' '$hn'"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
+completed && pass "A6, an npmrc with heading=xyz (no token line): npm's heading pinned, the clean state passes, the run completes" || fail "npmrc heading=xyz: $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
 # a coloured E401 with a counted line: the remedy named
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/whoamiansi"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamiansi" "${FX:?}/npmrc"
 pre_row "a counted token line, whoami's E401 in npm's colours" "npm config delete //registry.npmjs.org/:_authToken"

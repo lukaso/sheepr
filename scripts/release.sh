@@ -220,10 +220,22 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
   # reads the builtin config, the userconfig, the global config and the env, and the userconfig wins
   # over all of them but the env, which holds no token: an E401 with a counted userconfig line is
   # that line's token (npmhint), and tokcount needs no other file.
-  # npm_config_color and _loglevel: npm's `npm error code X` line stays readable whatever the npmrc says
-  # (color=always writes it in ANSI, loglevel=silent writes nothing); an environment setting wins
+  # The npm_config_ pins: npm's default for every setting that changes what ship reads from npm (an
+  # answer, an exit status, npm's error code, what reaches the registry), whatever the npmrc says (an
+  # environment setting wins over it). The list is a census of npm 11.6.0's own config definitions,
+  # run against a stand-in registry: color and loglevel (`npm error code X` in ANSI, or not written),
+  # heading (`xyz error code X`), json (whoami's name in quotes), usage and dry-run (exit 0, nothing
+  # published), tag (another dist-tag; a view without a version E404), offline and prefer-offline (a
+  # view answered from the cache, over --prefer-online; the environment's prefer-offline also undoes
+  # an npmrc's cache-min=9999, which npm reads after it, and a cache-min pin would make npm warn on
+  # every call: it is deprecated), workspaces and provenance (every call, or the upload, fails),
+  # update-notifier (a notice and a call of its own). What it leaves to the npmrc only makes a call
+  # fail, in npm's own words: the network settings (proxy, TLS, retries, timeouts), the credentials,
+  # and the keys an environment cannot reset (an empty value is ignored): workspace, provenance-file
   ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" ${u:+NPM_CONFIG_USERCONFIG="$u"} \
-    npm_config_color=false npm_config_loglevel=notice \
+    npm_config_color=false npm_config_loglevel=notice npm_config_heading=npm npm_config_json=false npm_config_usage=false \
+    npm_config_dry_run=false npm_config_tag=latest npm_config_offline=false npm_config_prefer_offline=false \
+    npm_config_workspaces=false npm_config_provenance=false npm_config_update_notifier=false \
     ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \
