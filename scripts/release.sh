@@ -1143,8 +1143,10 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   logged_in=yes
   tool "$NPMC" "$NPM" login --registry="$NPMREG" || die "npm login failed, or was not answered; nothing is public"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
-  # once the login returned (so never before the session's real end)
-  e_=$(( $(date +%s) + 7200 )); ship_end=$(date -r "$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null || date -d "@$e_" '+%H:%M on %Y-%m-%d' 2>/dev/null)
+  # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
+  # a time ship cannot compute is left out
+  e_=$(date +%s 2>/dev/null); ship_end=""
+  case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))) ;; esac
   who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err") || die "npm whoami failed after the login ($(errcut "$st/who.err" 200))$(npmhint "$st/who.err"); nothing is public"
   [ "$who" = "$SR_NPM_USER" ] || die "logged in to npm as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), not as $SR_NPM_USER; nothing is public"
   # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
@@ -1508,6 +1510,15 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   exit "$rc"
 }
 drain() { printf '\n' > /dev/null 2>&1; }
+# ship_clock EPOCH: that moment on this machine's clock, with its zone: "HH:MM ZONE on YYYY-MM-DD"
+# (REV 10 rule 7), or nothing. GNU date (it answers --version) reads -d @N; BSD date reads -r N. GNU's
+# -r reads a FILE's time, so -r first let a file in the cwd named like the number answer (r12a F7)
+ship_clock() {
+  case ${1:-} in ''|*[!0-9]*) return 0 ;; esac
+  if date --version > /dev/null 2>&1; then c_=$(date -d "@$1" '+%H:%M %Z on %Y-%m-%d' 2>/dev/null)
+  else c_=$(date -r "$1" '+%H:%M %Z on %Y-%m-%d' 2>/dev/null); fi || return 0
+  case $c_ in [0-2][0-9]:[0-5][0-9]' '?*' on '[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]) printf '%s' "$c_" ;; esac
+}
 # line2 TEXT LINE: TEXT with LINE as its second line
 line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1" | sed 1d; }
 # nfput TEXT: the next file holds TEXT, whole or not at all (REV 10 rule 6): written to a temp file
