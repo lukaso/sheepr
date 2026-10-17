@@ -1026,7 +1026,8 @@ completed && pass "control: an absolute NPM_CONFIG_USERCONFIG: the run completes
 mkdir -p "$FX/v" || exit 3
 for uv in "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/v/\$SRFOO/rc"; do
   echo ETIMEDOUT > "$FX/logoutcode"; SETX=$uv; rm -rf "${OUTR:?}"; ship; r=$?; SETX=; rm -f "${FX:?}/logoutcode"
-  [ $r = 1 ] && nobuild && ! grep -q '^npm ' "$FX/calls" && grep -qF "${uv%%=*} is '${uv#*=}': it holds a \$" "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && gone \
+  [ $r = 1 ] && nobuild && ! grep -q '^npm ' "$FX/calls" && grep -qF "${uv%%=*} is '${uv#*=}': it holds a \$" "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] \
+    && [ "$(g worktree list | grep -c .)" = 1 ] && leakfree \
     && pass "REV 11a rule 8: ${uv%%=*} holding a \$: ship refuses before any npm call, the variable named; nothing made" \
     || fail "${uv%%=*} with a \$: rc=$r, $(grep -c '^npm ' "$FX/calls") npm calls; $(grep -m1 "${uv%%=*}" "$FX/o" | cut -c1-200)"
 done
