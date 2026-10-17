@@ -163,7 +163,7 @@ grep -q '^curl -q -fsSL --proto =https https://github.com/lukaso/sheepr/releases
   && pass "the archive is fetched at the cask's url, with no curlrc and https only" || fail "the curl call: $(grep '^curl' "$FX/calls")"
 # the npm names are checked before anything else: GitHub must not go public when npm would then
 # refuse (the first v0.1.0 did exactly that). `npm owner ls` needs no login; the owner is release.conf's
-REG="--registry=https://registry.npmjs.org/"
+REG="--registry=https://registry.npmjs.org/ --scope="   # the registry pinned, and no scope (REV 11 rule 2)
 [ "$(sed -n 1,4p "$FX/calls" | tr '\n' ',')" = "npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
   && pass "before any git or gh call: the npm owners of all four names" || fail "the first calls: $(sed -n 1,4p "$FX/calls" | tr '\n' ',')"
 [ "$(grep -c '^git ls-remote https://github.com/lukaso/sheepr refs/tags/v0.1.0\*$' "$FX/calls")" = 2 ] \
