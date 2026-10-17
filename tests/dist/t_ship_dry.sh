@@ -817,11 +817,16 @@ done
 # the count is 0 (the handler drains the bytes the closed stdout left before it counts)
 : > "$FX/logoutrm"; rm -rf "${OUTR:?}"; PIPEQ='uploaded (npm scans it'; ship; r=$?; PIPEQ=; rm -f "$FX/logoutrm"
 [ "$r" = 1 ] && [ "$(nots)" = "npm-login npm-approve failed-npm-platform " ] && [ "$(grep -c '^release:' "$NF")" = 1 ] && leakfree && pass "stdout closed, the npmrc gone after the logout: the count 0, failed-npm-platform, no temp dir left" || fail "closed stdout, no npmrc: rc=$r '$(nots)'"
-# a refusal because something is public after A4 passed (a draft made during the build: C5's A4)
-# keeps an earlier run's next file too
+# a refusal at C5's A4, after A8 (something public, or the release list unreadable, during the
+# build): this run's own text replaces an earlier run's next file (only a stop before A8 keeps one)
 rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"
 printf "printf 'v0.0.9 false false\\\\nv0.1.0 true false\\\\n' > '%s/rels'\n" "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild"; echo "v0.0.9 false false" > "$FX/rels"
-[ $r = 1 ] && grep -q 'GitHub has a release or a draft v0.1.0' "$FX/o" && [ "$(cat "$NF")" = EARLIER ] && pass "C5's A4 refusal (a draft made during the build): an earlier next file kept" || fail "C5 A4 keep: rc=$r $(head -2 "$NF" | tr '\n' '|')"
+[ $r = 1 ] && grep -q 'GitHub has a release or a draft v0.1.0' "$FX/o" && head -1 "$NF" | grep -q "^release: ship v0.1.0 stopped at push: " && ! grep -qx EARLIER "$NF" \
+  && pass "C5's A4 refusal (a draft made during the build): this run's text replaces an earlier next file" || fail "C5 A4 public: rc=$r $(head -2 "$NF" | tr '\n' '|')"
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR"; echo EARLIER > "$NF"
+printf ': > "%s/relsfail"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/relsfail"
+[ $r = 1 ] && head -1 "$NF" | grep -q "^release: ship v0.1.0 stopped at push: " && grep -q 'cannot tell whether anything is public' "$NF" && ! grep -qx EARLIER "$NF" \
+  && pass "C5's A4 refusal (the release list unreadable during the build): this run's text replaces an earlier next file" || fail "C5 A4 unreadable: rc=$r $(head -2 "$NF" | tr '\n' '|')"
 rm -rf "${OUTR:?}"
 # --- what to run after a stop: the fixed text, its file; the steps it names run through their dry
 # entries against the state the stop left (after the operator steps the text names), and complete

@@ -1246,11 +1246,12 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # drains them, before each of those here (notify's own stderr line may carry them: the terminal)
   drain
   # 1. a stop of a run that holds the lock: what to run next, built from this run's own record, to
-  # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop that cannot vouch
-  # for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before the push) keeps it
+  # its file first (a closed terminal or pipe cannot lose it), then to stdout. A stop before A8 that
+  # cannot vouch for an earlier run's file (an A4 refusal, or a stop before A4 passed: both before
+  # the push) keeps it; from A8 on, this run's own text is the file (C5's A4 refusal included)
   if [ "$shipok" != yes ] && [ "$locked" = yes ]; then
     txt=$(ship_stoptext)
-    if [ -f "$nf" ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
+    if [ -f "$nf" ] && [ $armed = no ] && { [ $pubok = no ] || grep -qx -e public -e lost -e unreadable "$shipcls" 2>/dev/null; }; then
       printf '%s\n' "$txt" "release: an earlier run's next steps ($nf), kept as they are:"
       cat "$nf" 2>/dev/null
     else
