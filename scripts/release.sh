@@ -504,7 +504,7 @@ man_hash() { # dir file -> the file's sha256 in MANIFEST.json (empty if it is no
   sed -n "s/.*\"name\": \"$2\", \"sha256\": \"\([0-9a-f]\{64\}\)\".*/\1/p" "${MAN:-$1/MANIFEST.json}" | head -1
 }
 private_manifest() { # dir tmp: copy the output dir's MANIFEST.json into tmp (0700) and read it from there on
-  cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || die "no MANIFEST.json in $1"
+  cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || { stopclass content; die "no MANIFEST.json in $1"; }
   MAN=$2/MANIFEST.json
   # under ship: the manifest ship checked after the build (C1), and no other
   [ -z "$ship_mh" ] || [ "$(shasum -a 256 "$MAN" | cut -d' ' -f1)" = "$ship_mh" ] || { stopclass content; die "the manifest in $1 is not the one ship checked after the build (it changed)"; }
@@ -531,17 +531,17 @@ publish_check() { # dir
   drydir "$pt"
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
-  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
-  files_ok "$d" || die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"
+  stamp_ok "$d" || { stopclass content; die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"; }
+  files_ok "$d" || { stopclass content; die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"; }
   [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; this step uploaded nothing"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
-    || die "the archive verify judged is not the stamped manifest's (it changed since); this step uploaded nothing"
+    || { stopclass content; die "the archive verify judged is not the stamped manifest's (it changed since); this step uploaded nothing"; }
   # SHA256SUMS is not in the manifest: the build wrote it from those four files, in this order, so
   # its bytes follow from the manifest's hashes; nothing else is published, at any time
   for x in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh; do
     printf '%s  %s\n' "$(man_hash "$d" "$x")" "$x"
   done > "$pt/sums"
-  cmp -s "$pt/sums" "$d/SHA256SUMS" || die "SHA256SUMS is not the one the build wrote (from MANIFEST.json's hashes)"
+  cmp -s "$pt/sums" "$d/SHA256SUMS" || { stopclass content; die "SHA256SUMS is not the one the build wrote (from MANIFEST.json's hashes)"; }
   sums_h=$(shasum -a 256 "$pt/sums" | cut -d' ' -f1)
   # npm's owners of the four names, before any git or gh call: GitHub must not go public when npm
   # would then refuse (the first v0.1.0 did exactly that)
@@ -665,9 +665,9 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   mkdir -p "$ct/src/scripts/lib" "$ct/src/packaging/homebrew" || die "no temp dir for the cask"
   git -C "$root" show "refs/tags/$tag:scripts/lib/render-cask.sh" > "$ct/src/scripts/lib/render-cask.sh" \
     && git -C "$root" show "refs/tags/$tag:packaging/homebrew/sheepr.rb.in" > "$ct/src/packaging/homebrew/sheepr.rb.in" || die "cannot read $tag's cask template"
-  ah=$(man_hash "$cd_" "$ARCHIVE"); [ -n "$ah" ] || die "$ARCHIVE has no manifest hash"
+  ah=$(man_hash "$cd_" "$ARCHIVE"); [ -n "$ah" ] || { stopclass content; die "$ARCHIVE has no manifest hash"; }
   tool base sh "$ct/src/scripts/lib/render-cask.sh" "$xyz" "$ah" "$ct/cask.rb" || die "cannot render $tag's cask"
-  cmp -s "$ct/cask.rb" "$cd_/sheepr.rb" || die "$cd_/sheepr.rb is not the cask the tag renders (its template, the archive's manifest hash)"
+  cmp -s "$ct/cask.rb" "$cd_/sheepr.rb" || { stopclass content; die "$cd_/sheepr.rb is not the cask the tag renders (its template, the archive's manifest hash)"; }
   # from here on only this private copy is used (the PUT, the read back): the out dir may change
   # while the operator confirms
   # the render is this release's cask: one version line (brew builds the url from it), one sha256
@@ -991,19 +991,19 @@ verify() { # dir -> exit 1 naming the tool that refused
   . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
   . "$root/scripts/lib/realtools.sh" || die "cannot read realtools.sh"
   d=$1 arc=$1/sheepr-macos-universal.tar.gz
-  [ -f "$arc" ] || die "no $arc"
+  [ -f "$arc" ] || { stopclass content; die "no $arc"; }
   vt=/private/tmp/sr-verify.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   trap 'trap "" $SIGS; rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' $SIGS
   # the bundle the real tools judge, from a private copy whose hash publish then binds to the
   # stamped manifest (an archive replaced after this check is not the one judged)
   mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" && verified_ah=$(shasum -a 256 "$vt/a.tgz" | cut -d' ' -f1) \
-    && [ -n "$verified_ah" ] && /usr/bin/tar -xzf "$vt/a.tgz" -C "$vt" && rm -f "$vt/a.tgz" || die "cannot unpack $arc"
+    && [ -n "$verified_ah" ] && /usr/bin/tar -xzf "$vt/a.tgz" -C "$vt" && rm -f "$vt/a.tgz" || { stopclass content; die "cannot unpack $arc"; }
   a=$vt/Sheepr.app
   # a control build's bundle carries the control marker (bundle.sh --control): never a release
-  /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && die "the archive holds a control build (SheeprControlBuild in its Info.plist)"
-  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || die "codesign: the bundle does not meet the release requirement"
-  rt_staple_ok "$a" || die "stapler: no valid staple ticket"
-  rt_spctl_ok "$a" || die "spctl: Gatekeeper rejects the bundle"
+  /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the archive holds a control build (SheeprControlBuild in its Info.plist)"; }
+  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || { stopclass content; die "codesign: the bundle does not meet the release requirement"; }
+  rt_staple_ok "$a" || { stopclass content; die "stapler: no valid staple ticket"; }
+  rt_spctl_ok "$a" || { stopclass content; die "spctl: Gatekeeper rejects the bundle"; }
   rm -rf "$vt"; trap - EXIT
   verified=yes
   echo "release: $d: signed, notarized and stapled (checked from the archive)"
@@ -1121,9 +1121,12 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   post_build_check "$out/$tag"
   ship_mh=$(shasum -a 256 "$out/$tag/MANIFEST.json" | cut -d' ' -f1)
   printf '%s\n' "$ship_mh" | grep -qx '[0-9a-f]\{64\}' || { ship_mh=""; stopclass fix; die "cannot read the hash of $out/$tag/MANIFEST.json (every later phase is bound to it); nothing is public"; }
-  # C2. npm-check (its own traps: a subshell)
-  phase=npm-check; stopclass content
-  ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"
+  # C2. npm-check (its own traps: a subshell). No class is set ahead of C2 and C3 but fix: a signal, or
+  # a failure that is not about the build (the tap's cask gone, npm's owners), is no content stop;
+  # content is set at each refusal that finds a content problem (npm-check's, and publish_check's,
+  # cask_pre's and verify's own)
+  phase=npm-check; stopclass fix
+  ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || { stopclass content; die "npm-check refused $out/$tag (above)"; }
   # C3. every check publish makes before a write, but the remote tag's (no remote tag yet): verify
   # binds the archive it judged, so it runs in the same subshell as publish_check
   phase=checks

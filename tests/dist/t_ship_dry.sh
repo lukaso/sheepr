@@ -110,6 +110,7 @@ cat > "$S/npmcheck" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME npmcheck" >> "$FX/calls"
 echo "npmcheck \$*" >> "$FX/calls"
+[ -e "$FX/onnpmcheck" ] && sh "$FX/onnpmcheck"   # (\$FX/onnpmcheck: a hook at C2's npm-check)
 [ -e "$FX/npmcheckfail" ] && { echo "npm-check: refused (stand-in)" >&2; exit 1; }
 d=\$1; tg=\$(basename "\$d")
 [ -e "$FX/npmcheck.swap" ] && echo ' ' >> "\$d/MANIFEST.json"
@@ -203,7 +204,9 @@ case \$1 in
     fi
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\n  "error": {\n    "code": "E404"\n  }\n}\n'; echo "npm error code E404" >&2; exit 1 ;;
-  owner) [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+  # (\$FX/onowner: a hook at owner ls once the build ran, i.e. C3's publish_check)
+  owner) [ -e "$FX/onowner" ] && grep -q '^build ' "$FX/calls" && sh "$FX/onowner"
+    [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     [ -e "$FX/ownercode" ] && { echo "npm error code \$(cat "$FX/ownercode")" >&2; exit 1; }   # (\$FX/ownercode: the code it answers)
     # (\$FX/ownerfailafter: fails once three uploads are recorded, i.e. after C6)
     [ -e "$FX/ownerfailafter" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
@@ -1426,6 +1429,26 @@ rm -rf "${OUTR:?}"; : > "$FX/npmcheckfail"; ship; r=$?; rm -f "$FX/npmcheckfail"
 grep -qx 'Nothing is public.' "$NF" && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" && pass "npm-check refused: 'Nothing is public', move the build aside, run ship again" || fail "npm-check text: $(tr '\n' '|' < "$NF")"
 mv "$OUTR/v0.1.0" "$FX/aside"; ship; r=$?; rm -rf "${FX:?}/aside"
 completed && pass "  and ship again (the build moved aside) completes" || fail "  ship again: $(lastline)"
+# a signal during C2 or C3, or a failure there that is not about the build, is not a content stop: no
+# "Move ... aside" (a rebuild and a second notarization). INT to ship's group during C2's npm-check,
+# HUP during C3's publish_check (its npm owner ls), and the tap's cask gone at C3 (gh 404, r8b F3)
+cat > "$FX/sigsend" <<EOS
+#!/bin/sh
+lp=\$(cat "$OUTR/.ship.lock/pid" 2>/dev/null); pg=\$(/usr/bin/perl -e 'print getpgrp()')
+[ -n "\$lp" ] && [ "\$pg" = "\$lp" ] || { echo "UNSAFE sigsend \$1" >> "$FX/calls"; exit 0; }
+echo "SIG \$2 at \$1" >> "$FX/calls"; kill -\$2 0; /bin/sleep 1
+EOS
+for pt in 'onnpmcheck|INT|npm-check' 'onowner|HUP|checks'; do
+  hk=${pt%%|*} sg=${pt#*|}; ph=${sg#*|}; sg=${sg%%|*}
+  printf 'sh "%s/sigsend" %s %s\n' "$FX" "$hk" "$sg" > "$FX/$hk"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/$hk"
+  [ $r = 1 ] && grep -q "^SIG $sg at $hk" "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -q "stopped at $ph" "$NF" && grep -qx 'Nothing is public.' "$NF" && endsfix "$NF" && ! grep -q aside "$NF" \
+    && pass "$sg during $ph: Nothing is public, when the cause is fixed run ship again; no move aside" \
+    || fail "$sg at $hk: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"
+done
+rm -f "${FX:?}/sigsend"
+printf 'rm -f "%s/tap/sheepr.rb"\n' "$FX" > "$FX/onbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onbuild"; tapset 0.0.9
+[ $r = 1 ] && grep -q 'has no Casks/sheepr.rb' "$NF" && grep -q 'stopped at checks' "$NF" && endsfix "$NF" && ! grep -q aside "$NF" \
+  && pass "C3: the tap's cask gone (gh 404): add it, then run ship again; no move aside" || fail "C3 gh 404: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"
 rm -rf "${OUTR:?}"; printf ': > "%s/ownerfail"\n' "$FX" > "$FX/onbuild"; ship; r=$?; rm -f "$FX/onbuild" "$FX/ownerfail"
 endsfix "$NF" && ! grep -q 'aside' "$NF" && grep -q 'cannot read the owners' "$NF" && pass "C3: npm's owners unreadable: when the cause is fixed, run ship again, no move aside (the first cause kept)" || fail "C3 owner text: $(tr '\n' '|' < "$NF")"
 ship; r=$?; completed && pass "  and ship again (the build kept) completes" || fail "  ship again: $(lastline)"
@@ -1543,7 +1566,9 @@ hint_row() { # label want-text
   [ $r != 0 ] && grep -q "$2" "$FX/o" && hint_free && pass "under ship, $1: '$2', and no other entry named" || fail "$1: rc=$r $(head -2 "$FX/hints" 2>/dev/null | tr '\n' '|') $(lastline)"
 }
 rm -rf "${OUTR:?}"; : > "$FX/npmcheck.badstamp"; ship; r=$?; rm -f "$FX/npmcheck.badstamp"; hint_row "C3's stamp check" "npm-check has not passed on"
+grep -q "Move $OUTR/v0.1.0 aside" "$NF" && pass "  a content finding: move the build aside" || fail "  badstamp: no move aside: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
 rm -rf "${OUTR:?}"; : > "$FX/npmcheck.touch"; ship; r=$?; rm -f "$FX/npmcheck.touch"; hint_row "C3's file check" "a file npm-check checked has changed since"
+grep -q "Move $OUTR/v0.1.0 aside" "$NF" && pass "  a content finding: move the build aside" || fail "  touch: no move aside: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
 rm -rf "${OUTR:?}"; : > "$FX/stilldraft"; ship; r=$?; rm -f "$FX/stilldraft"; hint_row "the release still a draft" "it is still a draft"
 rm -rf "${OUTR:?}"; : > "$FX/putfail"; ship; r=$?; rm -f "$FX/putfail"; hint_row "the cask refused (exit 5)" "its Homebrew cask is not updated"
 printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"
