@@ -234,8 +234,16 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
 npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may need, never the git/gh
             # transport (one construction for the real run and the dry one)
   h=$1 u=$2 ca=${NODE_EXTRA_CA_CERTS:-}; shift 2
-  case $u in ''|/*) ;; *) u=$(pwd -P)/$u ;; esac   # resolved before the cd below
-  case $ca in ''|/*) ;; *) ca=$(pwd -P)/$ca ;; esac
+  # the userconfig: an absolute path or none (npm_ucbad; the entries refuse any other before any npm
+  # call, and npm never runs with one). A relative CA file is made absolute before the cd below, from
+  # a current directory that can be read
+  case $u in ''|/*) ;; *) echo "release: $(redact "$(npm_ucbad || printf '%s' "npm's userconfig '$u' is not an absolute path")")" >&2; return 2 ;; esac
+  case $ca in
+    ''|/*) ;;
+    *) p_=$(pwd -P 2>/dev/null) && [ -n "$p_" ] \
+         || { echo "release: $(redact "NODE_EXTRA_CA_CERTS is '$ca', a relative path, and the current directory cannot be read: set it to an absolute path")" >&2; return 2; }
+       ca=$p_/$ca ;;
+  esac
   # npm runs from /: npm's project config (the .npmrc beside the nearest package.json or node_modules
   # above its cwd) wins over the userconfig, and / holds none (only root may write there). So npm
   # reads the builtin config, the userconfig, the global config and the env, and the userconfig wins
@@ -261,6 +269,16 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \
     ${ca:+NODE_EXTRA_CA_CERTS="$ca"} "$@" )
+}
+# npm_ucbad: why npm's userconfig variable is refused, or nothing (1): each spelling must be empty or
+# an absolute path. npm expands ~ and ${VAR} in it itself, and ship runs npm from /, so any other
+# spelling names another file than the one meant (made absolute here, '~/rc' was <cwd>/~/rc)
+npm_ucbad() {
+  for v_ in NPM_CONFIG_USERCONFIG npm_config_userconfig; do
+    eval "x_=\${$v_:-}"
+    case $x_ in ''|/*) ;; *) printf '%s' "$v_ is '$x_', not an absolute path: set it to the absolute path of npm's userconfig, or unset it"; return 0 ;; esac
+  done
+  return 1
 }
 cargo_env() { # CARGO_HOME TARGET_DIR command... (the cargo class)
   ch=$1 td=$2; shift 2
@@ -818,6 +836,7 @@ notify() {
 publish_npm_exec() { # dir
   d=$1 m=$1/MANIFEST.json nv=${tag#v}
   [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); this step uploaded nothing"
+  if m_=$(npm_ucbad); then die "$m_; this step uploaded nothing"; fi   # before any npm call
   case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; this step uploaded nothing" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
   drydir "$pc"
@@ -1041,6 +1060,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
   # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
   shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
+  # npm's userconfig variable: an absolute path or none, before any npm call (npm_ucbad)
+  if m_=$(npm_ucbad); then die "$m_"; fi
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
   # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
   checks

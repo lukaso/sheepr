@@ -824,6 +824,16 @@ echo E401 > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?
 [ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code E401' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
   && ! grep -q '^npm publish' "$FX/calls" && pass "C4's whoami after the login answering E401 (the login's token line): nothing published; the stop names npm config delete //registry.npmjs.org/:_authToken" \
   || fail "C4 whoami E401: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
+# npm's userconfig variable must be an absolute path (npm expands ~ and ${VAR} in it itself, and ship
+# runs npm from /): any other value stops ship before any npm call, class fix. Control: an absolute one
+for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'npm_config_userconfig=rel/npmrc'; do
+  SETX=$uv; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
+  [ $r = 1 ] && nobuild && ! grep -q '^npm ' "$FX/calls" && grep -qF "${uv%%=*} is '${uv#*=}', not an absolute path" "$OUTR/v0.1.0.ship-next.txt" \
+    && endsfix "$OUTR/v0.1.0.ship-next.txt" && pass "$uv: ship stops before any npm call (nothing built); the next file names it and ends '$FIXL'" \
+    || fail "$uv: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+done
+SETX="NPM_CONFIG_USERCONFIG=$FX/abs-npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
+completed && pass "control: an absolute NPM_CONFIG_USERCONFIG: the run completes" || fail "control, absolute userconfig: rc=$r $(lastline)"
 # a coloured E401 with a counted line: the remedy named
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/whoamiansi"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamiansi" "${FX:?}/npmrc"
 pre_row "a counted token line, whoami's E401 in npm's colours" "npm config delete //registry.npmjs.org/:_authToken"

@@ -279,6 +279,29 @@ printf '%s\n' "$e1" | grep -qx "NPM_CONFIG_USERCONFIG=$FX/u1/npmrc" && printf '%
   && printf '%s\n' "$e1" | grep -qx 'HTTPS_PROXY=http://127.0.0.1:9' && printf '%s\n' "$e1" | grep -qx "HOME=$FX/ghome" \
   && pass "the real npm class: the operator's npmrc (either spelling), HOME and a proxy pass" || fail "the npm class: $(printf '%s' "$e1" | tr '\n' ' ')"
 printf '%s\n%s\n' "$e1" "$e2" | grep -q -e "$DECOY" -e '^SSH_AUTH_SOCK=' -e '^GH_' && fail "the npm class let a token or a transport through" || pass "the real npm class: no token, no git/gh transport"
+# npm's userconfig variable, either spelling, must be an absolute path: npm expands ~ and ${VAR} in
+# it itself, and ship runs npm from /, so any other spelling names another file than the one the
+# operator means. The npm class refuses it (npm never runs), naming the variable and its value; it
+# never makes it <cwd>/~/npmrc. (An absolute one goes through unchanged: the rows above.)
+for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'NPM_CONFIG_USERCONFIG=${HOME}/npmrc' 'npm_config_userconfig=rel/npmrc'; do
+  eu=$(ne "$uv"); r=$?
+  [ $r != 0 ] && printf '%s\n' "$eu" | grep -qF "${uv%%=*} is '${uv#*=}', not an absolute path" && ! printf '%s\n' "$eu" | grep -q -e '^HOME=' -e '^NPM_CONFIG_USERCONFIG=' \
+    && pass "the npm class refuses $uv: not an absolute path; npm never ran" || fail "$uv: rc=$r $(printf '%s\n' "$eu" | grep -e USERCONFIG -e '^release:' | head -2 | tr '\n' ' ')"
+done
+# publish-npm refuses it too, before any npm call
+mkout "$D" v0.1.0; PUBX='NPM_CONFIG_USERCONFIG=~/npmrc'; pub v0.1.0; r=$?; PUBX=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -qF "NPM_CONFIG_USERCONFIG is '~/npmrc', not an absolute path" "$FX/o" \
+  && pass "publish-npm with NPM_CONFIG_USERCONFIG='~/npmrc': refused before any npm call" || fail "publish-npm, ~/npmrc: rc=$r $(tail -1 "$FX/o" | cut -c1-200)"
+# a relative NODE_EXTRA_CA_CERTS is made absolute from the current directory; when that cannot be read
+# (here: it was removed), the npm class refuses (npm never runs), and never makes it /rel/ca.pem.
+# Control: the same from a directory that is there
+mkdir "$FX/gone" "$FX/here" || exit 3
+eg=$(cd "$FX/gone" && rmdir "$FX/gone" && env -i PATH="$PATH" HOME="$FX/ghome" NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" NODE_EXTRA_CA_CERTS=rel/ca.pem sh "$REPO/scripts/release.sh" __npm-env v0.1.0 2>&1); r=$?
+[ $r != 0 ] && printf '%s\n' "$eg" | grep -qF "NODE_EXTRA_CA_CERTS is 'rel/ca.pem'" && ! printf '%s\n' "$eg" | grep -q -e '^HOME=' -e '^NODE_EXTRA_CA_CERTS=' \
+  && pass "a relative NODE_EXTRA_CA_CERTS in a removed directory: refused, npm never ran" || fail "removed cwd: rc=$r $(printf '%s\n' "$eg" | grep -e NODE_EXTRA -e '^release:' | head -2 | tr '\n' ' ')"
+eh=$(cd "$FX/here" && env -i PATH="$PATH" HOME="$FX/ghome" NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" NODE_EXTRA_CA_CERTS=rel/ca.pem sh "$REPO/scripts/release.sh" __npm-env v0.1.0 2>&1); r=$?
+[ $r = 0 ] && printf '%s\n' "$eh" | grep -qx "NODE_EXTRA_CA_CERTS=$(cd "$FX/here" && pwd -P)/rel/ca.pem" \
+  && pass "control: a relative NODE_EXTRA_CA_CERTS in a directory that is there: made absolute from it" || fail "control, relative CA: rc=$r $(printf '%s\n' "$eh" | grep -e NODE_EXTRA -e '^release:' | head -2 | tr '\n' ' ')"
 # every npm setting that changes what ship reads from npm (an answer, an exit status, npm's error
 # code, what reaches the registry) is pinned to npm's default, whatever the operator's npmrc says (an
 # environment setting wins over the userconfig): the list is the census of npm's own config
