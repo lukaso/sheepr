@@ -171,6 +171,12 @@ case \$1 in
       dist-tags.latest) printf '"%s"\n' "\$(cat "$FX/latest.\$p" 2>/dev/null || echo 0.0.9)"; exit 0 ;;
     esac
     [ -e "$FX/viewfailv.\$p" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }   # the version's view only
+    # (\$FX/viewother.\$p N: once N uploads are recorded, the version's view answers another file;
+    # \$FX/onviewpush.\$p: a hook run once at the version's view, once the push is done)
+    [ -e "$FX/viewother.\$p" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge "\$(cat "$FX/viewother.\$p")" ] && { printf '"sha512-another"\n'; exit 0; }
+    if [ -e "$FX/onviewpush.\$p" ] && [ ! -e "$FX/onviewpush.\$p.done" ] && grep -qx 'done push' "$FX/out/.v0.1.0.ship-progress" 2>/dev/null; then
+      : > "$FX/onviewpush.\$p.done"; sh "$FX/onviewpush.\$p"
+    fi
     if [ -f "$FX/pub.\$p" ]; then
       k=\$(cat "$FX/processing.\$p" 2>/dev/null || echo 0)
       if [ "\$k" -gt 0 ]; then echo \$((k - 1)) > "$FX/processing.\$p"; echo "npm error code E404" >&2; exit 1; fi
@@ -1126,6 +1132,23 @@ stoprow "the main upload refused"
 : > "$FX/ownerfailafter"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownerfailafter"
 [ $r = 1 ] && grep -q 'v0.1.0 is pushed' "$NF" && grep -q 'this step uploaded nothing' "$NF" && postpush_ok \
   && pass "C7's npm owner ls failing: 'is pushed', this step uploaded nothing" || fail "C7 owner ls: rc=$r $(head -2 "$NF" 2>/dev/null | tr '\n' '|')"
+# after the push, each of publish-npm's refusals that names what this step did not upload, reached:
+# npm_visible's "another file" (C8's wait on a platform package), the loop's copy and hash checks of a
+# package (its file gone, or changed, during C6), and its view's "another file" (C6, before an upload);
+# each next file keeps what is public, and no stop text says that nothing after it is published
+pprow() { # label first-line-text last-progress
+  [ $r = 1 ] && head -1 "$NF" | grep -q -F "$2" && [ "$(lastprog)" = "$3" ] && postpush_ok \
+    && pass "$1: '$2', stopped after '$3'; nothing said to be unpublished" || fail "$1: rc=$r '$(lastprog)' $(head -1 "$NF" 2>/dev/null | cut -c1-160)"
+}
+echo 3 > "$FX/viewother.sheepr-linux-arm64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/viewother.sheepr-linux-arm64"
+pprow "C8's wait finds another file" "sheepr-linux-arm64@0.1.0 is on npm with another file (sha512-another) than this build's" "done github"
+echo 1 > "$FX/viewother.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/viewother.sheepr-linux-x64"
+pprow "C6's view of a package finds another file" "sheepr-linux-x64@0.1.0 is already on npm with another file (sha512-another)" "done npm-platform sheepr-linux-arm64"
+printf 'rm -f "%s/v0.1.0/sheepr-linux-x64-0.1.0.tgz"\n' "$OUTR" > "$FX/onviewpush.sheepr-linux-arm64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onviewpush.sheepr-linux-arm64" "${FX:?}/onviewpush.sheepr-linux-arm64.done"
+pprow "C6, a package's file gone during the batch" "no sheepr-linux-x64-0.1.0.tgz in" "done npm-platform sheepr-linux-arm64"
+printf 'echo x >> "%s/v0.1.0/sheepr-linux-x64-0.1.0.tgz"\n' "$OUTR" > "$FX/onviewpush.sheepr-linux-arm64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onviewpush.sheepr-linux-arm64" "${FX:?}/onviewpush.sheepr-linux-arm64.done"
+pprow "C6, a package's file changed during the batch" "sheepr-linux-x64-0.1.0.tgz does not match its manifest hash" "done npm-platform sheepr-linux-arm64"
+rm -rf "${OUTR:?}"
 # N6: a C8 wait that times out (npm still scans a platform package): the review and block text
 printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush"
 [ "$(lastprog)" = "done github" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" \
