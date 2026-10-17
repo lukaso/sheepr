@@ -4,7 +4,7 @@
 # from release.conf, never from a caller. Each takes only a path.
 #   rt_meets PATH        the Developer ID release requirement holds for PATH
 #   rt_staple_ok PATH    the staple ticket validates
-#   rt_spctl_ok PATH     Gatekeeper accepts PATH for execution
+#   rt_spctl_ok PATH     Gatekeeper accepts PATH for execution (-vv: its source= line in its words)
 # Each answers as rt_judge does: 0 accepts; 1 the tool refused PATH (its own refusal); 2 no verdict.
 # rt_judge CODES CMD...: one tool's verdict. 1 only for the tool's own refusal: an exit in CODES (the
 # refusal exits measured on this Mac: codesign 1 and 3, spctl 3, stapler 65; notes/r13b/probe/apple)
@@ -25,4 +25,4 @@ rt_judge() {
 }
 rt_meets() { rt_judge "1 3" /usr/bin/codesign -v -R="$SR_RELEASE_REQUIREMENT" "$1"; }
 rt_staple_ok() { rt_judge 65 /usr/bin/env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS /usr/bin/xcrun stapler validate "$1"; }
-rt_spctl_ok() { rt_judge 3 /usr/sbin/spctl -a -t exec "$1"; }
+rt_spctl_ok() { rt_judge 3 /usr/sbin/spctl -a -vv -t exec "$1"; }

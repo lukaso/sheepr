@@ -92,9 +92,9 @@ g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=""; rt_judge "3 65" "$2/t" x
 # no verdict: class fix, and the cause says the tool gave none, with its words, never the fixed
 # verdict sentence. The fixture's realtools.sh points codesign, xcrun and spctl at stand-ins that accept
 cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.real0" || exit 3
-mkt() { # NAME RC WORDS [SIG]: a stand-in tool $FX/t_NAME: WORDS on stderr, then exit RC, or SIG to itself
-  printf '%s' "$3" > "$FX/w_$1"
-  printf '#!/bin/sh\n[ -s "%s" ] && { cat "%s" >&2; echo >&2; }\n%s\nexit %s\n' "$FX/w_$1" "$FX/w_$1" "$( [ -n "${4:-}" ] && echo "kill -$4 \$\$; /bin/sleep 1")" "$2" > "$FX/t_$1"; chmod +x "$FX/t_$1"
+mkt() { # NAME RC WORDS [SIG]: a stand-in tool $FX/t_NAME: its arguments to $FX/a_NAME, WORDS on stderr, then exit RC, or SIG to itself
+  printf '%s' "$3" > "$FX/w_$1"; rm -f "$FX/a_$1"
+  printf '#!/bin/sh\necho "$*" > "%s"\n[ -s "%s" ] && { cat "%s" >&2; echo >&2; }\n%s\nexit %s\n' "$FX/a_$1" "$FX/w_$1" "$FX/w_$1" "$( [ -n "${4:-}" ] && echo "kill -$4 \$\$; /bin/sleep 1")" "$2" > "$FX/t_$1"; chmod +x "$FX/t_$1"
 }
 rtset() { sed -e "s#/usr/bin/codesign#${1:-$FX/t_cs}#" -e "s#/usr/bin/xcrun#$FX/t_xc#" -e "s#/usr/sbin/spctl#$FX/t_sp#" "$FX/rt.real0" > "$REPO/scripts/lib/realtools.sh"; }
 AP=$FX/b/Sheepr.app
@@ -111,7 +111,11 @@ xcrun: error: unable to find utility \"stapler\", not a developer tool or in PAT
 Sheepr.app does not have a ticket stapled to it.||content|does not have a ticket stapled" \
           "cs|3|test-requirement: code failed to satisfy specified code requirement(s)||content|failed to satisfy" \
           "cs|1|$AP: code has no resources but signature indicates they must be present||content|no resources but signature" \
-          "sp|3|$AP: rejected||content|rejected"; do
+          "xc|68|Processing: $AP
+error is Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"
+The validate action failed! Error 68.||fix|stapler gave no verdict on the bundle (exit 68" \
+          "sp|1|$AP: invalid API object reference||fix|spctl gave no verdict on the bundle (exit 1" \
+          "cs|2|$AP: invalid or unsupported format for signature||fix|codesign gave no verdict on the bundle (exit 2"; do
   tl_=${t_%%|*} rest_=${t_#*|}; rc_=${rest_%%|*} rest_=${rest_#*|}; wd_=${rest_%%|*} rest_=${rest_#*|}; sg_=${rest_%%|*} rest_=${rest_#*|}; want_=${rest_%%|*} has_=${rest_#*|}
   mkt cs 0 ''; mkt xc 0 ''; mkt sp 0 ''; cpath_=""
   case $rc_ in
@@ -124,9 +128,29 @@ Sheepr.app does not have a ticket stapled to it.||content|does not have a ticket
     && pass "$( [ "$want_" = content ] && echo '  control: ')r13b: $tl_ $( [ -n "$sg_" ] && echo "stopped by $sg_" || echo "exit $rc_")$( [ -n "$wd_" ] && printf ' (%s)' "$(printf '%s' "$wd_" | head -1 | cut -c1-50)"): class $want_; the cause holds '$has_'" \
     || fail "r13b $tl_ $rc_ $sg_: rc=$rc '$(cls)' cause: $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
 done
+# REV 11a rule 11 (r14b P3-1): spctl runs with -vv (its source= line in its words). Its refusal (exit 3)
+# of a bundle that codesign's release requirement and stapler accepted (they are checked first) is
+# class fix, with spctl's words in the cause: a rebuild cannot change it. Control: codesign refuses
+# first (exit 3), and spctl would refuse too ("source=no usable signature"): content, codesign's
+# verdict, spctl not run (the order of the checks decides, not spctl's words)
+mkt cs 0 ''; mkt xc 0 ''; mkt sp 3 "$AP: rejected
+source=Notarized Developer ID"; rtset; vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = fix ] && grep -qF 'source=Notarized Developer ID' "$FX/o" && grep -q 'Gatekeeper rejects' "$FX/o" && grep -q '^-a -vv -t exec ' "$FX/a_sp" \
+  && pass "REV 11a rule 11: spctl -a -vv refusing (exit 3) a bundle codesign and stapler accepted: class fix, its words (source=) in the cause" \
+  || fail "rule 11: rc=$rc '$(cls)' spctl got '$(cat "$FX/a_sp" 2>/dev/null)'; $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
+mkt cs 3 'test-requirement: code failed to satisfy specified code requirement(s)'; mkt xc 0 ''; mkt sp 3 "$AP: rejected
+source=no usable signature"; rtset; vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = content ] && grep -q 'failed to satisfy' "$FX/o" && ! grep -q 'source=' "$FX/o" && [ ! -e "$FX/a_sp" ] \
+  && pass "  control: codesign refuses first (spctl would say 'source=no usable signature'): content, codesign's verdict, spctl not run" \
+  || fail "  rule 11 control: rc=$rc '$(cls)' $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
 cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
 n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple_ok|spctl_ok) "')
 n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -cE '\|\| rtfail \$\? (codesign|stapler|spctl) "')
 [ "$n_rt" -ge 6 ] && [ "$n_rt" = "$n_ok" ] && pass "every Apple tool call in release.sh ($n_rt lines) hands its status to rtfail" || fail "rt_* calls: $n_rt lines, $n_ok through rtfail"
+n_sp=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_spctl_ok "')
+n_spf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_spctl_ok "' | grep -cE '\|\| rtfail \$\? spctl "[^"]*" fix$')
+n_xf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok) "' | grep -cE '" fix$')
+[ "$n_sp" -ge 2 ] && [ "$n_sp" = "$n_spf" ] && [ "$n_xf" = 0 ] && pass "  REV 11a rule 11: each spctl call ($n_sp lines: verify, npm-check) makes its refusal class fix; no codesign or stapler call does" \
+  || fail "  spctl calls: $n_sp lines, $n_spf with class fix; $n_xf codesign or stapler calls with fix"
 finish
