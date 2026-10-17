@@ -1734,6 +1734,51 @@ rm -rf "${FX:?}/h2"; rm -f "${FX:?}/ship.npmrc"
 echo '//registry.npmjs.org/:_authToken=npm_old' > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
 [ $r = 1 ] && grep -qF "run $LGF. $A6R4" "$NF" && ! grep -q 'whatever its kind' "$NF" "$FX/o" \
   && pass "REV 11 rule 4: A6's session text names the logout step, then how a token and an _auth line end" || fail "A6 rule 4: $(head -1 "$NF" | cut -c1-300)"
+# r13b F6: every line ship_stoptext prints that runs a command runs as printed, pasted into sh and into
+# an interactive zsh -f (from stdin), for every class with no progress and every progress state; the
+# checkout's, the out dir's and F's paths hold a space
+SW=$FX/stw; rm -rf "${SW:?}"; mkdir -p "$SW/bin" "$SW/st ate/repo/scripts" "$SW/o ut/v0.1.0" "$SW/u rc" || exit 3
+printf '%s\n' 'index($0, n "() {") == 1 { f = 1; print; if ($0 ~ /[}][[:space:]]*(#.*)?$/) exit; next }' 'f { print }' 'f && /^[}]/ { exit }' > "$SW/fn.awk"
+for f_ in dq npm_file npmcmd ship_stoptext; do awk -v n="$f_" -f "$SW/fn.awk" "$SR_ROOT/scripts/release.sh"; done > "$SW/fns.sh"
+printf '#!/bin/sh\n{ printf "rs [%%s]" "$0"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$SW/st ate/repo/scripts/release.sh"
+printf '#!/bin/sh\n{ printf "git"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$SW/bin/git"
+printf '#!/bin/sh\n{ printf "npm"; for a; do printf " [%%s]" "$a"; done; printf " cwd=[%%s]\\n" "$PWD"; } >> "$REC"\n' > "$SW/bin/npm"
+chmod +x "$SW/bin/git" "$SW/bin/npm"
+printf '{\n  "tag": "v0.1.0",\n  "commit": "c0ffee"\n}\n' > "$SW/o ut/v0.1.0/MANIFEST.json"
+srun() { # how line want -> 0 when the line, run that way from /, gave exactly want
+  REC=$SW/rec; : > "$REC"; export REC
+  if [ "$1" = sh ]; then (cd / && PATH="$SW/bin:/usr/bin:/bin" /bin/sh -c "$2") > "$SW/o" 2>&1
+  else (cd / && printf '%s\n' "$2" | PATH="$SW/bin:/usr/bin:/bin" HOME="$SW" /bin/zsh -f -i) > "$SW/o" 2>&1; fi
+  [ "$(cat "$REC")" = "$3" ]
+}
+nl_=0 bad_=""
+for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|content|" "|diverged|" \
+          "push refused: main unmoved|fix|" "push refused: main holds it|fix|" "push refused|diverged|" "start push|fix|" "done push|fix|" \
+          "start npm-platform sheepr-linux-arm64|fix|" "done npm-platform sheepr-linux-arm64|fix|" "start github|fix|" "exit5|fix|" "done github|fix|" \
+          "start npm-main|fix|" "done npm-main|fix|"; do
+  la_=${s_%%|*} r_=${s_#*|}; cl_=${r_%%|*} mf_=${r_#*|}
+  { echo "run 1 2026-10-17T00:00:00Z"; [ -z "$la_" ] || echo "$la_"; } > "$SW/prog"; echo "$cl_" > "$SW/cls"; echo "a cause" > "$SW/cause"
+  [ -n "$mf_" ] && cm_=c0ffee || cm_=other
+  sh -c '. "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes
+    SR_NPM_PKGS="sheepr-linux-arm64 sheepr" SR_NPM_USER=lukasco commit=$2 NPMC= NPMREG=https://registry.npmjs.org/ NPM_CONFIG_USERCONFIG="$1/u rc/npmrc"; export NPM_CONFIG_USERCONFIG
+    ship_stoptext' sh "$SW" "$cm_" > "$SW/text" 2> "$SW/text.err" || bad_="$bad_ [${la_:-$cl_}: ship_stoptext failed: $(head -c 120 "$SW/text.err")]"
+  while IFS= read -r l_; do
+    case $l_ in
+      *[!\ ]*) ;; *) continue ;;
+    esac
+    t_=${l_#"${l_%%[! ]*}"}   # the line without its leading spaces
+    case $t_ in
+      "sh '"*) e_=$(printf '%s\n' "$t_" | sed -n "s|^sh '[^']*' \([a-z-]*\) .*|\1|p"); w_="rs [$SW/st ate/repo/scripts/release.sh] [$e_] [--out] [$SW/o ut] [v0.1.0]" ;;
+      "git "*) w_="git [-C] [$SW/st ate/repo] [ls-remote] [origin] [refs/tags/v0.1.0]" ;;
+      "cd / && npm "*) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$SW/u rc/npmrc] cwd=[/]" ;;
+      *) continue ;;
+    esac
+    nl_=$((nl_ + 1))
+    for how_ in sh zsh; do srun $how_ "$l_" "$w_" || bad_="$bad_ [${la_:-$cl_} $how_: '$(printf '%s' "$t_" | cut -c1-90)': $(tr '\n' '|' < "$REC" | cut -c1-80) $(head -c 80 "$SW/o" | tr '\n' ' ')]"; done
+  done < "$SW/text"
+done
+[ -z "$bad_" ] && [ "$nl_" -ge 29 ] && pass "r13b F6: every runnable line of ship_stoptext ($nl_ lines over 20 classes and progress states) runs as printed, from sh and from an interactive zsh" \
+  || fail "stoptext lines ($nl_):$(printf '%s' "$bad_" | cut -c1-500)"
 # r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
 # child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
 # with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a

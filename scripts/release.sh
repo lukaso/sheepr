@@ -1652,7 +1652,9 @@ ship_stoptext() {
           if [ -f "$out/$tag/MANIFEST.json" ] && grep -q "^ *\"tag\": \"$tag\"" "$out/$tag/MANIFEST.json" && grep -q "^ *\"commit\": \"${commit:-none}\"" "$out/$tag/MANIFEST.json"; then
             echo "Never rebuild it: continue from $out/$tag with the separate steps (PHASE3.md §5), in order:"
             echo "$run npm-check $o"
-            echo "$run publish $o      (publish-cask instead, when the GitHub release is already public)"
+            echo "$run publish $o"
+            echo "When the GitHub release is already public, run this instead of the line above:"
+            echo "$run publish-cask $o"
             echo "$login"; echo "$run publish-npm $o"
           else
             echo "Continue with the separate steps of PHASE3.md §5: build --sign, npm-check, the push, publish, publish-npm."
