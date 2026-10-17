@@ -1300,7 +1300,7 @@ tokcount() { a_=$(npmauth); echo "${a_%% *}"; }   # N of npmauth, or unreadable
 # npmauth counted (ship's count reads the userconfig by a pattern, not by npm's ini reader, and the two
 # disagree on some spellings, so its "one root line" can be two); no text says "revoke" alone. A
 # session from npm login (ship's own is one) is not on npmjs.com's Access Tokens list
-npm_tokens="Deleting or editing a login line ends no token: a session from npm login ends by itself 2 hours after that login, and npm logout ends it sooner while npm still sends its line; an access token ends when you revoke it under Access Tokens on npmjs.com; an _auth line holds the account's user name and password"
+npm_tokens="Deleting or editing a login line ends no token: a session from npm login ends by itself 2 hours after that login, and npm logout asks npm's server to end it sooner, while npm still sends its line; an access token ends when you revoke it under Access Tokens on npmjs.com; an _auth line holds the account's user name and password"
 readonly npm_tokens
 ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session ship did not make:
   # the token count 0 and whoami ENEEDAUTH
@@ -1477,7 +1477,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
       lo="npm logout answered E401: npm no longer accepts ship's session, and its line stays in npm's userconfig (login token lines left: $n). $npm_tokens. Then run npm config delete //registry.npmjs.org/:_authToken"
       [ "${na% *}" = "1 yes" ] || lo="npm logout answered E401: npm no longer accepts ship's session, and login lines stay in npm's userconfig (login token lines left: $n). $npm_tokens. Then remove those lines"
     else
-      lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can end ship's session sooner only while that line is there. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login)."
+      lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can ask npm's server to end ship's session sooner only while that line is there. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login)."
     fi
   fi
   # the stop text, with the logout's remedy second when there is one (to the file again, then stdout);

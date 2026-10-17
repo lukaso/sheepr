@@ -746,6 +746,10 @@ nt=$(printf '%s\n' "$tx_" | grep -c .); nb=$(printf '%s\n' "$tx_" | grep -cvE '\
 nf_=$(grep -v '^ *#' "$SR_ROOT/scripts/lib/notify.sh" | grep -cE "$tre_")
 nr_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep 'revoke' | grep -cv '^npm_tokens=')
 nn=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -c 'npm does not use')
+# (and none says that npm logout ends a session: whether the registry ends it on npm logout's DELETE
+# is not measured, REV 9; npm logout asks npm's server to end it)
+ne_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -ciE 'npm logout (ends|can end|will end)')
+[ "$ne_" = 0 ] || fail "a text says npm logout ends a session ($ne_ lines)"
 [ "$nb" = 0 ] && [ "$nf_" = 0 ] && [ "$nr_" = 0 ] && [ "$nn" = 0 ] && [ "$nt" -ge 8 ] \
   && pass "every npm token text that deletes or removes a line names how each token ends ($nt texts); notify.sh names no removal; no bare revoke; none says npm does not use a line" \
   || fail "token texts: $nt, $nb without npm_tokens; notify.sh $nf_; revoke outside npm_tokens $nr_; 'npm does not use' $nn"
@@ -1209,7 +1213,7 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 # again until it ends with no error or answers E401, the line left as it is, and the clock time ship's
 # session ends by itself (REV 9 rule 2)
 hm() { sed -E 's/[0-9]{2}:[0-9]{2} on [0-9]{4}-[0-9]{2}-[0-9]{2}/HH:MM on DATE/g'; }   # the session's clock time, normalized
-LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/ again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can end ship's session sooner only while that line is there. ship's session ends by itself at HH:MM on DATE (2 hours after its login)."
+LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/ again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can ask npm's server to end ship's session sooner only while that line is there. ship's session ends by itself at HH:MM on DATE (2 hours after its login)."
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
 [ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hm < "$FX/o" | grep -qxF "release: $LOGOUT_TEXT" && [ ! -e "$NF" ] && gone \
   && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, the line left, the session's own end" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
@@ -1289,11 +1293,13 @@ grep -q refused "$FX/nerr" && pass "control: an upper-case phase is refused by n
 echo ETIMEDOUT > "$FX/logoutcode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutcode" "${FX:?}/npmrc"
 [ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "npm logout did not end ship's npm login" "$FX/o" \
   && ! grep -q -e 'config delete' -e 'Access Tokens' -e 'remove ' "$FX/o" && grep -qE "ends by itself at [0-9]{2}:[0-9]{2} on [0-9]{4}-[0-9]{2}-[0-9]{2}" "$FX/o" \
+  && ! grep -qiE 'npm logout (ends|can end)' "$FX/o" && grep -q "npm logout can ask npm's server to end ship's session sooner" "$FX/o" \
   && pass "ship's logout failing with ETIMEDOUT: npm logout again is the only remedy; the session's own end named as a clock time; no delete, no Access Tokens" \
   || fail "logout ETIMEDOUT: rc=$r '$(nots)' $(grep 'npm logout did not end' "$FX/o" | cut -c1-240)"
 echo E401 > "$FX/logoutcode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutcode" "${FX:?}/npmrc"
 grep -q "npm logout answered E401" "$FX/o" && rvfirst "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
-  && pass "control: ship's logout answering E401: how each token ends, then npm config delete" || fail "logout E401: rc=$r $(grep -e 'npm logout' "$FX/o" | tail -1 | cut -c1-240)"
+  && ! grep -qiE 'npm logout (ends|can end)' "$FX/o" && grep -q "npm logout asks npm's server to end it" "$FX/o" \
+  && pass "control: ship's logout answering E401: how each token ends (npm logout asks the server to end a session), then npm config delete" || fail "logout E401: rc=$r $(grep -e 'npm logout' "$FX/o" | tail -1 | cut -c1-240)"
 # a login line left after the logout that is not the root one (npm logout clears only the root line;
 # here a path-specific one): it counts, so no done, exit 1; the logout did not end with E401, so the
 # text names npm logout again and the session's own end, no delete
