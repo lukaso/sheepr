@@ -1149,8 +1149,9 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
     if [ $r = 0 ] && [ -n "$(printf '%s' "$vout" | tr -d ' "\n\r')" ]; then ship_public "npm has $p@$xyz"
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$st/err" | grep -q 'E404'; }; then ship_unreadable "npm view $p@$xyz: exit $r, $(head -c 200 "$st/err" | tr '\n' ' ')"; fi
     # a name npm does not know answers E404 to every view (owner ls too, A6): not a read failure
+    # (npm's --json says its E404 in the error object on stdout, and may say nothing on stderr)
     tm=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" time 2> "$st/err") || {
-      grep -q E404 "$st/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as ${SR_NPM_USER:-the owner}); nothing is public"; }
+      printf '%s\n' "$tm" | cat - "$st/err" | grep -q E404 && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as ${SR_NPM_USER:-the owner}); this run made nothing public"; }
       ship_unreadable "npm view $p time: $(head -c 200 "$st/err" | tr '\n' ' ')"; }
     if printf '%s\n' "$tm" | grep -q "\"$xyz\":"; then stopclass lost; die "$p@$xyz was published once and is gone: $xyz can never be published on npm again; release a new version"; fi
     lt=$(tool "$NPMC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p" dist-tags.latest 2> "$st/err") || ship_unreadable "npm view $p dist-tags.latest: $(head -c 200 "$st/err" | tr '\n' ' ')"

@@ -162,6 +162,7 @@ TOK='//registry.npmjs.org/:_authToken='
 case \$1 in
   view) p=""; for a; do case \$a in sheepr*) p=\${a%@*} ;; esac; done
     [ -e "$FX/owner404.\$p" ] && { echo "npm error code E404" >&2; exit 1; }   # a name not on npm: every view is E404
+    [ -e "$FX/owner404json.\$p" ] && { printf '{\n  "error": {\n    "code": "E404",\n    "summary": "Not Found"\n  }\n}\n'; exit 1; }   # the same, said only in --json's stdout
     [ -e "$FX/viewfail.\$p" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     case \$last in
       time) cat "$FX/time.\$p" 2>/dev/null || printf '{\n  "created": "2026-10-01T00:00:00.000Z",\n  "0.0.9": "2026-10-02T00:00:00.000Z"\n}\n'; exit 0 ;;
@@ -1005,9 +1006,12 @@ rm -rf "${OUTR:?}"; : > "$FX/putfail"; ship; r=$?; rm -f "$FX/putfail"; hint_row
 printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"
 hint_row "a C8 wait timed out" "held the version for review or blocked it"
 grep -q 'A blocked version needs a new version number' "$FX/o" && pass "  npm's review and blocking text kept (N5)" || fail "  the review text is gone"
-rm -rf "${OUTR:?}"; : > "$FX/owner404.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404.sheepr-linux-x64"; hint_row "a name not on npm (A4)" "reserve the name first (publish a 0.0.0 placeholder as lukasco)"
+rm -rf "${OUTR:?}"; : > "$FX/owner404.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404.sheepr-linux-x64"; hint_row "a name not on npm (A4)" "reserve the name first (publish a 0.0.0 placeholder as lukasco); this run made nothing public"
 grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -qx 'Run ship again.' "$NF" && ! grep -q '^build ' "$FX/calls" \
   && pass "  refused at A4, before the build; the fix named first, never a bare 'run ship again'" || fail "  a name not on npm: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+# npm's --json answers its E404 on stdout (the error object), and may say nothing on stderr: the
+# time view reads both, as the version view does
+rm -rf "${OUTR:?}"; : > "$FX/owner404json.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404json.sheepr-linux-x64"; hint_row "a name not on npm, its E404 only in --json's stdout (A4)" "reserve the name first (publish a 0.0.0 placeholder as lukasco); this run made nothing public"
 printf 'cd "%s/v0.1.0" && echo x > NPM-CHECKED\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's stamp check" "npm-check has not passed on"
 printf 'echo x >> "%s/v0.1.0/sheepr-linux-x86_64"\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's file check" "a file npm-check checked has changed since"
 printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed (not logged in to npm?); nothing was published"
