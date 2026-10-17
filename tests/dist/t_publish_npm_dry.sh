@@ -302,6 +302,17 @@ eg=$(cd "$FX/gone" && rmdir "$FX/gone" && env -i PATH="$PATH" HOME="$FX/ghome" N
 eh=$(cd "$FX/here" && env -i PATH="$PATH" HOME="$FX/ghome" NPM_CONFIG_USERCONFIG="$FX/u1/npmrc" NODE_EXTRA_CA_CERTS=rel/ca.pem sh "$REPO/scripts/release.sh" __npm-env v0.1.0 2>&1); r=$?
 [ $r = 0 ] && printf '%s\n' "$eh" | grep -qx "NODE_EXTRA_CA_CERTS=$(cd "$FX/here" && pwd -P)/rel/ca.pem" \
   && pass "control: a relative NODE_EXTRA_CA_CERTS in a directory that is there: made absolute from it" || fail "control, relative CA: rc=$r $(printf '%s\n' "$eh" | grep -e NODE_EXTRA -e '^release:' | head -2 | tr '\n' ' ')"
+# tool, the one door to every tool class, refuses a class it does not know, an empty one too (an
+# entry that set none): it names the class, runs nothing and answers non-zero, so the step's own
+# failure path stops (__tool-class runs tool with SR_TOOL_CLASS's class). Control: a known class runs
+tc() { (cd "$REPO" && env -i PATH="$PATH" HOME="$FX/ghome" "$@" sh scripts/release.sh __tool-class v0.1.0) 2>&1; }
+for cl in '' bogus; do
+  to=$(tc SR_TOOL_CLASS="$cl"); r=$?
+  [ $r != 0 ] && printf '%s\n' "$to" | grep -qF "no tool class '$cl'" && ! printf '%s\n' "$to" | grep -qx ran \
+    && pass "tool with the class '$cl': refused, named, nothing run (exit $r)" || fail "tool class '$cl': rc=$r $(printf '%s' "$to" | head -2 | tr '\n' ' ')"
+done
+to=$(tc SR_TOOL_CLASS=base); r=$?
+[ $r = 0 ] && printf '%s\n' "$to" | grep -qx ran && pass "control: tool with a known class (base) runs it" || fail "control, tool base: rc=$r $(printf '%s' "$to" | head -2 | tr '\n' ' ')"
 # every npm setting that changes what ship reads from npm (an answer, an exit status, npm's error
 # code, what reaches the registry) is pinned to npm's default, whatever the operator's npmrc says (an
 # environment setting wins over the userconfig): the list is the census of npm's own config

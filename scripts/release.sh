@@ -126,7 +126,7 @@ done
 [ -n "$out" ] || usage
 case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
 case $sub in
-  check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env) ;;
+  check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class) ;;
   *) usage ;;
 esac
 [ $sign = no ] || [ "$sub" = build ] || usage
@@ -229,6 +229,9 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
     # the dry publish: a fresh temp HOME and nothing else of the caller's, so even a real gh reached
     # through a stand-in would have no login
     dry) /usr/bin/env -i HOME="$DRYHOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" "$@" ;;
+    # any other class, an empty one too (an entry that set none): nothing runs, and the step's own
+    # failure path stops (a class that ran nothing and answered 0 let a step look done)
+    *) echo "release: no tool class '$cls' for ${1:-a command}: nothing was run" >&2; return 2 ;;
   esac
 }
 npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may need, never the git/gh
@@ -1546,6 +1549,7 @@ case $sub in
   ship) ship ;;
   __ship-dry) ship_dry ;;
   __npm-env) tool npm /usr/bin/env ;;
+  __tool-class) tool "${SR_TOOL_CLASS-}" /bin/echo ran ;;   # the cells: tool with SR_TOOL_CLASS's class
   __curl-env) real_tools; tool "$CURLC" /usr/bin/env ;;
   npm-check) npm_check "$out/$tag" ;;
 esac
