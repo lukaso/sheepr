@@ -8,7 +8,8 @@
 # thing put into it, and the phase of failed-PHASE and logout-failed-PHASE (a letter, then letters,
 # digits and -, at most 32 in all). Never a tool's output. The keys: password, password-again,
 # npm-login, npm-approve, npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE,
-# logout-failed-PHASE (a stop and a failed npm logout: one notification names both). DIR, the out dir
+# logout-failed-PHASE (a stop, and ship's npm login line still there after its logout, or not known:
+# one notification names both; no npm command: the next file holds the steps). DIR, the out dir
 # (absolute, no control character), makes failed-PHASE and logout-failed-PHASE name the next file by
 # its full path, DIR/TAG.ship-next.txt (release.sh gives it): a notification read later, in another
 # window, must name a file that opens from there. Any other DIR is not used: the text names the file
@@ -57,13 +58,13 @@ case $key in
   npm-approve-next) text="$tag: npm may ask again: approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
-  logout-failed) text="$tag: npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal" ;;
+  logout-failed) text="$tag: ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run is in $nf" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
     text="$tag stopped at $phase. What to run next is in $nf" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and npm logout failed. Run cd / && npm logout --registry=https://registry.npmjs.org/ in the terminal; what to run next is in $nf" ;;
+    text="$tag stopped at $phase, and ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run next is in $nf" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 

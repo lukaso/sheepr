@@ -133,7 +133,7 @@ pub v0.1.0; r=$?
   && pass "the order: each package asked for, then published; platform packages first, the main one last" || fail "the order: $(order)"
 # each publish: the registry pinned, no --tag (a final), and a private copy of <out>/v0.1.0's file
 # whose bytes, when npm got it, were the manifest's
-REG="--registry=https://registry.npmjs.org/"
+REG="--registry=https://registry.npmjs.org/ --scope="   # the registry pinned, and no scope (REV 11 rule 2: npm's scope routes view, owner and publish)
 bad=""; for p in $PK; do
   l=$(grep "^npm publish .*/$p-0.1.0.tgz\$" "$FX/calls"); f=${l##* }
   case $l in "npm publish --access public $REG /private/tmp/sr-npmpub."*"/$p-0.1.0.tgz") ;; *) bad="$bad [$l]" ;; esac
@@ -156,11 +156,13 @@ case "$(befores)" in "sheepr-linux-arm64<npm view"*">,sheepr-linux-x64<notify np
 pd=$(awk 'NR == 1 {print $3}' "$FX/pubsha"); pd=${pd%/*}
 case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private copy dir is gone" || fail "$pd is left" ;; *) fail "no private copy dir recorded: '$pd'" ;; esac
 # npm's environment class (npm_env, the real run's too): only the named variables; a proxy reaches
-# it (the control), a token or an npmrc of the caller's never does in the dry run
+# it (the control), a token never does in the dry run; the userconfig the entry got reaches npm as
+# NPM_CONFIG_USERCONFIG, in the dry class as in the real one (REV 11: npm loads that file, and ship
+# reads and prints it; a dry run's npm is a stand-in by path)
 bad=""; for f in "$FX"/env.npm.*; do for k in $(sed 's/=.*//' "$f"); do
   # npm_env's named set (a caller's proxy and CA settings pass by design; npm's colour and log level
   # are npm_env's own) and what sh adds
-  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS) ;;
+  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS|NPM_CONFIG_USERCONFIG) ;;
     npm_config_color|npm_config_dry_run|npm_config_heading|npm_config_json|npm_config_loglevel|npm_config_offline|npm_config_prefer_offline|npm_config_provenance|npm_config_tag|npm_config_update_notifier|npm_config_usage|npm_config_workspaces) ;;   # npm_env's pins (the e3 row)
     *) bad="$bad $k" ;; esac
 done; done
@@ -466,7 +468,7 @@ grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass 
 nb=$(sed -n '/^notify() {/,/^}/p' "$SR_ROOT/scripts/release.sh")
 # (its arguments: the key and the tag; a stop's key also the out dir, so its text names the next file)
 printf '%s\n' "$nb" | grep -qF 'then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$@"' && printf '%s\n' "$nb" | grep -qF 'else tool base "$NOTIFY" "$@"; fi' \
-  && printf '%s\n' "$nb" | grep -qF 'case $1 in failed-*|logout-failed-*) set -- "$1" "$tag" "$out" ;; *) set -- "$1" "$tag" ;; esac' \
+  && printf '%s\n' "$nb" | grep -qF 'case $1 in failed-*|logout-failed*) set -- "$1" "$tag" "$out" ;; *) set -- "$1" "$tag" ;; esac' \
   && pass "notify(): a dry entry's notifier with SR_NOTIFY_OSASCRIPT set, a real entry's in the base class; a stop's key gets the out dir" || fail "notify()'s body: $(printf '%s' "$nb" | tr '\n' ' ')"
 
 # __publish-npm-dry refuses a stand-in outside the fixtures, for the npm and for the notifier, each
