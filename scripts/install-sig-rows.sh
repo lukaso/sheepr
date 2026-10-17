@@ -11,6 +11,11 @@
 # lines, which a run that went on past the signal would write). INT and QUIT start at their defaults:
 # perl sets them when there is one; with no perl the rows need them not ignored on entry (read from
 # /proc on Linux), and say so when they are.
+# And for each shell, stdout closed: install.sh's stdout is a pipe whose reader has exited, PIPE at
+# its default, so its first `say` gets SIGPIPE. The run starts in a process group of its own, KILLed
+# at 10 s (a KILL is a FAIL: zsh loops on a write error when PIPE is trapped but not held off in the
+# cleanup), and must end with 1 and an empty TMPDIR. perl makes the pipe and the group where there
+# is one; else (busybox) a FIFO whose reader has gone, and setsid.
 # Prints ok/FAIL lines; exit 0 only when every row passed.
 set -u
 [ $# -ge 3 ] || { echo "usage: install-sig-rows.sh WORKDIR INSTALL_SH SHELL..." >&2; exit 2; }
@@ -46,8 +51,47 @@ run() { # shell: install.sh, its output in $W/o and $W/e
     env -i PATH="$W/sb:/usr/bin:/bin" HOME="$W/h" TMPDIR="$W/itmp" SHEEPR_INSTALL_BASE=https://sheepr.invalid "$1" "$I" > "$W/o" 2> "$W/e"
   fi
 }
+# closed SHELL: install.sh with its stdout closed (the reader gone) -> $res: its status, or KILLED (at
+# 10 s), and " STRAY" when a process of its group outlived it (then KILLed too)
+closed() {
+  if [ -x /usr/bin/perl ]; then
+    res=$(/usr/bin/perl -e '
+      my $p = fork(); defined $p or die "fork";
+      if ($p == 0) { setpgrp(0, 0); $SIG{$_} = "DEFAULT" for qw(PIPE INT QUIT);
+        pipe(my $r, my $w) or die; close($r); open(STDOUT, ">&", $w) or die; close($w); exec @ARGV or die }
+      my $res = "KILLED";
+      for (1..100) { if (waitpid($p, 1) == $p) { my $s = $?; $res = ($s & 127) ? 128 + ($s & 127) : $s >> 8; last } select(undef, undef, undef, 0.1) }
+      if ($res eq "KILLED") { kill("KILL", -$p); waitpid($p, 0) }
+      elsif (kill(0, -$p)) { kill("KILL", -$p); $res .= " STRAY" }
+      print $res' -- env -i PATH="$W/sb:/usr/bin:/bin" HOME="$W/h" TMPDIR="$W/itmp" SHEEPR_INSTALL_BASE=https://sheepr.invalid "$1" "$I" 2> "$W/e")
+    return
+  fi
+  # no perl (busybox): PIPE must be at its default in what this shell runs (signal 13: bit 12)
+  m=$(sed -n 's/^SigIgn:[[:space:]]*//p' /proc/self/status 2>/dev/null); d=$(printf %s "$m" | tail -c 4 | head -c 1)
+  case $d in [0-9a-fA-F]) [ $((0x$d & 1)) = 0 ] || { res="not run (PIPE ignored on entry, no perl)"; return; } ;; *) res="not run (cannot read SigIgn)"; return ;; esac
+  command -v setsid > /dev/null 2>&1 || { res="not run (no perl, no setsid)"; return; }
+  rm -f "$W/fifo"; mkfifo "$W/fifo" || { res="not run (no fifo)"; return; }
+  sh -c 'exec < "$1"' sh "$W/fifo" & rp=$!
+  # the writer opens the FIFO (the reader then exits), waits until the reader is gone, then runs
+  setsid sh -c 'while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; shift; exec "$@"' sh "$rp" \
+    env -i PATH="$W/sb:/usr/bin:/bin" HOME="$W/h" TMPDIR="$W/itmp" SHEEPR_INSTALL_BASE=https://sheepr.invalid "$1" "$I" > "$W/fifo" 2> "$W/e" & wp=$!
+  wait "$rp"
+  i=0; while [ $i -lt 100 ]; do
+    st=$(sed 's/.*) //' "/proc/$wp/stat" 2>/dev/null | cut -c1); { [ -z "$st" ] || [ "$st" = Z ]; } && break
+    sleep 0.1; i=$((i + 1))
+  done
+  if [ $i -ge 100 ]; then kill -KILL "-$wp" 2>/dev/null; wait "$wp" 2>/dev/null; res=KILLED
+  else wait "$wp"; res=$?; ! kill -0 "-$wp" 2>/dev/null || { kill -KILL "-$wp" 2>/dev/null; res="$res STRAY"; }; fi
+}
 for shl in "$@"; do
   [ -x "$shl" ] || { bad "$shl: no such shell"; continue; }
+  rm -rf "${W:?}/itmp"; mkdir -p "$W/itmp" || exit 3; : > "$W/sent"   # (the stand-in curl: no signal)
+  closed "$shl"; left=$(ls -A "$W/itmp" 2>/dev/null); e1=$(head -c 120 "$W/e" | tr '\n' '|'); : > "$W/e"   # (no write-error flood kept)
+  if [ "$res" = 1 ] && [ -z "$left" ]; then
+    ok "$shl, install.sh with its stdout closed (PIPE at its default): exits 1, its temp dir is gone, within 10 s"
+  else
+    bad "$shl, stdout closed: rc=$res left: $(echo $left) stderr: $e1"
+  fi
   for sg in INT QUIT USR1; do
     case $sg in INT|QUIT) [ $can = yes ] || { bad "$shl, a $sg: not run ($why)"; continue; } ;; esac
     rm -rf "${W:?}/itmp"; rm -f "$W/sent" "$W/curl.done"; mkdir -p "$W/itmp" || exit 3; echo $sg > "$W/sig"

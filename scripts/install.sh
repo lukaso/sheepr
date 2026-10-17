@@ -72,15 +72,17 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/sheepr-install.XXXXXX") || die "no temp dir"
 stage="" old="" app=""
 # on any exit or signal: if the old app was moved aside and no app is in place, put it back first
 cleanup() {
-  trap '' $SIGS   # a second signal must not cut the cleanup short (the list: written in at render)
+  trap '' $SIGS PIPE   # a second signal must not cut the cleanup short (the list: written in at render)
   if [ -n "$old" ] && [ -e "$old" ] && [ -n "$app" ] && [ ! -e "$app" ]; then
     mv "$old" "$app" 2>/dev/null || { echo "sheepr install: the old app is at $old" >&2; stage=""; }
   fi
   rm -rf "$tmp"; [ -n "$stage" ] && rm -rf "$stage"
 }
 trap cleanup EXIT
-# the signals: scripts/lib/sigs.sh's list, which lib/render-install.sh writes in for the variable
-trap 'cleanup; exit 1' $SIGS
+# the signals: scripts/lib/sigs.sh's list, which lib/render-install.sh writes in for the variable,
+# and PIPE: install.sh writes to a stdout its reader may close (`curl ... | sh | head -1`), and dash,
+# busybox ash and zsh run no EXIT trap for a signal left at its default (measured)
+trap 'cleanup; exit 1' $SIGS PIPE
 
 say "downloading $art ($SHEEPR_VERSION)"
 fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die "cannot download SHA256SUMS from $base"

@@ -15,7 +15,8 @@
 #     arch with no build fail;
 #   - install.sh's signal cleanup (scripts/install-sig-rows.sh) under this image's /bin/sh (busybox
 #     ash in Alpine, dash in slim) and its bash if it has one: an INT, a QUIT and a USR1 during the
-#     download: install.sh waits for curl, exits 1, its temp dir is gone, nothing on stderr.
+#     download: install.sh waits for curl, exits 1, its temp dir is gone, nothing on stderr; and its
+#     stdout closed (PIPE at its default): it exits 1 within 10 s, its temp dir gone.
 set -u
 fails=0
 ok() { echo "ok: $*"; }

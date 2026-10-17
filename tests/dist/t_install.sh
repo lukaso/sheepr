@@ -24,8 +24,11 @@ cmp -s "$FX/door.embedded" "$SR_ROOT/scripts/lib/exec-guard.sh" \
 # is scripts/lib/sigs.sh's
 list=$(sed -n 's/^SIGS="\([A-Z0-9 ]*\)"$/\1/p' "$SR_ROOT/scripts/lib/sigs.sh")
 sed "/<<'SR_DOOR_EOF'/,/^SR_DOOR_EOF\$/d" "$I" > "$FX/own"
-[ -n "$list" ] && [ "$(grep -c SIGS "$FX/own")" = 0 ] && [ "$(grep -c -x -F "trap 'cleanup; exit 1' $list" "$FX/own")" = 1 ] \
-  && pass "install.sh's trap line carries scripts/lib/sigs.sh's list, written in at render; no SIGS left" \
+# PIPE too, on both lines (install.sh's own: sigs.sh leaves it out): a closed stdout must end the run
+# through the cleanup, and the cleanup holds a second PIPE off (zsh loops on its write error otherwise)
+[ -n "$list" ] && [ "$(grep -c SIGS "$FX/own")" = 0 ] && [ "$(grep -c -x -F "trap 'cleanup; exit 1' $list PIPE" "$FX/own")" = 1 ] \
+  && [ "$(sed -n '/^cleanup() {$/{n;p;}' "$FX/own" | sed 's/[[:space:]]*#.*//')" = "  trap '' $list PIPE" ] \
+  && pass "install.sh's trap line and its cleanup's first line carry scripts/lib/sigs.sh's list and PIPE, written in at render; no SIGS left" \
   || fail "install.sh's own lines: $(grep -n SIGS "$FX/own" | head -3 | tr '\n' '|') trap: $(grep -n "^trap '" "$FX/own" | tr '\n' '|')"
 
 # the server
@@ -101,5 +104,5 @@ sh "$SR_ROOT/scripts/install-sig-rows.sh" "$FX/isig" "$I" /bin/zsh /bin/sh /bin/
 while IFS= read -r l; do
   case $l in "ok: "*) pass "${l#ok: }" ;; "FAIL: "*) fail "${l#FAIL: }" ;; *) fail "install-sig-rows: $l" ;; esac
 done < "$FX/isig.out"
-[ "$(grep -c '^ok: ' "$FX/isig.out")" = 15 ] && pass "15 signal rows ran (5 shells, 3 signals)" || fail "signal rows: $(grep -c '^ok: ' "$FX/isig.out") of 15 passed"
+[ "$(grep -c '^ok: ' "$FX/isig.out")" = 20 ] && pass "20 signal rows ran (5 shells: stdout closed, and 3 signals)" || fail "signal rows: $(grep -c '^ok: ' "$FX/isig.out") of 20 passed"
 finish

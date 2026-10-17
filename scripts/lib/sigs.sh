@@ -9,5 +9,6 @@
 # defaults of QUIT and PROF end the shell without running its EXIT trap at all; the defaults of
 # HUP, TERM, ALRM, USR1, USR2, XCPU, XFSZ and VTALRM run it at once, without waiting for the running
 # tool; INT's default, sent to the shell alone, lets it go on. Trapped, each waits for the
-# foreground tool. PIPE is not here: ship's parent adds it.
+# foreground tool. PIPE is not here: ship's parent and install.sh add it on their own trap lines
+# (a script that writes to a stdout its reader may close).
 SIGS="HUP INT TERM QUIT ALRM USR1 USR2 XCPU XFSZ VTALRM PROF"
