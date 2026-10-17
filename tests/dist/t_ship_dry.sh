@@ -161,6 +161,13 @@ last=""; for a; do last=\$a; done
 TOK='//registry.npmjs.org/:_authToken='
 # (\$FX/npmall: every npm command that reaches the registry writes this text on stderr and fails)
 case \$1 in view|owner|whoami|login|publish) [ -e "$FX/npmall" ] && { cat "$FX/npmall" >&2; exit 1; } ;; esac
+# npm's project config, as npm finds it: the .npmrc in the first dir up from the cwd that holds a
+# package.json or a node_modules; a token there wins over the userconfig's (here: an expired one)
+echo "\$PWD" >> "$FX/npmcwds"
+pd_=\$PWD; while [ ! -e "\$pd_/package.json" ] && [ ! -d "\$pd_/node_modules" ]; do [ "\$pd_" = / ] && { pd_=""; break; }; pd_=\$(dirname "\$pd_"); done
+if [ -n "\$pd_" ] && grep -q '_authToken=' "\$pd_/.npmrc" 2>/dev/null; then
+  case \$1 in view|owner|whoami) printf 'npm error code E401\nnpm error 401 Unauthorized - the project config token (stand-in)\n' >&2; exit 1 ;; esac
+fi
 case \$1 in
   view) p=""; for a; do case \$a in sheepr*) p=\${a%@*} ;; esac; done
     [ -e "$FX/owner404.\$p" ] && { echo "npm error code E404" >&2; exit 1; }   # a name not on npm: every view is E404
@@ -649,6 +656,16 @@ chmod 000 "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; chmod 644 "$FX/npmrc"; rm
 pre_row "npm's userconfig unreadable (the count unreadable), whoami failing" "cannot count npm's login tokens"
 ! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && pass "  no npm config delete" || fail "  unreadable count: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
 : > "$FX/whoamibad"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad"; pre_row "a whoami failure that is not ENEEDAUTH" "cannot tell whether an npm session"
+# npm's project config (the .npmrc beside the nearest package.json above npm's cwd) wins over the
+# userconfig; every npm call ship makes runs from /, where npm finds none. A project .npmrc above the
+# checkout with an expired token, and a live counted line in the userconfig: npm never reads the
+# project file (the live session is found), so no stop names npm config delete of the live line
+printf '{}\n' > "$FX/package.json"; echo "//registry.npmjs.org/:_authToken=npm_expired" > "$FX/.npmrc"
+echo "//registry.npmjs.org/:_authToken=npm_live" > "$FX/npmrc"; rm -f "${FX:?}/npmcwds"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/package.json" "${FX:?}/.npmrc" "${FX:?}/npmrc"
+pre_row "a project .npmrc with an expired token above the checkout, a live user token" "an npm session exists"
+! grep -q 'config delete' "$FX/o" "$A6NF" && [ "$(sort -u "$FX/npmcwds" 2>/dev/null)" = / ] \
+  && pass "  npm read no project file (every npm call ran from /); no npm config delete" || fail "  project config: cwds $(sort -u "$FX/npmcwds" 2>/dev/null | tr '\n' ' '), $(grep -c 'config delete' "$FX/o" "$A6NF" | tr '\n' ' ')"
 # a stop's class comes only from ship's own checks (PLAN-ship.md, REV 8): a failed npm, gh or git
 # call before the push ends "When the cause above is fixed, run ship again.", whatever it answered
 # (never a bare "Run ship again.", which loops on a definite answer); the cause keeps the tool's own

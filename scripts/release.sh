@@ -212,15 +212,22 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
 }
 npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may need, never the git/gh
             # transport (one construction for the real run and the dry one)
-  h=$1 u=$2; shift 2
+  h=$1 u=$2 ca=${NODE_EXTRA_CA_CERTS:-}; shift 2
+  case $u in ''|/*) ;; *) u=$(pwd -P)/$u ;; esac   # resolved before the cd below
+  case $ca in ''|/*) ;; *) ca=$(pwd -P)/$ca ;; esac
+  # npm runs from /: npm's project config (the .npmrc beside the nearest package.json or node_modules
+  # above its cwd) wins over the userconfig, and / holds none (only root may write there). So npm
+  # reads the builtin config, the userconfig, the global config and the env, and the userconfig wins
+  # over all of them but the env, which holds no token: an E401 with a counted userconfig line is
+  # that line's token (npmhint), and tokcount needs no other file.
   # npm_config_color and _loglevel: npm's `npm error code X` line stays readable whatever the npmrc says
   # (color=always writes it in ANSI, loglevel=silent writes nothing); an environment setting wins
-  /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" ${u:+NPM_CONFIG_USERCONFIG="$u"} \
+  ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" ${u:+NPM_CONFIG_USERCONFIG="$u"} \
     npm_config_color=false npm_config_loglevel=notice \
     ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \
-    ${NODE_EXTRA_CA_CERTS:+NODE_EXTRA_CA_CERTS="$NODE_EXTRA_CA_CERTS"} "$@"
+    ${ca:+NODE_EXTRA_CA_CERTS="$ca"} "$@" )
 }
 cargo_env() { # CARGO_HOME TARGET_DIR command... (the cargo class)
   ch=$1 td=$2; shift 2
