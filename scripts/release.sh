@@ -438,6 +438,7 @@ private_manifest() { # dir tmp: copy the output dir's MANIFEST.json into tmp (07
   cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || die "no MANIFEST.json in $1"
   MAN=$2/MANIFEST.json
   # under ship: the manifest ship checked after the build (C1), and no other
+  [ "$shipping" != yes ] || [ -n "$ship_mh" ] || die "no hash of the manifest ship checked after the build to bind $1 to"
   [ -z "$ship_mh" ] || [ "$(shasum -a 256 "$MAN" | cut -d' ' -f1)" = "$ship_mh" ] || { stopclass content; die "the manifest in $1 is not the one ship checked after the build (it changed)"; }
 }
 files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its hash (npm-check's files)
@@ -1024,6 +1025,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   phase=checks
   post_build_check "$out/$tag"
   ship_mh=$(shasum -a 256 "$out/$tag/MANIFEST.json" | cut -d' ' -f1)
+  printf '%s\n' "$ship_mh" | grep -qx '[0-9a-f]\{64\}' || { ship_mh=""; stopclass network; die "cannot read the hash of $out/$tag/MANIFEST.json (every later phase is bound to it); nothing is public"; }
   # C2. npm-check (its own traps: a subshell)
   phase=npm-check; stopclass content
   ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"

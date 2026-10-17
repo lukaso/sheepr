@@ -586,6 +586,16 @@ rm -rf "${OUTR:?}"; VERIFIED=-; ship; r=$?; VERIFIED=; c_row "verify judges no a
 [ "$(taps)" = 1 ] && ! grep -q 'verify has not judged' "$FX/o" && pass "  and publish_check does not run (verify && publish_check)" || fail "  publish_check ran: taps=$(taps) $(grep -c 'verify has not judged' "$FX/o")"
 rm -rf "${OUTR:?}"; VERIFIED=0000000000000000000000000000000000000000000000000000000000000000; ship; r=$?; VERIFIED=; c_row "verify judged another archive" "verify judged"
 rm -rf "${OUTR:?}"; : > "$FX/npmcheck.swap"; ship; r=$?; rm -f "$FX/npmcheck.swap"; c_row "the manifest changed after the build's checks (npm-check stamped the changed one)" "not the one ship checked"
+# C1's hash unreadable (shasum fails, for release.sh's own call on the build's manifest only): an
+# empty hash would bind nothing, so it is refused, and nothing is pushed
+cat > "$B/shasum" <<EOF
+#!/bin/sh
+for a; do [ "\$a" = "$OUTR/v0.1.0/MANIFEST.json" ] && [ "\$HOME" = "$FX/ghome" ] && exit 1; done
+exec /usr/bin/shasum "\$@"
+EOF
+chmod +x "$B/shasum"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$B/shasum"; c_row "C1's hash of the build's manifest unreadable" "cannot read the hash of $OUTR/v0.1.0/MANIFEST.json"
+! grep -q -e '^npmcheck' -e '^npm publish' "$FX/calls" && pass "  and no npm-check, no upload" || fail "  after an unreadable hash: $(grep -e '^npmcheck' -e '^npm publish' "$FX/calls" | head -2 | tr '\n' ' ')"
 # the frozen tree: the checkout's helpers replaced during the build write a marker if run; none runs
 cat > "$FX/onbuild" <<EOF
 for h in scripts/lib/cask-version.sh scripts/lib/render-cask.sh scripts/lib/npm-same.py scripts/release-plan.sh; do
