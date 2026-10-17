@@ -1049,6 +1049,12 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   drydir "$st"
   shipcause=$st/cause shipcls=$st/class; stopclass fix
   locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt=""
+  # ship's own stdout and stderr, kept on fds 8 and 9 before the handler is set and before the first
+  # call with redirections: bash 3.2 runs a trap, and so this handler, with the redirections of the
+  # function call it interrupted still on (a signal during `tool ... > "$st/push"` sent the whole stop
+  # text into that file; r11b, measured); the handler's first line puts them back. One mechanism for
+  # every such call, now and later
+  exec 8>&1 9>&2
   trap 'ship_exit $?' EXIT
   # PIPE too: a stdout closed during the run otherwise kills the shell after the handler ran, with 141
   # (bash 3.2 re-raises it; measured 2026-10-12); trapped, the handler's own status stands. A trapped
@@ -1421,6 +1427,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   [ "$got" = "$(printf '%s\n' "$want" | sort)" ] || die "the dry-run push lists other refs than $( [ $pushmain = no ] || echo 'main and ')$tag: $(tr '\t\n' ' ;' < "$st/dry")"
 }
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
+  exec 1>&8 2>&9   # ship's own stdout and stderr, whatever call a signal interrupted (ship_run)
   trap '' $SIGS PIPE
   rc=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
   [ "$shipok" = yes ] || [ "$rc" != 0 ] || rc=1   # a stop is never status 0

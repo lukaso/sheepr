@@ -230,7 +230,8 @@ case \$1 in
     # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
     if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else echo "npm error code ENEEDAUTH" >&2; fi; exit 1 ;;
   # (\$FX/loginnormalizes: the login rewrites the file as npm's ini writer does, a quoted key unquoted)
-  login) [ -e "$FX/loginfail" ] && exit 1
+  login) [ -e "$FX/onlogin" ] && sh "$FX/onlogin"   # (\$FX/onlogin: a hook at C4's npm login)
+    [ -e "$FX/loginfail" ] && exit 1
     [ -e "$FX/loginnormalizes" ] && [ -f "$FX/npmrc" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"; }
     echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
   logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
@@ -264,7 +265,7 @@ cat > "$S/docker" <<EOF
 #!/bin/sh
 [ -d "\$HOME" ] || echo "NOHOME docker" >> "$FX/calls"
 echo "docker \$*" >> "$FX/calls"
-case \$1 in info) [ -e "$FX/nodocker" ] && exit 1; exit 0 ;;
+case \$1 in info) [ -e "$FX/oninfo" ] && sh "$FX/oninfo"; [ -e "$FX/nodocker" ] && exit 1; exit 0 ;;   # (\$FX/oninfo: a hook at A7's docker info)
   image) case \$3 in rust:*) [ -e "$FX/nobase" ] && exit 1 ;; sr-amd64-*) [ -e "$FX/noamd64" ] && exit 1 ;; esac; exit 0 ;; esac
 exit 1
 EOF
@@ -1307,6 +1308,24 @@ rm -f "${FX:?}/npmrc"
 completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && ! grep -q "ship's npm login" "$FX/o" \
   && pass "an older line the login rewrote into a counted spelling: not ship's; done, exit 0, no text about ship's npm login" \
   || fail "older line after the login: rc=$r '$(nots)' $(grep "ship's npm login" "$FX/o" | cut -c1-200)"
+# a signal while a function call with redirections runs: bash 3.2 runs the trap and the exit handler with
+# that call's redirections still on, so the stop text went into the call's file. ship's own stdout
+# must hold it: INT to ship's group (SETSID) from the push stand-in during C5's real push (stdout to
+# $st/push), and from docker's info at A7 (stdout to /dev/null). Control: at C4's npm login (none)
+cat > "$FX/sigint" <<EOS
+#!/bin/sh
+lp=\$(cat "$OUTR/.ship.lock/pid" 2>/dev/null); pg=\$(/usr/bin/perl -e 'print getpgrp()')
+[ -n "\$lp" ] && [ "\$pg" = "\$lp" ] || { echo "UNSAFE sigint \$1" >> "$FX/calls"; exit 0; }
+echo "SIG INT at \$1" >> "$FX/calls"; kill -INT 0; /bin/sleep 1
+EOS
+for pt in 'onpush|push' 'oninfo|preflight' 'onlogin|npm-login'; do
+  hk=${pt%%|*} ph=${pt#*|}
+  printf 'sh "%s/sigint" %s\n' "$FX" "$hk" > "$FX/$hk"; rm -f "${FX:?}/onpush.done"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/$hk" "${FX:?}/onpush.done"
+  [ $r = 1 ] && grep -q "^SIG INT at $hk" "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -q "^release: ship v0.1.0 stopped at $ph" "$FX/o" && grep -q '(these steps are also in' "$FX/o" \
+    && pass "$( [ $hk = onlogin ] && echo 'control: ')INT to ship's group at $hk: the stop text (stopped at $ph) reaches ship's own stdout" \
+    || fail "INT at $hk: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') stdout: $(grep -c 'stopped at' "$FX/o") stop lines, $(grep -c 'these steps are also in' "$FX/o") file lines"
+done
+rm -f "${FX:?}/sigint"
 # the count decides, not logout's exit code: a logout that fails but removes the token is done
 : > "$FX/logoutlies"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutlies"
 completed && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && pass "a logout that exits 1 but leaves no token: done, exit 0 (the count decides)" || fail "logout lies: rc=$r '$(nots)'"
