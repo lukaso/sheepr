@@ -512,7 +512,7 @@ n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{
 [ -n "$pc" ] && [ "$n" = 1 ] && pass "publish_check: defined once" || fail "publish_check is defined $n times"
 # publish_exec calls publish_check first and stops unless it returns 0 (so every success row above,
 # a final tag with the cask put, already there, older, and an rc, pins that it returns 0)
-[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1" || die "the checks before publishing did not pass; nothing is published"' ] \
+[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1" || die "the checks before publishing did not pass; this step uploaded nothing"' ] \
   && pass "publish_exec calls publish_check first, and stops unless it returns 0" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
 # the text of publish_check and of each function it calls (a fixed list: the text cannot follow a
 # call it does not name): only reads, by an allow-list (below). It reads the network otherwise

@@ -464,9 +464,9 @@ publish_check() { # dir
   private_manifest "$d" "$pt"
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
   files_ok "$d" || die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"
-  [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; nothing is published"
+  [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; this step uploaded nothing"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
-    || die "the archive verify judged is not the stamped manifest's (it changed since); nothing is published"
+    || die "the archive verify judged is not the stamped manifest's (it changed since); this step uploaded nothing"
   # SHA256SUMS is not in the manifest: the build wrote it from those four files, in this order, so
   # its bytes follow from the manifest's hashes; nothing else is published, at any time
   for x in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh; do
@@ -488,7 +488,7 @@ publish_check() { # dir
   return 0   # every check passed (a refusal dies above); publish_exec and ship test it
 }
 publish_exec() { # dir
-  publish_check "$1" || die "the checks before publishing did not pass; nothing is published"
+  publish_check "$1" || die "the checks before publishing did not pass; this step uploaded nothing"
   tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote" || die "git ls-remote $UPSTREAM"
   tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases" --paginate --jq '.[].tag_name' > "$pt/releases" || die "gh: cannot list the releases"
   (cd "$root" && sh scripts/release-plan.sh --out "$d" --manifest "$MAN" --tag "$tag" --remote "$pt/remote" --releases "$pt/releases") > "$pt/plan" || die "the planner refused"
@@ -728,7 +728,7 @@ npm_visible() {
 # stamp does not bind it, so each checks it before any npm call.
 npm_list() {
   . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
-  npy list "${SR_NPM_PKGS:-}" || die "scripts/release.conf's SR_NPM_PKGS is refused (above); nothing was published"
+  npy list "${SR_NPM_PKGS:-}" || die "scripts/release.conf's SR_NPM_PKGS is refused (above); this step uploaded nothing"
 }
 # npm_owners CLASS NPM TMPDIR: npm's owners of each name in SR_NPM_PKGS must include SR_NPM_USER
 # (release.conf). Measured (npm 11.6.0): `owner ls NAME` needs no login and prints `user <email>`
@@ -740,11 +740,11 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
   for p in $SR_NPM_PKGS; do
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
-      grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); nothing was published"; }
-      stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); nothing was published"
+      grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); this step uploaded nothing"; }
+      stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); this step uploaded nothing"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
-      || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; nothing was published"; }
+      || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; this step uploaded nothing"; }
   done
 }
 # notify KEY: the operator's attention, through $NOTIFY with the tag; it never stops the run. A dry
@@ -762,8 +762,8 @@ notify() {
 # both orders the main package goes up only once npm shows the packages it names.
 publish_npm_exec() { # dir
   d=$1 m=$1/MANIFEST.json nv=${tag#v}
-  [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); nothing was published"
-  case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; nothing was published" ;; esac
+  [ -n "$NOTIFY" ] || die "no notifier (an entry must set NOTIFY); this step uploaded nothing"
+  case $npm_part in ''|platform|main) ;; *) die "npm_part '$npm_part' is not platform, main or empty; this step uploaded nothing" ;; esac
   pc=$(mktemp -d /private/tmp/sr-npmpub.XXXXXX) || die "no temp dir"   # the private copies npm gets
   drydir "$pc"
   trap 'trap "" $SIGS; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
@@ -776,13 +776,13 @@ publish_npm_exec() { # dir
   lc=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}") || die "no local tag $tag"
   [ "$(mf commit)" = "$lc" ] || die "the manifest's commit $(mf commit) is not $tag's ($lc)"
   # every file npm-check checked, before the first npm call (each is checked again just before its upload)
-  files_ok "$d" || die "a file npm-check checked has changed since (above); nothing is published.$(next_hint " Run release.sh npm-check $tag again")"
+  files_ok "$d" || die "a file npm-check checked has changed since (above); this step uploaded nothing.$(next_hint " Run release.sh npm-check $tag again")"
   # who may publish, before any view or upload: npm must say the user is release.conf's (measured,
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); nothing was published ($(head -c 200 "$pc/err" | tr '\n' ' '))"
-  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); nothing was published"
+    || die "npm whoami failed (not logged in to npm?)$(next_hint ": run npm login as ${SR_NPM_USER:-the owner}, then publish-npm again"); this step uploaded nothing ($(head -c 200 "$pc/err" | tr '\n' ' '))"
+  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": run npm login as that user, then publish-npm again"); this step uploaded nothing"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)

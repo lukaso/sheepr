@@ -177,10 +177,14 @@ case \$1 in
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\n  "error": {\n    "code": "E404"\n  }\n}\n'; echo "npm error code E404" >&2; exit 1 ;;
   owner) [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    # (\$FX/ownerfailafter: fails once three uploads are recorded, i.e. after C6)
+    [ -e "$FX/ownerfailafter" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     [ -e "$FX/owner404.\$3" ] && { echo "npm error code E404" >&2; exit 1; }
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
   config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/npmrc"; exit 0; } ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
+    [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     if grep -q "^\$TOK" "$FX/npmrc" 2>/dev/null; then
       [ -e "$FX/whoamibad2" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
       [ -e "$FX/expired" ] && { echo "npm error code E401" >&2; exit 1; }
@@ -319,8 +323,22 @@ $a" ;; esac; done
     r_=$(cat "$FX/pipe.rc")
   fi
   dryhomes "$FX/o"; cat "$FX/made" >> "$FX/allmade" 2>/dev/null
+  postpush_scan
   [ ! -s "$FX/pathcalls" ] || fail "a PATH tool was called in a ship run: $(head -2 "$FX/pathcalls" | tr '\n' ' ')"
   [ -n "${KEEP:-}" ] || world_reset; return $r_
+}
+# after a run whose progress holds `start push` (and no `push refused`): its next file and its output
+# (stdout and stderr, the first cause line among them) never say that nothing is public; the hits
+# are kept for the last row, with the count of such runs
+postpush_scan() {
+  pf=${OUT:-$OUTR}/.${TAG:-v0.1.0}.ship-progress nf_=${OUT:-$OUTR}/${TAG:-v0.1.0}.ship-next.txt
+  grep -qx 'start push' "$pf" 2>/dev/null || return 0
+  ! grep -q '^push refused' "$pf" || return 0
+  echo x >> "$FX/postpush.runs"
+  for f_ in "$nf_" "$FX/o"; do
+    [ -f "$f_" ] && grep -n -i -E 'nothing (is|was) publi|made nothing public' "$f_" | sed "s|^|$f_:|" >> "$FX/postpush.bad"
+  done
+  return 0
 }
 # the temp dirs a run named on its output (`a temp dir, PATH` on stderr, and the dry entries' `a temp
 # HOME, PATH`): a PIPEQ run's $FX/o holds its stderr only
@@ -936,7 +954,7 @@ done_all() { # the release is complete: the tag on origin, the tap at 0.1.0, fou
   git --git-dir="$FX/origin.git" rev-parse -q --verify refs/tags/v0.1.0 >/dev/null && grep -q '^  version "0.1.0"$' "$FX/tap/sheepr.rb" \
     && [ "$(ls "$FX"/pub.* 2>/dev/null | grep -c .)" = 4 ]
 }
-postpush_ok() { ! grep -i -q -e 'nothing is public' -e 'made nothing public' -e 'not public\.' "$NF"; }
+postpush_ok() { ! grep -i -q -E -e 'nothing (is|was) publi' -e 'made nothing public' -e 'not public\.' "$NF"; }
 stoprow() { # label: the steps of the next file ran and the release is complete
   cont; [ $RC = 0 ] && done_all && pass "$1: the steps named ($(tr '\n' ' ' < "$FX/cont")) complete the release" || fail "$1: $(tr '\n' ' ' < "$FX/cont")"
   world_reset
@@ -1010,6 +1028,15 @@ stoprow "exit 5"
 grep -q 'public on GitHub and Homebrew, and npm may hold a part of it' "$NF" && ! grep -q 'release.sh publish ' "$NF" && grep -q 'npmjs.com/package/sheepr shows' "$NF" && postpush_ok \
   && pass "the main upload refused: npm login, publish-npm only" || fail "main refused: $(tr '\n' '|' < "$NF")"
 stoprow "the main upload refused"
+# a stop after the platform uploads that says why a step uploaded nothing: C8's whoami failing (GitHub
+# and Homebrew done), C7's npm owner ls failing (the GitHub publish stopped): the next file keeps what
+# is public, and no stop text says that nothing is
+: > "$FX/whoamibadmain"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibadmain"
+[ $r = 1 ] && grep -q 'public on GitHub and Homebrew' "$NF" && grep -q 'this step uploaded nothing' "$NF" && postpush_ok \
+  && pass "C8's npm whoami failing: 'public on GitHub and Homebrew', this step uploaded nothing" || fail "C8 whoami: rc=$r $(head -2 "$NF" 2>/dev/null | tr '\n' '|')"
+: > "$FX/ownerfailafter"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownerfailafter"
+[ $r = 1 ] && grep -q 'v0.1.0 is pushed' "$NF" && grep -q 'this step uploaded nothing' "$NF" && postpush_ok \
+  && pass "C7's npm owner ls failing: 'is pushed', this step uploaded nothing" || fail "C7 owner ls: rc=$r $(head -2 "$NF" 2>/dev/null | tr '\n' '|')"
 # N6: a C8 wait that times out (npm still scans a platform package): the review and block text
 printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush"
 [ "$(lastprog)" = "done github" ] && grep -q "held the version for review or blocked it" "$FX/o" && grep -q "npm may hold a version for review, or block it" "$NF" \
@@ -1042,8 +1069,8 @@ grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -qx 'R
 rm -rf "${OUTR:?}"; : > "$FX/owner404json.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404json.sheepr-linux-x64"; hint_row "a name not on npm, its E404 only in --json's stdout (A4)" "reserve the name first (publish a 0.0.0 placeholder as lukasco); this run made nothing public"
 printf 'cd "%s/v0.1.0" && echo x > NPM-CHECKED\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's stamp check" "npm-check has not passed on"
 printf 'echo x >> "%s/v0.1.0/sheepr-linux-x86_64"\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's file check" "a file npm-check checked has changed since"
-printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed (not logged in to npm?); nothing was published"
-printf 'echo other > "%s/whoami"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoami"; hint_row "C6's whoami another user" "but the packages belong to lukasco; nothing was published"
+printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed (not logged in to npm?); this step uploaded nothing"
+printf 'echo other > "%s/whoami"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoami"; hint_row "C6's whoami another user" "but the packages belong to lukasco; this step uploaded nothing"
 : > "$FX/pubfail.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"; hint_row "an upload refused" "A browser login or 2FA approval that failed or timed out may be the cause"
 rm -rf "${OUTR:?}"; ship; r=$?
 completed && hint_free && pass "under ship, a success names no next entry (no 'Next:')" || fail "success hints: $(head -2 "$FX/hints" | tr '\n' '|')"
@@ -1102,6 +1129,10 @@ rm -rf "${OUTR:?}"; rm -f "$FX/onshow.done"; ship; r=$?; rm -f "$FX/onshow" "$FX
 [ $r = 1 ] && grep -q 'moved while ship checked it' "$FX/o" && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' -e '^build ' "$FX/calls" \
   && pass "the tag moved between the checks and its recording: refused before anything" || fail "the tag moved early: rc=$r $(lastline)"
 rm -rf "${OUTR:?}"
+# --- no stop after the push started said that nothing is public (every run of this cell, scanned)
+n_pp=$(cat "$FX/postpush.runs" 2>/dev/null | grep -c .)
+[ "$n_pp" -ge 20 ] && [ ! -s "$FX/postpush.bad" ] && pass "no stop text of the $n_pp runs past 'start push' (but a refused push) says that nothing is public" \
+  || fail "after the push started ($n_pp runs), a stop text says nothing is public: $(head -3 "$FX/postpush.bad" 2>/dev/null | cut -c1-200 | tr '\n' '|')"
 # --- no dry HOME left: every one the cell's runs named is gone (refusals included: an rc tag and a
 # tag off the grammar are refused before ship's own exit handler is set)
 n_dh=$(sort -u "$FX/dryhomes" 2>/dev/null | grep -c .); n_mk=$(sort -u "$FX/allmade" 2>/dev/null | grep -c .)
