@@ -731,6 +731,10 @@ rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"; ship; r=$?; rm -f "$FX/onpush" "$FX
 [ $r = 1 ] && [ "$(lastprog)" = "push refused: main unmoved" ] && grep -qx 'When the cause above is fixed, run ship again.' "$OUTR/v0.1.0.ship-next.txt" \
   && ! grep -q -e aside -e 'Tag again' "$OUTR/v0.1.0.ship-next.txt" && ! grep -q -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
   && pass "a push refused by the remote's rules, main unmoved: fix the cause, run ship again (no move aside, no new tag)" || fail "pre-receive: rc=$r '$(lastprog)' $(tr '\n' '|' < "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
+# git's reason for each refused ref (its porcelain `!` line, on stdout under --porcelain) is in the
+# cause the next file names
+grep -q 'pre-receive hook declined' "$OUTR/v0.1.0.ship-next.txt" && pass "  and the next file names git's reason (pre-receive hook declined)" \
+  || fail "  the next file has no git reason: $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 cat > "$FX/onpush" <<EOF
 cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \\
   /usr/bin/git push -q --no-follow-tags "file://$FX/origin.git" "$C:refs/heads/tmp" && /usr/bin/git --git-dir="$FX/origin.git" commit-tree -p "$C" -m on "$C^{tree}" > "$FX/past" \\

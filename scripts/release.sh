@@ -1065,7 +1065,9 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
         if [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null; then why="main holds it"; else why="main moved"; fi
       fi
       progress "push refused: $why"
-      die "the push was refused, and nothing of it landed ($(head -c 300 "$st/push.err" | tr '\n' ' ')); nothing is public"
+      # git's reason for each refused ref is its porcelain `!` line (stdout under --porcelain)
+      rej=$(grep '^!' "$st/push" 2>/dev/null | cut -f2- | tr '\t\n' ' ;' | head -c 300)
+      die "the push was refused, and nothing of it landed (${rej:+git: $rej }$(head -c 300 "$st/push.err" | tr '\n' ' ')); nothing is public"
     fi
     die "the push failed, but $UPSTREAM shows a part of it ($(tr '\t\n' ' ;' < "$st/ls.push"))"
   fi
