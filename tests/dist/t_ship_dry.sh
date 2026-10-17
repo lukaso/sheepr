@@ -585,6 +585,20 @@ for cu in 'https://u:SEC9x@RET9y@host.invalid/lukaso/sheepr.git https://<redacte
   ! grep -q -e SEC9 -e RET9 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "origin's URL $want" "$OUTR/v0.1.0.ship-next.txt" \
     && pass "  no part of the userinfo printed; '$want'" || fail "  $url: $(grep -c -e SEC9 -e RET9 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
 done
+# a password with an @ in it at github.com (https and ssh://): the userinfo runs to the last @, so the
+# rest is lukaso/sheepr on github.com and the URL is named as holding a user name or password; and a
+# token as the scp form's user at an ssh alias, or at another host: each text shows <redacted>, never
+# the token (the scp rule of redact alone would not catch a user with no colon)
+for cu in 'https://u:SEC10a@RET10a@github.com/lukaso/sheepr.git|https://<redacted>@github.com/lukaso/sheepr.git holds a user name or password' \
+  'ssh://u:SEC10b@RET10b@github.com/lukaso/sheepr.git|ssh://<redacted>@github.com/lukaso/sheepr.git holds a user name or password' \
+  'ghp_FAKE10c@gh-alias:lukaso/sheepr.git|<redacted>@gh-alias:lukaso/sheepr.git names an ssh host alias' \
+  'ghp_FAKE10d@host.invalid:other/sheepr.git|<redacted>@host.invalid:other/sheepr.git is not lukaso/sheepr'; do
+  url=${cu%%|*}; want=${cu#*|}
+  echo "$url" > "$FX/pushurl"; pt_row "origin's URL $url" "${want#* }"; rm -f "${FX:?}/pushurl"
+  ! grep -q -e SEC10 -e RET10 -e FAKE10 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -qF "origin's URL $want" "$OUTR/v0.1.0.ship-next.txt" \
+    && pass "  '$want'; no part of the userinfo printed" \
+    || fail "  $url: $(grep -c -e SEC10 -e RET10 -e FAKE10 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+done
 # a tool's message naming such a URL (git's, at the ls-remote): the same, in the URL form and the scp form
 for le in "fatal: unable to access 'https://u:SEC5x@RET5y@host.invalid/lukaso/sheepr/': Could not resolve host: host.invalid|https://<redacted>@host.invalid/lukaso/sheepr/" \
   "user:SEC6x@RET6y@github.com: Permission denied (publickey).
