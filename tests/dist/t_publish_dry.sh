@@ -283,7 +283,7 @@ cp "$FX/out/v0.1.0/sheepr.rb" "$FX/tap.cur"; tapset 0.0.9; cp "$FX/tap.cur" "$FX
 
 # after the PATCH, a failure leaves the release public: exit 5, the next command named
 post() { # label: the last pub ended at 5, public, publish-cask named
-  [ $r = 5 ] && grep -q PATCH "$FX/calls" && grep -q 'v0.1.0 is public' "$FX/o" && grep -qF "publish-cask --out \"$FX/out\" v0.1.0" "$FX/o" \
+  [ $r = 5 ] && grep -q PATCH "$FX/calls" && grep -q 'v0.1.0 is public' "$FX/o" && grep -qF "publish-cask --out '$FX/out' v0.1.0" "$FX/o" \
     && pass "$1: exit 5, public said, publish-cask named" || fail "$1: rc=$r $(seq) $(tail -2 "$FX/o" | tr '\n' ' ')"
 }
 touch "$FX/corruptafter"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/corruptafter"; post "the published archive is not the build's"; nowrite && pass "  and no PUT" || fail "  a PUT ran"

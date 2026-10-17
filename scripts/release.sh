@@ -105,9 +105,20 @@ die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
 # the remedy around it
 next_hint() { if [ "$shipping" = yes ]; then printf '%s' "${2:-}"; else printf '%s' "$1"; fi; }
-# dq TEXT: TEXT as one double-quoted shell word (\, ", $ and ` escaped), for a runnable line that names
-# a path: a line must run as printed from any directory, whatever the path holds
-dq() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"$`]/\\&/g')"; }
+# dq TEXT: TEXT as one single-quoted shell word, each ' written as '\'' (the one character single
+# quotes cannot hold), for a runnable line that names a path: a line must run as printed from any
+# directory, whatever the path holds, pasted into an interactive shell too (in double quotes, zsh and
+# bash expand !x and !! there; r12b F6). No command substitution, so a trailing newline is kept
+dq() {
+  r_=$1 o_="" q_="'"
+  while :; do
+    case $r_ in
+      *"$q_"*) o_=$o_${r_%%"$q_"*}"'\\''"; r_=${r_#*"$q_"} ;;
+      *) break ;;
+    esac
+  done
+  printf "'%s%s'" "$o_" "$r_"
+}
 stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
@@ -1410,9 +1421,11 @@ ship_build_ready() { # A7: no build yet: the build's preconditions; a finished o
     return 0
   fi
   shipdocker info >/dev/null 2>&1 || die "Docker does not answer (docker info): start it, then run ship again"
-  shipdocker image inspect "$SR_IMG_ALPINE" >/dev/null 2>&1 || die "no local image $SR_IMG_ALPINE (run ./test-all pull)"
+  # (each step names the checkout's test-all by its full path: it runs as printed from any directory;
+  # test-all cds to its own)
+  shipdocker image inspect "$SR_IMG_ALPINE" >/dev/null 2>&1 || die "no local image $SR_IMG_ALPINE (run $(dq "$oroot/test-all") pull)"
   a1=sr-amd64-base:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12) a2=sr-amd64-alpine:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
-  shipdocker image inspect "$a1" >/dev/null 2>&1 || shipdocker image inspect "$a2" >/dev/null 2>&1 || die "no local amd64 image of the pinned base (run ./test-all pull, or ./test-all amd64)"
+  shipdocker image inspect "$a1" >/dev/null 2>&1 || shipdocker image inspect "$a2" >/dev/null 2>&1 || die "no local amd64 image of the pinned base (run $(dq "$oroot/test-all") pull, or $(dq "$oroot/test-all") amd64)"
   shipcall "$SHIP_IDENTITY" find-identity -v -p codesigning 2>/dev/null | grep -q " $SR_SIGN_IDENTITY " || die "the signing identity $SR_SIGN_IDENTITY is not in the keychain"
   [ -f "$HOME/$SR_NOTARY_KEYCHAIN" ] || die "no notary keychain at $HOME/$SR_NOTARY_KEYCHAIN: do PHASE3.md D2 step 3 first"
 }

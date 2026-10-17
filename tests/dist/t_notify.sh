@@ -57,7 +57,8 @@ nt "$FX/osa" logout-failed-abcdefghijabcdefghijabcdefghijab "$T"
   && pass "logout-failed-PHASE: a phase of exactly 32 characters accepted" || fail "logout-failed 32-character phase: rc=$r $(cat "$FX/err")"
 # with the out dir (release.sh gives it to failed-PHASE and logout-failed-PHASE): the next file's full
 # path, so the notification names a file that opens from any window; a dir that is not absolute, or
-# holds a control character, is refused (nothing shown)
+# holds a control character, is not used: the text names the next file by its name, and the one
+# notification is still shown (r12b F7: a refused dir showed nothing, so a stop went unseen)
 nt "$FX/osa" failed-push "$T" "/Users/o p/sheepr-release"
 [ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at push. What to run next is in /Users/o p/sheepr-release/$T.ship-next.txt]" ] \
   && pass "failed-PHASE with the out dir: the next file's full path" || fail "failed-push with dir: rc=$r '$(cat "$FX/rec" 2>/dev/null)' $(cat "$FX/err")"
@@ -66,7 +67,8 @@ nt "$FX/osa" logout-failed-npm-main "$T" "/Users/o/sheepr-release"
   && pass "logout-failed-PHASE with the out dir: the next file's full path" || fail "logout-failed with dir: rc=$r '$(cat "$FX/rec" 2>/dev/null)'"
 for d in 'sheepr-release' "/Users/o/a$(printf '\001')b"; do
   nt "$FX/osa" failed-push "$T" "$d"
-  [ $r = 0 ] && [ "$(calls)" = 0 ] && grep -q refused "$FX/err" && pass "an out dir that is not absolute, or holds a control character: refused, nothing shown" || fail "bad dir: rc=$r calls=$(calls)"
+  [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at push. What to run next is in $T.ship-next.txt]" ] && grep -q 'by its name only' "$FX/err" \
+    && pass "an out dir that is not absolute, or holds a control character: the next file by its name, the one notification shown, stderr says why" || fail "bad dir: rc=$r calls=$(calls) '$(cat "$FX/rec" 2>/dev/null)' $(cat "$FX/err")"
 done
 nt "$FX/osa" password v0.1.4-rc.2
 [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[v0.1.4-rc.2: type the notary keychain password in the terminal]" ] && pass "an rc tag is a tag" || fail "rc tag: rc=$r $(cat "$FX/err")"

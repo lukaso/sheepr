@@ -9,9 +9,10 @@
 # digits and -, at most 32 in all). Never a tool's output. The keys: password, password-again,
 # npm-login, npm-approve, npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE,
 # logout-failed-PHASE (a stop and a failed npm logout: one notification names both). DIR, the out dir
-# (absolute, one line, no control character; else refused), makes failed-PHASE and
-# logout-failed-PHASE name the next file by its full path, DIR/TAG.ship-next.txt (release.sh gives it):
-# a notification read later, in another window, must name a file that opens from there.
+# (absolute, no control character), makes failed-PHASE and logout-failed-PHASE name the next file by
+# its full path, DIR/TAG.ship-next.txt (release.sh gives it): a notification read later, in another
+# window, must name a file that opens from there. Any other DIR is not used: the text names the file
+# by its name, and the notification is still shown (a stop must not go unseen; stderr says why).
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
@@ -42,9 +43,11 @@ printf '%s\n' "$tag" | grep -Eq "$tagre" && [ "$(printf '%s' "$tag" | wc -l | tr
   || refuse "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
 nf=$tag.ship-next.txt
 if [ -n "$dir" ]; then
-  case $dir in /*) ;; *) refuse "the out dir '$dir' is not an absolute path" ;; esac
-  case $dir in *[[:cntrl:]]*) refuse "the out dir holds a control character" ;; esac
-  nf=${dir%/}/$tag.ship-next.txt
+  case $dir in
+    *[[:cntrl:]]*) say "the out dir holds a control character: the text names the next file by its name only" ;;
+    /*) nf=${dir%/}/$tag.ship-next.txt ;;
+    *) say "the out dir '$dir' is not an absolute path: the text names the next file by its name only" ;;
+  esac
 fi
 case $key in
   password) text="$tag: type the notary keychain password in the terminal" ;;

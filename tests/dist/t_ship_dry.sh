@@ -1079,7 +1079,11 @@ pre_row "a counted token line, whoami's E401 in npm's colours" "Deleting or edit
 # A7: the build's preconditions
 : > "$FX/nodocker"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nodocker"; pre_row "Docker does not answer" "Docker"
 : > "$FX/nobase"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nobase"; pre_row "the pinned base image missing" "no local image rust:"
+# r12b F8: the step names the checkout's test-all by its full path (single-quoted: dq), so it runs as
+# printed from any directory (test-all cds to its own directory)
+grep -qF "(run '$REPO/test-all' pull)" "$OUTR/v0.1.0.ship-next.txt" && pass "  the step: the checkout's test-all by its full path" || fail "  test-all step: $(grep -o '(run [^)]*)' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 : > "$FX/noamd64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/noamd64"; pre_row "the amd64 image missing" "no local amd64 image"
+grep -qF "(run '$REPO/test-all' pull, or '$REPO/test-all' amd64)" "$OUTR/v0.1.0.ship-next.txt" && pass "  the step: the checkout's test-all by its full path" || fail "  test-all step: $(grep -o '(run [^)]*)' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
 SETX="SR_SHIP_DRY_IDENTITY=$S/docker"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=; pre_row "the signing identity not in the keychain" "signing identity"
 mv "$FX/ghome/Library/Keychains/sheepr-notary.keychain-db" "$FX/kc.away"; rm -rf "${OUTR:?}"; ship; r=$?; mv "$FX/kc.away" "$FX/ghome/Library/Keychains/sheepr-notary.keychain-db"
 pre_row "no notary keychain" "D2"
@@ -1524,6 +1528,39 @@ grep -q '^SIG KILL at mv$' "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -
   && pass "a KILL at the rename after the logout: the next file whole, as written before the logout ($PFN lines and the step); the new text in the temp file beside it" \
   || fail "KILL at the rewrite: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') next file: $(grep -c . "$NF" 2>/dev/null) lines, step at $(lnof "$NF" "$LG"), last '$(tail -1 "$NF" 2>/dev/null | cut -c1-80)'"
 killclean
+# r12b F6: the runnable lines name the checkout and the out dir in single quotes (' as '\''): a path
+# holding ", $x, a backtick command, \, !x or !! (or ', or a space) runs as printed, from sh and from an
+# interactive zsh (a paste: zsh -f -i reading it from stdin; in double quotes !x expands there). dq and
+# the two line shapes are release.sh's own text; a stub release.sh at each path and a stub git first on
+# PATH record the argv they get
+W=$FX/dqw; rm -rf "${W:?}"; mkdir -p "$W/bin" || exit 3
+awk '/^dq\(\) \{/ { f = 1; print; if ($0 ~ /\}[[:space:]]*(#.*)?$/) exit; next } f { print } f && /^\}/ { exit }' "$SR_ROOT/scripts/release.sh" > "$W/dq.sh"
+grep -E '^ *run="  sh \$\(dq "\$oroot/scripts/release.sh"\)" o="--out \$\(dq "\$out"\) \$tag"$' "$SR_ROOT/scripts/release.sh" | head -1 > "$W/run.sh"
+grep -oE 'echo "  git -C \$\(dq "\$oroot"\) ls-remote origin refs/tags/\$tag"' "$SR_ROOT/scripts/release.sh" | head -1 > "$W/git.sh"
+[ -s "$W/dq.sh" ] && [ -s "$W/run.sh" ] && [ -s "$W/git.sh" ] || fail "dq: release.sh's dq or its line shapes not found (the row would prove nothing)"
+printf '#!/bin/sh\n{ printf "git"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$W/bin/git"; chmod +x "$W/bin/git"
+dqrun() { # how line want -> 0 when the line, run that way from /, gave exactly want
+  REC=$W/rec; : > "$REC"; export REC
+  if [ "$1" = sh ]; then (cd / && PATH="$W/bin:/usr/bin:/bin" /bin/sh -c "$2") > "$W/o" 2>&1
+  else (cd / && printf '%s\n' "$2" | PATH="$W/bin:/usr/bin:/bin" HOME="$W" /bin/zsh -f -i) > "$W/o" 2>&1; fi
+  [ "$(cat "$REC")" = "$3" ]
+}
+bad_=""; n_=0
+for nm_ in 'dq"q' 'dol$x' 'bt`echo X`' 'bs\x' 'bang!x' 'bang!!' "sq'q" 'sp ace'; do
+  n_=$((n_ + 1)); oroot=$W/c$n_/$nm_/repo out=$W/c$n_/$nm_/out tag=v0.1.0
+  mkdir -p "$oroot/scripts" "$out" || exit 3
+  printf '#!/bin/sh\n{ printf "rs [%%s]" "$0"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$oroot/scripts/release.sh"
+  l1_=$(. "$W/dq.sh"; . "$W/run.sh"; printf '%s publish %s' "$run" "$o"); l2_=$(. "$W/dq.sh"; . "$W/git.sh")
+  w1_="rs [$oroot/scripts/release.sh] [publish] [--out] [$out] [$tag]"; w2_="git [-C] [$oroot] [ls-remote] [origin] [refs/tags/$tag]"
+  for how_ in sh zsh; do
+    dqrun $how_ "$l1_" "$w1_" || bad_="$bad_ [$nm_ $how_ line 1: $(tr '\n' '|' < "$REC")]"
+    dqrun $how_ "$l2_" "$w2_" || bad_="$bad_ [$nm_ $how_ line 2: $(tr '\n' '|' < "$REC")]"
+  done
+done
+[ -z "$bad_" ] && pass "r12b F6: the runnable lines, for a checkout and an out dir holding \", \$x, a backtick command, \\, !x, !!, ' or a space, run as printed from sh and from an interactive zsh ($n_ paths)" \
+  || fail "dq:$(printf '%s' "$bad_" | cut -c1-400)"
+dqrun sh "  sh $oroot/scripts/release.sh publish --out $out $tag" "$w1_" && fail "  control: a line with the path unquoted ran as intended (the row would prove nothing)" \
+  || pass "  control: the same line with the path unquoted is caught"
 # r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
 # child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
 # with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a
@@ -1649,8 +1686,8 @@ cont() { # run each step the next file names, in order: npm login (the operator'
   while IFS= read -r l; do
     case $l in
       *"npm login --registry=https://registry.npmjs.org/") echo "//registry.npmjs.org/:_authToken=npm_dry" >> "$FX/npmrc"; echo login >> "$FX/cont" ;;
-      *"/scripts/release.sh\" "*" --out \"$OUTR\" v0.1.0"*)
-        e=$(printf '%s\n' "$l" | sed 's/.*\/scripts\/release\.sh" \([a-z-]*\) --out.*/\1/')
+      *"/scripts/release.sh' "*" --out '$OUTR' v0.1.0"*)
+        e=$(printf '%s\n' "$l" | sed "s/.*\/scripts\/release\.sh' \([a-z-]*\) --out.*/\1/")
         [ "$e" = "${2:-$e}" ] || continue
         [ -z "${2:-}" ] || [ ! -e "$FX/cont.one" ] || return
         [ -z "${2:-}" ] || : > "$FX/cont.one"
@@ -1741,7 +1778,7 @@ grep -qx 'ship does not continue a release of which anything is public.' "$NF" &
   && pass "A4, no build: the separate steps of §5" || fail "A4 no build: $(tr '\n' '|' < "$NF")"
 g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
 rm -rf "${OUTR:?}"; mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"; ship; r=$?
-grep -q "^Never rebuild it: continue from $OUTR/v0.1.0" "$NF" && grep -qx "  sh \"$REPO/scripts/release.sh\" npm-check --out \"$OUTR\" v0.1.0" "$NF" && pass "A4, this build in the out dir: never rebuild, continue from it" || fail "A4 with build: $(tr '\n' '|' < "$NF")"
+grep -q "^Never rebuild it: continue from $OUTR/v0.1.0" "$NF" && grep -qx "  sh '$REPO/scripts/release.sh' npm-check --out '$OUTR' v0.1.0" "$NF" && pass "A4, this build in the out dir: never rebuild, continue from it" || fail "A4 with build: $(tr '\n' '|' < "$NF")"
 # an A4 refusal keeps an earlier run's next file (and shows it); a refused lock writes nothing
 echo EARLIER > "$NF"; g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3; ship; r=$?
 [ "$(cat "$NF")" = EARLIER ] && grep -qx EARLIER "$FX/o" && pass "an A4 refusal keeps an earlier next file, and shows it" || fail "A4 keep: $(head -2 "$NF" | tr '\n' '|')"
@@ -1764,7 +1801,7 @@ grep -qx 'Nothing is public: the push was refused, and nothing of it landed.' "$
 rm -rf "${OUTR:?}"
 # after the push started: each stop point's text, then its steps complete the release
 echo tag > "$FX/pushlie"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pushlie"
-grep -q 'The push started and was not confirmed' "$NF" && grep -qx "  git -C \"$REPO\" ls-remote origin refs/tags/v0.1.0" "$NF" && postpush_ok && pass "the push not confirmed: check ls-remote; the steps if it is there" || fail "push unconfirmed: $(tr '\n' '|' < "$NF")"
+grep -q 'The push started and was not confirmed' "$NF" && grep -qx "  git -C '$REPO' ls-remote origin refs/tags/v0.1.0" "$NF" && postpush_ok && pass "the push not confirmed: check ls-remote; the steps if it is there" || fail "push unconfirmed: $(tr '\n' '|' < "$NF")"
 stoprow "the push not confirmed (the tag is there)"
 printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/afterpush" "$FX/viewfailv.sheepr-linux-arm64"
 [ "$(lastprog)" = "done push" ] && grep -q '^v0.1.0 is pushed; nothing else is public. Run in order:' "$NF" && ! grep -q 'npmjs.com/package' "$NF" && pass "the push done, no upload: publish, npm login, publish-npm (no wait note)" || fail "push done: '$(lastprog)' $(tr '\n' '|' < "$NF")"
@@ -1786,21 +1823,21 @@ grep -q '^  neither: run:' "$NF" && pass "N12: GitHub stopped before the POST: '
 cont "$NF" publish; [ $RC = 0 ] && cont "$NF" publish-npm && [ $RC = 0 ] && done_all && pass "  publish, then publish-npm: the release complete" || fail "  N12 steps: $(tr '\n' ' ' < "$FX/cont")"
 world_reset
 # every runnable line ship writes runs from any cwd (a new terminal window opens in ~): N12's next
-# file, from a checkout whose path holds a space; each `sh ".../scripts/release.sh" ENTRY ...` line,
+# file, from a checkout whose path holds a space; each `sh '.../scripts/release.sh' ENTRY ...` line,
 # run from /, reaches its entry (its dry entry here, with the stand-ins); the push-unconfirmed text's
 # git line, run from /, reaches the checkout (sgit: file:// remotes only)
 SPR="$FX/sp ace/repo"; mkdir -p "$FX/sp ace" && cp -R "$REPO" "$SPR" || exit 3
 RO_=$REPO; REPO=$SPR; : > "$FX/postfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/postfail"; REPO=$RO_
 nr_=0 nok_=0 bad_=""
 while IFS= read -r l; do
-  case $l in *'sh "'*'/scripts/release.sh" '*) ;; *) continue ;; esac
+  case $l in *"sh '"*"/scripts/release.sh' "*) ;; *) continue ;; esac
   l=${l%%v0.1.0*}v0.1.0; eval "set -- $l"
   nr_=$((nr_ + 1)); e_=$3; shift 3
   (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" \
     SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh "$SPR/scripts/release.sh" "__$e_-dry" "$@") > "$FX/co" 2>&1
   dryhomes "$FX/co"
-  case $l in *"\"$SPR/scripts/release.sh\" $e_ "*) ;; *) bad_="$bad_ [path: $l]" ;; esac
+  case $l in *"'$SPR/scripts/release.sh' $e_ "*) ;; *) bad_="$bad_ [path: $l]" ;; esac
   grep -q "^release: __$e_-dry " "$FX/co" && nok_=$((nok_ + 1)) || bad_="$bad_ [$e_: $(head -1 "$FX/co" | cut -c1-80)]"
 done < "$NF"
 world_reset
@@ -1813,7 +1850,7 @@ gl_=$(grep '^  git -C ' "$NF" | head -1); eval "set -- ${gl_# }"; shift
   && pass "the push-unconfirmed text's git line, run from /: it reaches the checkout (the tag listed)" || fail "git line from /: rc=$r '$gl_' $(head -1 "$FX/co" | cut -c1-120)"
 world_reset; rm -rf "${FX:?}/sp ace"
 : > "$FX/putfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/putfail"
-grep -q 'is public on GitHub, but its Homebrew cask is not updated' "$NF" && grep -qx "  sh \"$REPO/scripts/release.sh\" publish-cask --out \"$OUTR\" v0.1.0" "$NF" && postpush_ok && pass "exit 5: publish-cask, npm login, publish-npm" || fail "exit5 text: $(tr '\n' '|' < "$NF")"
+grep -q 'is public on GitHub, but its Homebrew cask is not updated' "$NF" && grep -qx "  sh '$REPO/scripts/release.sh' publish-cask --out '$OUTR' v0.1.0" "$NF" && postpush_ok && pass "exit 5: publish-cask, npm login, publish-npm" || fail "exit5 text: $(tr '\n' '|' < "$NF")"
 stoprow "exit 5"
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/pubfail.sheepr"
 grep -q 'public on GitHub and Homebrew, and npm may hold a part of it' "$NF" && ! grep -q 'release.sh publish ' "$NF" && grep -q 'npmjs.com/package/sheepr shows' "$NF" && postpush_ok \
