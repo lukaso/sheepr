@@ -486,6 +486,7 @@ done
 RS=$SR_ROOT/scripts/release.sh
 fbody() { sed -n "/^$1() {/,/^}/p" "$RS"; }   # (a pattern with () inside a $( ) ends it early under bash 3.2)
 want_ship='ship() {
+  ship_fds
   SHIP_BUILD=/bin/sh SHIP_NPMCHECK=npm_check SHIP_VERIFY=verify NOTIFY=frozen-tree CAFFEINATE=/usr/bin/caffeinate SHIP_IDENTITY=/usr/bin/security SHIP_DOCKER=docker
   real_tools
   shipping=yes

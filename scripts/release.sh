@@ -1055,7 +1055,8 @@ verify() { # dir -> exit 1 naming the tool that refused
 # --- ship: the whole release of a final tag in one run (the ship plan; PHASE3.md §5) ------------
 # One orchestration, ship_run, serves `ship` (the real tools; behind the gate and its one question)
 # and `__ship-dry` (stand-ins; the cells). The real entry's values are pinned by text in t_ship_dry.
-# ship_fds: fds 1 and 2 open, checked before anything is made. ship keeps both on fds 8 and 9 for its
+# ship_fds: fds 1 and 2 open, checked before anything is made (first in ship, right after the dry marker
+# in __ship-dry). ship keeps both on fds 8 and 9 for its
 # handler, and that exec, with one of them closed, killed the shell before the handler was set, leaving
 # the run's temp dir (r12b F5). The refusal goes to the one that is open
 ship_fds() {
@@ -1070,8 +1071,8 @@ ship() {
   ship_run
 }
 ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no gate, no question
-  ship_fds
   dryentry=yes
+  ship_fds
   standins SR_SHIP_DRY_BUILD SR_SHIP_DRY_NPMCHECK SR_SHIP_DRY_NOTIFY SR_SHIP_DRY_CAFFEINATE SR_SHIP_DRY_IDENTITY SR_SHIP_DRY_DOCKER \
     SR_PUBLISH_DRY_GH SR_PUBLISH_DRY_GIT SR_PUBLISH_DRY_NPM SR_PUBLISH_DRY_CURL
   cmp -s "$SR_SHIP_DRY_NOTIFY" "$root/scripts/lib/notify.sh" && die "SR_SHIP_DRY_NOTIFY is the real notify.sh, not a stand-in"
