@@ -556,8 +556,21 @@ echo false > "$FX/repoperm"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/repoperm
 echo stranger > "$FX/owner.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/owner.sheepr"; pre_row "an npm name owned by someone else" "belongs to stranger"
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?
 pre_row "an npm session from before ship" "npm logout"; ! grep -q '^npm logout' "$FX/calls" && pass "  and no logout call" || fail "  a logout ran"
-: > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/expired" "$FX/npmrc"
+# a token line (the count 1): only npm's E401 (an expired token) makes the fix `npm config delete`;
+# any other whoami failure cannot tell whether that session is live (deleting the line would leave a
+# live token on npm's server): cannot tell, run ship again; and a count that cannot be read names no
+# delete either
+A6NF=$OUTR/v0.1.0.ship-next.txt
+: > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/expired"
 pre_row "an expired npm token (the count 1, whoami E401)" "npm config delete //registry.npmjs.org/:_authToken"
+grep -q 'E401' "$FX/o" && ! grep -q 'cannot tell whether an npm session' "$FX/o" && pass "  the reason named: npm's E401" || fail "  E401 row: $(lastline)"
+: > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
+pre_row "a token line, and whoami failing with ETIMEDOUT" "cannot tell whether an npm session exists"
+! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && grep -qx 'Run ship again.' "$A6NF" \
+  && pass "  no npm config delete (the session may be live), in stdout or the next file; run ship again" || fail "  ETIMEDOUT with a token: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
+chmod 000 "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; chmod 644 "$FX/npmrc"; rm -f "$FX/npmrc"
+pre_row "npm's userconfig unreadable (the count unreadable), whoami failing" "cannot count npm's login tokens"
+! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && pass "  no npm config delete" || fail "  unreadable count: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
 : > "$FX/whoamibad"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad"; pre_row "a whoami failure that is not ENEEDAUTH" "cannot tell whether an npm session"
 # A7: the build's preconditions
 : > "$FX/nodocker"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nodocker"; pre_row "Docker does not answer" "Docker"

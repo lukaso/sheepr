@@ -1181,8 +1181,13 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
   if who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err"); then
     die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server), then run ship again (ship logs in itself, after the build)"
   fi
-  [ "$n" = 0 ] || die "npm's userconfig holds a login token npm does not accept (count $n; expired?): run npm config delete //registry.npmjs.org/:_authToken, then run ship again"
-  grep -q ENEEDAUTH "$st/who.err" || { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))"; }
+  [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
+  # a token line and npm's E401: the token expired, and only deleting its line ends it; any other
+  # failure cannot tell whether the session is live (a deleted line would leave a live token on npm)
+  if [ "$n" != 0 ] && grep -q E401 "$st/who.err"; then
+    die "npm's userconfig holds a login token npm refuses (npm whoami: E401, an expired token; token lines: $n): run npm config delete //registry.npmjs.org/:_authToken, then run ship again"
+  fi
+  { [ "$n" = 0 ] && grep -q ENEEDAUTH "$st/who.err"; } || { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))"; }
 }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
   # its manifest's, and no control manifest inside it (-mindepth 2: a control build beside it is not)
