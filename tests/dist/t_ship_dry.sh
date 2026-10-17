@@ -290,6 +290,7 @@ case \$1 in
     [ -n "\$SC" ] && { grep -v "^\$SC:registry=" "\$UC" > "\$UC.n" 2>/dev/null; echo "\$SC:registry=https://registry.npmjs.org/" >> "\$UC.n"; mv "\$UC.n" "\$UC"; echo "REQ A login rewrote \$SC:registry" >> "$FX/reqs"; }
     [ -e "$FX/loginnormalizes" ] && [ -f "\$UC" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }
     # (\$FX/logintoken: the token the login writes, instead of npm_dry)
+    echo LOGIN >> "$FX/tokops"   # (\$FX/tokops: each login's write, in order with the tokens the logouts end)
     if [ -s "$FX/logintoken" ]; then echo "\${TOK}\$(cat "$FX/logintoken")" >> "\$UC"; else echo "\${TOK}npm_dry" >> "\$UC"; fi; exit 0 ;;
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
@@ -314,6 +315,7 @@ case \$1 in
     [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "\$UC"; exit 0; }
     [ -e "$FX/logoutlies" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; exit 1; }
     # (\$FX/logoutleaves: a line it leaves in the userconfig, as npm logout leaves any but the root line)
+    t_=\$(sed -n "s|^\$TOK||p" "\$UC" 2>/dev/null | tail -1); [ -z "\$t_" ] || echo "DELETE token=\$t_" >> "$FX/tokops"   # (the token it ends)
     grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; [ ! -e "$FX/logoutleaves" ] || cat "$FX/logoutleaves" >> "\$UC"; exit 0 ;;
   publish) p=\$(basename "\$last" | sed 's/^\(.*\)-[0-9][0-9.a-z-]*\.tgz\$/\1/')
     if [ -e "$FX/pubquit" ] && [ ! -e "$FX/pubquit.done" ]; then
@@ -1770,19 +1772,19 @@ echo '//registry.npmjs.org/:_authToken=npm_old' > "$FX/npmrc"; rm -rf "${OUTR:?}
 # checkout's, the out dir's and F's paths hold a space
 SW=$FX/stw; rm -rf "${SW:?}"; mkdir -p "$SW/bin" "$SW/st ate/repo/scripts" "$SW/o ut/v0.1.0" "$SW/u rc" || exit 3
 printf '%s\n' 'index($0, n "() {") == 1 { f = 1; print; if ($0 ~ /[}][[:space:]]*(#.*)?$/) exit; next }' 'f { print }' 'f && /^[}]/ { exit }' > "$SW/fn.awk"
-for f_ in dq npm_file npmcmd ship_stoptext; do awk -v n="$f_" -f "$SW/fn.awk" "$SR_ROOT/scripts/release.sh"; done > "$SW/fns.sh"
-printf '#!/bin/sh\n{ printf "rs [%%s]" "$0"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$SW/st ate/repo/scripts/release.sh"
+for f_ in dq npm_file npmcmd pnstep ship_stoptext; do awk -v n="$f_" -f "$SW/fn.awk" "$SR_ROOT/scripts/release.sh"; done > "$SW/fns.sh"
+printf '#!/bin/sh\n{ printf "rs [%%s]" "$0"; for a; do printf " [%%s]" "$a"; done; [ "$1" != publish-npm ] || printf " uc=[%%s]" "${NPM_CONFIG_USERCONFIG-unset}"; printf "\\n"; } >> "$REC"\n' > "$SW/st ate/repo/scripts/release.sh"
 printf '#!/bin/sh\n{ printf "git"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$SW/bin/git"
 printf '#!/bin/sh\n{ printf "npm"; for a; do printf " [%%s]" "$a"; done; printf " cwd=[%%s]\\n" "$PWD"; } >> "$REC"\n' > "$SW/bin/npm"
 chmod +x "$SW/bin/git" "$SW/bin/npm"
 printf '{\n  "tag": "v0.1.0",\n  "commit": "c0ffee"\n}\n' > "$SW/o ut/v0.1.0/MANIFEST.json"
 srun() { # how line want -> 0 when the line, run that way from /, gave exactly want
   REC=$SW/rec; : > "$REC"; export REC
-  if [ "$1" = sh ]; then (cd / && PATH="$SW/bin:/usr/bin:/bin" /bin/sh -c "$2") > "$SW/o" 2>&1
-  else (cd / && printf '%s\n' "$2" | PATH="$SW/bin:/usr/bin:/bin" HOME="$SW" /bin/zsh -f -i) > "$SW/o" 2>&1; fi
+  if [ "$1" = sh ]; then (cd / && env -i PATH="$SW/bin:/usr/bin:/bin" REC="$REC" /bin/sh -c "$2") > "$SW/o" 2>&1
+  else (cd / && printf '%s\n' "$2" | env -i PATH="$SW/bin:/usr/bin:/bin" HOME="$SW" REC="$REC" /bin/zsh -f -i) > "$SW/o" 2>&1; fi
   [ "$(cat "$REC")" = "$3" ]
 }
-nl_=0 bad_=""
+nl_=0 np_=0 bad_=""
 for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|content|" "|diverged|" \
           "push refused: main unmoved|fix|" "push refused: main holds it|fix|" "push refused|diverged|" "start push|fix|" "done push|fix|" \
           "start npm-platform sheepr-linux-arm64|fix|" "done npm-platform sheepr-linux-arm64|fix|" "start github|fix|" "exit5|fix|" "done github|fix|" \
@@ -1799,7 +1801,8 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
     esac
     t_=${l_#"${l_%%[! ]*}"}   # the line without its leading spaces
     case $t_ in
-      "sh '"*) e_=$(printf '%s\n' "$t_" | sed -n "s|^sh '[^']*' \([a-z-]*\) .*|\1|p"); w_="rs [$SW/st ate/repo/scripts/release.sh] [$e_] [--out] [$SW/o ut] [v0.1.0]" ;;
+      "sh '"*|"NPM_CONFIG_USERCONFIG='"*) e_=$(printf '%s\n' "$t_" | sed -n "s|^\(NPM_CONFIG_USERCONFIG='[^']*' \)\{0,1\}sh '[^']*' \([a-z-]*\) .*|\2|p"); w_="rs [$SW/st ate/repo/scripts/release.sh] [$e_] [--out] [$SW/o ut] [v0.1.0]"
+        [ "$e_" != publish-npm ] || { w_="$w_ uc=[$SW/u rc/npmrc]"; np_=$((np_ + 1)); } ;;   # (REV 11a rule 7: publish-npm gets F from its line)
       "git "*) w_="git [-C] [$SW/st ate/repo] [ls-remote] [origin] [refs/tags/v0.1.0]" ;;
       "cd / && npm "*) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$SW/u rc/npmrc] cwd=[/]" ;;
       *) continue ;;
@@ -1808,8 +1811,8 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
     for how_ in sh zsh; do srun $how_ "$l_" "$w_" || bad_="$bad_ [${la_:-$cl_} $how_: '$(printf '%s' "$t_" | cut -c1-90)': $(tr '\n' '|' < "$REC" | cut -c1-80) $(head -c 80 "$SW/o" | tr '\n' ' ')]"; done
   done < "$SW/text"
 done
-[ -z "$bad_" ] && [ "$nl_" -ge 29 ] && pass "r13b F6: every runnable line of ship_stoptext ($nl_ lines over 20 classes and progress states) runs as printed, from sh and from an interactive zsh" \
-  || fail "stoptext lines ($nl_):$(printf '%s' "$bad_" | cut -c1-500)"
+[ -z "$bad_" ] && [ "$nl_" -ge 29 ] && [ "$np_" = 9 ] && pass "r13b F6: every runnable line of ship_stoptext ($nl_ lines over 20 classes and progress states) runs as printed, from sh and from an interactive zsh; each of the $np_ publish-npm lines gives publish-npm F (REV 11a rule 7)" \
+  || fail "stoptext lines ($nl_, $np_ publish-npm lines):$(printf '%s' "$bad_" | cut -c1-500)"
 # REV 11a rule 6 (r14a): each npm credential command ship prints is a line of its own with nothing after
 # it (a copied period made F.): the logout step and its delete (pl), the logout's remedy (lo), A6's
 # stop, publish-npm's two whoami stops and its last line, on stdout and in the next file. Each line
@@ -1852,7 +1855,7 @@ world_reset; rm -f "${FX:?}/npmrc"
 for s_ in s1.o s1.nf s2.o s2.nf s3a.o s3b.o s3c.o; do ownrun "$s_" "$SW/$s_"; done
 on_=$(printf '%s\n' $on_ | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 ow_=$(printf '%s\n' s1.o:logout s1.o:delete s1.o:login s1.o:logout s1.o:delete s1.nf:logout s1.nf:delete s1.nf:login \
-  s2.o:logout s2.o:logout s2.nf:logout s3a.o:login s3b.o:login s3c.o:logout | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+  s2.o:logout s2.o:logout s2.nf:logout s3a.o:login s3b.o:logout s3b.o:login s3c.o:logout | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 [ -z "$bad_" ] && [ "$on_" = "$ow_" ] && [ "$r3_" = 0 ] && grep -q 'npm whoami failed' "$SW/s3a.o" && grep -q 'logged in to npm as stranger' "$SW/s3b.o" \
   && pass "REV 11a rule 6: each npm credential command ship prints (pl, lo, A6's stop, publish-npm's two whoami stops and its last line; stdout and the next file) is a line of its own and runs as printed, from sh and an interactive zsh" \
   || fail "rule 6: kinds [$on_], want [$ow_]; publish-npm rc ${r3_:-?};$(printf '%s' "$bad_" | cut -c1-700)"
@@ -1866,6 +1869,52 @@ for l_ in "cd / && npm config delete //registry.npmjs.org/:_authToken --location
   for how_ in sh zsh; do srun $how_ "$l_" "$w_" || { grep -qF "$g_" "$SW/rec" && cc_=$((cc_ + 1)); }; done
 done
 [ "$cc_" = 4 ] && pass "  control: today's sentences, copied from 'cd /' to their end, give the stub F. and F, (4 of 4 runs caught)" || fail "  control: $cc_ of 4 runs gave F. or F,"
+# REV 11a rule 7 (r14a F3, R3): the next file's publish-npm step names F itself. ship ran with
+# NPM_CONFIG_USERCONFIG=$FX/ship.npmrc and stopped after the push; in a shell without that variable
+# (its HOME's .npmrc empty): the printed npm login, then the printed publish-npm line, as printed:
+# publish-npm reads the file the login wrote (whoami lukasco), uploads the four packages, and its last
+# line, the logout step, names that file. Control: the variable set in that shell
+: > "$FX/ship.npmrc"; mkdir -p "$FX/h3" || exit 3; : > "$FX/h3/.npmrc"
+printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"
+SETX="NPM_CONFIG_USERCONFIG=$FX/ship.npmrc"; KEEP=1; ship; r=$?; KEEP=; SETX=; rm -f "${FX:?}/afterpush" "${FX:?}/viewfailv.sheepr-linux-arm64"
+cp "$NF" "$FX/r3.nf"; lgi_=$(grep -x "  cd / && npm login .*" "$FX/r3.nf" | head -1)
+pnl_=$(grep "^  NPM_CONFIG_USERCONFIG='[^']*' sh '[^']*/scripts/release.sh' publish-npm --out " "$FX/r3.nf" | head -1)
+[ -n "$pnl_" ] || pnl_=$(grep "^  sh '[^']*/scripts/release.sh' publish-npm --out " "$FX/r3.nf" | head -1)   # (the line without F: the red run)
+for k_ in bare control; do
+  ev_=""; [ $k_ = control ] && ev_="NPM_CONFIG_USERCONFIG=$FX/ship.npmrc"
+  : > "$FX/ship.npmrc"; rm -f "$FX"/pub.*; printf 'v0.1.0\nv0.1.0\n' > "$FX/ask"
+  (cd / && env -i PATH="$S:/usr/bin:/bin" HOME="$FX/h3" $ev_ sh -c "$lgi_") > /dev/null 2>&1
+  pd_=$(printf '%s\n' "$pnl_" | sed 's/ publish-npm --out / __publish-npm-dry --out /')
+  (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/h3" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+     SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_NOTIFY="$S/notify" $ev_ SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh -c "$pd_") > "$FX/co" 2>&1; rc_=$?
+  dryhomes "$FX/co"; np_=$(ls "$FX"/pub.* 2>/dev/null | grep -c .)
+  if [ -n "$lgi_" ] && [ -n "$pnl_" ] && [ $rc_ = 0 ] && [ "$np_" = 4 ] && [ "$(tail -1 "$FX/co")" = "  cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --userconfig='$FX/ship.npmrc'" ]; then
+    pass "$( [ $k_ = control ] && echo '  control (the variable set in that shell): ' || echo 'REV 11a rule 7 (r14a R3): ')the printed npm login, then the printed publish-npm line, in a shell $( [ $k_ = bare ] && echo 'without NPM_CONFIG_USERCONFIG' || echo 'with it'): publish-npm read the login's file, 4 uploads, its last line the logout of that file"
+  else fail "rule 7 R3 ($k_): rc=$rc_, $np_ uploads, the line '$(printf '%s' "$pnl_" | cut -c1-120)'; publish-npm said: $(grep -m1 -e 'whoami failed' -e 'userconfig' "$FX/co" | cut -c1-200) | last: $(tail -1 "$FX/co" | cut -c1-160)"; fi
+done
+rm -rf "${FX:?}/h3"; rm -f "${FX:?}/ship.npmrc" "${FX:?}/r3.nf"; world_reset; rm -f "${FX:?}/npmrc"
+# REV 11a rule 9 (r14a F2): publish-npm finds npm logged in as another account (F's live token): its stop
+# names the logout step first (it ends that token everywhere it is used), then the login, then how to
+# keep that token (another userconfig file). Its command lines, run in order as printed: the stand-in
+# ends the other account's token before the login writes. Control: whoami ENEEDAUTH: the login alone
+printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/afterpush" "${FX:?}/viewfailv.sheepr-linux-arm64"
+for k_ in stranger control; do
+  : > "$FX/npmrc"; [ $k_ = control ] || { echo '//registry.npmjs.org/:_authToken=npm_stranger' > "$FX/npmrc"; echo stranger > "$FX/whoami"; }
+  pnx; rc_=$?; rm -f "${FX:?}/whoami"; : > "$FX/tokops"
+  grep '^  cd / && npm ' "$FX/co" > "$FX/co.steps"
+  while IFS= read -r l_; do (cd / && env -i PATH="$S:/usr/bin:/bin" HOME="$FX/ghome" sh -c "$l_") > /dev/null 2>&1 < /dev/null; done < "$FX/co.steps"
+  ops_=$(tr '\n' '|' < "$FX/tokops")
+  if [ $k_ = stranger ]; then
+    [ $rc_ = 1 ] && grep -q 'logged in to npm as stranger' "$FX/co" && [ "$ops_" = "DELETE token=npm_stranger|LOGIN|" ] \
+      && grep -q 'to keep that token: run neither line' "$FX/co" && grep -qF 'an absolute path in NPM_CONFIG_USERCONFIG' "$FX/co" \
+      && pass "REV 11a rule 9: npm logged in as another account: the logout step, then the login, then how to keep that token; run in order, the other token ends before the login writes" \
+      || fail "rule 9: rc=$rc_ ops [$ops_]; $(grep -c . "$FX/co.steps") command lines; $(grep -A1 'logged in to npm as' "$FX/co" | tr '\n' '|' | cut -c1-300)"
+  else
+    [ $rc_ = 1 ] && grep -q 'npm whoami failed' "$FX/co" && [ "$ops_" = "LOGIN|" ] && ! grep -q 'npm logout' "$FX/co.steps" \
+      && pass "  control: whoami ENEEDAUTH: the login step alone" || fail "  rule 9 control: rc=$rc_ ops [$ops_] $(tr '\n' '|' < "$FX/co.steps" | cut -c1-200)"
+  fi
+done
+world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/tokops" "${FX:?}/co.steps"
 # r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
 # child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
 # with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a
@@ -1986,7 +2035,8 @@ rm -rf "${OUTR:?}"
 # --- what to run after a stop: the fixed text, its file; the steps it names run through their dry
 # entries against the state the stop left (after the operator steps the text names), and complete
 cont() { # run each step the next file names, in order: npm login (the operator's), then each
-         # release.sh entry through its dry entry; RC: the first refused step, or 0
+         # release.sh entry through its dry entry (publish-npm: its line as printed, in a shell
+         # without NPM_CONFIG_USERCONFIG); RC: the first refused step, or 0
   RC=0; : > "$FX/cont"; rm -f "$FX/cont.one"
   while IFS= read -r l; do
     case $l in
@@ -1997,6 +2047,17 @@ cont() { # run each step the next file names, in order: npm login (the operator'
         [ -z "${2:-}" ] || [ ! -e "$FX/cont.one" ] || return
         [ -z "${2:-}" ] || : > "$FX/cont.one"
         echo "$e" >> "$FX/cont"; printf 'v0.1.0\nv0.1.0\n' > "$FX/ask"
+        if [ "$e" = publish-npm ]; then
+          # (REV 11a rule 7) the line as printed, from / in a shell without NPM_CONFIG_USERCONFIG (the
+          # line names F itself), its dry entry in the entry's place; its last line, the logout step, names F
+          pl_=$(printf '%s\n' "$l" | sed 's/ publish-npm --out / __publish-npm-dry --out /')
+          (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_NOTIFY="$S/notify" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh -c "$pl_") > "$FX/co" 2>&1 \
+            || { dryhomes "$FX/co"; RC=1; echo "refused: $e: $(tail -1 "$FX/co")" >> "$FX/cont"; return; }
+          dryhomes "$FX/co"
+          [ "$(tail -1 "$FX/co")" = "  $LGF" ] || { RC=1; echo "refused: $e: its last line is not the logout step naming F: $(tail -1 "$FX/co")" >> "$FX/cont"; return; }
+          continue
+        fi
         (cd "$REPO" && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
           SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" NPM_CONFIG_USERCONFIG="$FX/npmrc" \
           SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh scripts/release.sh "__$e-dry" --out "$OUTR" v0.1.0) > "$FX/co" 2>&1 \
@@ -2136,10 +2197,11 @@ RO_=$REPO; REPO=$SPR; : > "$FX/postfail"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?
 nr_=0 nok_=0 bad_=""
 while IFS= read -r l; do
   case $l in *"sh '"*"/scripts/release.sh' "*) ;; *) continue ;; esac
-  l=${l%%v0.1.0*}v0.1.0; eval "set -- $l"
+  l=${l%%v0.1.0*}v0.1.0; eval "set -- $l"; ev_=""
+  case $1 in NPM_CONFIG_USERCONFIG=*) ev_=$1; shift ;; esac   # (publish-npm's line names F itself: REV 11a rule 7)
   nr_=$((nr_ + 1)); e_=$3; shift 3
   (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" NPM_CONFIG_USERCONFIG="$FX/npmrc" \
+    SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" SR_PUBLISH_DRY_NOTIFY="$S/notify" NPM_CONFIG_USERCONFIG="$FX/npmrc" ${ev_:+"$ev_"} \
     SR_PUBLISH_DRY_VERIFIED="$AH" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh "$SPR/scripts/release.sh" "__$e_-dry" "$@") > "$FX/co" 2>&1
   dryhomes "$FX/co"
   case $l in *"'$SPR/scripts/release.sh' $e_ "*) ;; *) bad_="$bad_ [path: $l]" ;; esac

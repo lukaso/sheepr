@@ -47,7 +47,8 @@ mkout() { # dir tag [control] [commit]: the four packages, the manifest naming e
   printf '%s %s\n' "$2" "$(shasum -a 256 "$1/MANIFEST.json" | cut -d' ' -f1)" > "$1/NPM-CHECKED"
 }
 integrity() { python3 -c 'import base64,hashlib,sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$1"; }
-# `config get userconfig` answers $FX/dryrc. $FX/whoamicode, $FX/viewcode.<package> (the views before its
+# `config get userconfig` answers the userconfig npm loads (--userconfig, else the environment's, else
+# $HOME/.npmrc), or $FX/other.npmrc when $FX/ucother exists. $FX/whoamicode, $FX/viewcode.<package> (the views before its
 # upload) and $FX/viewcodeafter.<package> (the views after it): that call answers the file's npm error code.
 # `whoami` prints $FX/whoami (exit 1 with ENEEDAUTH if $FX/whoamifail exists); `owner ls NAME`
 # prints a `user <email>` line per line of $FX/owner.NAME (default: lukasco), or exits 1 with E404
@@ -90,7 +91,10 @@ case \$1 in
     printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1 ;;
   whoami) [ -f "$FX/onwhoami" ] && sh "$FX/onwhoami"; if [ -f "$FX/whoamifail" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi
     if [ -f "$FX/whoamicode" ]; then echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; fi; cat "$FX/whoami"; exit 0 ;;
-  config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/dryrc"; exit 0; }; exit 1 ;;
+  config) [ "\$2 \$3" = "get userconfig" ] || exit 1
+    [ -e "$FX/ucother" ] && { echo "$FX/other.npmrc"; exit 0; }
+    u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done
+    echo "\${u_:-\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-\$HOME/.npmrc}}}"; exit 0 ;;
   owner) p=\$3
     if [ -f "$FX/ownerfail.\$p" ]; then echo "npm error owner ls Couldn't get owner data \$p" >&2; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/ownerbad.\$p" ]; then echo "npm error code ETIMEDOUT" >&2; exit 1; fi
@@ -142,8 +146,8 @@ done
 [ -z "$bad" ] && pass "each publish: the registry pinned, no --tag (a final), a private copy holding the manifest's bytes" || fail "publish lines:$bad"
 [ "$(grep -c "^npm view --json --prefer-online $REG sheepr[a-z0-9-]*@0.1.0 dist.integrity\$" "$FX/calls")" = 8 ] \
   && pass "each view (4 before the uploads, 4 after them): --json, --prefer-online (not npm's cache), the registry pinned" || fail "view lines: $(grep '^npm view' "$FX/calls" | head -1)"
-[ "$(sed -n 1,5p "$FX/calls" | tr '\n' ',')" = "npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
-  && pass "before any view or upload: npm whoami, then the owners of all four names, the registry pinned" || fail "the first calls: $(sed -n 1,5p "$FX/calls" | tr '\n' ',')"
+[ "$(sed -n 1,6p "$FX/calls" | tr '\n' ',')" = "npm config get userconfig --scope=,npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
+  && pass "before any view or upload: npm's userconfig (REV 11a rule 7), npm whoami, then the owners of all four names, the registry pinned" || fail "the first calls: $(sed -n 1,6p "$FX/calls" | tr '\n' ',')"
 grep -q 'unsigned' "$FX/calls" && fail "a call names the -unsigned sibling" || pass "the -unsigned sibling's packages are never named"
 # the notifications in today's order: one right before each upload that follows a wait (the operator
 # may have left during it), none before the first: npm-approve-next before a platform package's,
@@ -176,6 +180,13 @@ h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*)
 nopub() { ! grep -q -e '^npm publish' -e '^npm view' "$FX/calls"; }
 mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail"
 [ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && pass "not logged in to npm: refused before any view or upload" || fail "whoami fails: rc=$r $(order) $(tail -1 "$FX/o")"
+# REV 11a rule 7 (r14a F3): publish-npm makes A1's check too: npm naming another userconfig than the
+# file it loads (F) is refused before whoami, both files named. (Control: every run above, npm naming F)
+mkout "$D" v0.1.0; : > "$FX/ucother"; pub v0.1.0; r=$?; rm -f "$FX/ucother"
+[ $r = 1 ] && grep -q '^npm config get userconfig' "$FX/calls" && ! grep -q -e '^npm whoami' -e '^npm view' -e '^npm publish' "$FX/calls" \
+  && grep -qF "npm names $FX/other.npmrc as its userconfig" "$FX/o" && grep -qF "the file it loads is $FX/decoy-npmrc" "$FX/o" \
+  && pass "REV 11a rule 7: npm names another userconfig than F: publish-npm refuses before whoami, both files named" \
+  || fail "publish-npm, another userconfig: rc=$r, $(grep -c '^npm whoami' "$FX/calls") whoami; $(grep -m1 'userconfig' "$FX/o" | cut -c1-200)"
 # npm's E401, a counted login line in npm's userconfig, at each npm call of publish-npm that can answer
 # it (whoami, a view before an upload, the wait's last view after one): npm's words, then npm_tokens
 # (REV 10: the count picks no words, and no delete is named). Control: no counted line, the same
@@ -217,8 +228,8 @@ mkout "$D" v0.1.0; printf 'sed -i.bak "s/^SR_NPM_PKGS=.*/SR_NPM_PKGS=\x27sheepr 
 pub v0.1.0; r=$?; rm -f "$FX/onwhoami"; changed=$(grep -c '^SR_NPM_PKGS=.sheepr sheepr-linux' "$REPO/scripts/release.conf"); g checkout -q scripts/release.conf
 [ "$changed" = 1 ] || fail "the whoami hook did not change the list (the row would prove nothing)"
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
-  && [ "$(sed -n 1,5p "$FX/calls" | tr '\n' ',')" = "npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
-  && pass "a list changed after its check: the checked list is the one the owner check and the uploads use" || fail "list changed mid-run: rc=$r $(order) | $(sed -n 1,5p "$FX/calls" | tr '\n' ',')"
+  && [ "$(sed -n 1,6p "$FX/calls" | tr '\n' ',')" = "npm config get userconfig --scope=,npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
+  && pass "a list changed after its check: the checked list is the one the owner check and the uploads use" || fail "list changed mid-run: rc=$r $(order) | $(sed -n 1,6p "$FX/calls" | tr '\n' ',')"
 # after each upload, publishing waits until npm shows that file (npm may process a new package for
 # minutes before it shows: measured 2026-10-04), so the main package goes up only when the platform
 # packages its optional dependencies name are there

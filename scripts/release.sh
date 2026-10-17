@@ -911,13 +911,19 @@ publish_npm_exec() { # dir
   # who may publish, before any view or upload: npm must say the user is release.conf's (measured,
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
+  # npm's own name for its userconfig, as A1 checks it (REV 11a rule 7), the first npm call (npm_list
+  # makes none); under ship, A1 made the check
+  [ "$shipping" = yes ] || npm_ucheck "$pc" publish-npm "; this step uploaded nothing"
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$pc/err") \
     || die "npm whoami failed (not logged in to npm?); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")$(next_hint ".
 Log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
   $(npmcmd login)")"
   [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; this step uploaded nothing$(next_hint ".
-Log in as that user with this, then run publish-npm again:
-  $(npmcmd login)")"
+Run this logout first (for a token, npm's docs say it ends that token everywhere it is used):
+  $(npmcmd logout)
+Then log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
+  $(npmcmd login)
+Or, to keep that token: run neither line; run the release with another userconfig file instead, an absolute path in NPM_CONFIG_USERCONFIG.")"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
@@ -1157,9 +1163,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # npm's userconfig variable: an absolute path or none, before any npm call (npm_ucbad); then npm's own
   # name for its userconfig must be F, the file it loads (REV 11 rule 1: a userconfig= key names another)
   if m_=$(npm_ucbad); then die "$m_"; fi
-  F_=$(npm_file); uc_=$(tool "$NPMC" "$NPM" config get userconfig --scope= 2> "$st/uc.err") \
-    || die "cannot ask npm which userconfig it names (npm config get userconfig: $(errcut "$st/uc.err" 200)), so ship cannot tell which file npm uses: when npm answers, run ship again"
-  [ "$uc_" = "$F_" ] || die "npm names $uc_ as its userconfig (npm config get userconfig), but the file it loads is $F_: a userconfig= key names the other file. ship reads and prints $F_ only: remove the userconfig= key from $F_, or set NPM_CONFIG_USERCONFIG to the file npm should use, then run ship again"
+  npm_ucheck "$st" ship
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
   # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
   checks
@@ -1373,6 +1377,19 @@ npm_file() {
   elif [ -n "${npm_config_userconfig:-}" ]; then printf '%s' "$npm_config_userconfig"
   else case ${NPMC:-} in npmdry) h_=${DRYHOME:-} ;; *) h_=${HOME:-} ;; esac; h_=${h_%/}; printf '%s' "$h_/.npmrc"; fi
 }
+# npm_ucheck DIR ENTRY [TAIL]: npm's own name for its userconfig must be F, the file it loads (REV 11
+# rule 1: a userconfig= key names another). ship's A1 makes it, and publish-npm (REV 11a rule 7: the
+# printed publish-npm step names F), before any other npm call. DIR holds npm's stderr; TAIL ends each
+# refusal
+npm_ucheck() {
+  F_=$(npm_file); uc_=$(tool "$NPMC" "$NPM" config get userconfig --scope= 2> "$1/uc.err") \
+    || die "cannot ask npm which userconfig it names (npm config get userconfig: $(errcut "$1/uc.err" 200)), so $2 cannot tell which file npm uses: when npm answers, run $2 again${3:-}"
+  [ "$uc_" = "$F_" ] || die "npm names $uc_ as its userconfig (npm config get userconfig), but the file it loads is $F_: a userconfig= key names the other file. $2 reads and prints $F_ only: remove the userconfig= key from $F_, or set NPM_CONFIG_USERCONFIG to the file npm should use, then run $2 again${3:-}"
+}
+# pnstep: the next file's publish-npm step, one construction (REV 11a rule 7): F named in the line
+# itself, so the publish-npm it runs reads the file the printed login wrote, whatever the shell that
+# runs it holds; the checkout and the out dir by absolute path, through dq; a line of its own
+pnstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s publish-npm --out %s %s\n' "$(dq "$(npm_file)")" "$(dq "$oroot/scripts/release.sh")" "$(dq "$out")" "$tag"; }
 # npmcmd login|logout|delete: the npm credential commands ship prints, one construction (REV 11 rule
 # 3): from / (no project config), npmjs's registry, no scope (npm's scope routes login and logout to
 # the scope's registry), and F by name, through dq (the operator's shell may name another userconfig).
@@ -1674,7 +1691,7 @@ ship_stoptext() {
             echo "$run publish $o"
             echo "When the GitHub release is already public, run this instead of the line above:"
             echo "$run publish-cask $o"
-            echo "$login"; echo "$run publish-npm $o"
+            echo "$login"; pnstep
           else
             echo "Continue with the separate steps of PHASE3.md §5: build --sign, npm-check, the push, publish, publish-npm."
           fi ;;
@@ -1707,25 +1724,25 @@ ship_stoptext() {
       echo "The push started and was not confirmed. Check whether $tag is on GitHub:"
       echo "  git -C $(dq "$oroot") ls-remote origin refs/tags/$tag"
       echo "If it is not: run ship again. If it is, run in order:"
-      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+      echo "$run publish $o"; echo "$login"; pnstep ;;
     'done push')
       echo "$tag is pushed; nothing else is public. Run in order:"
-      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+      echo "$run publish $o"; echo "$login"; pnstep ;;
     'start npm-platform '*|'done npm-platform '*)
       echo "$tag is pushed, and npm may hold a part of it; GitHub has no release of it. Run in order:"
-      echo "$run publish $o"; echo "$login"; echo "$run publish-npm $o" ;;
+      echo "$run publish $o"; echo "$login"; pnstep ;;
     'start github')
       echo "$tag is pushed, and npm may hold a part of it; the GitHub publish stopped. Check GitHub's releases for $tag:"
       echo "  a draft is not public: delete it on GitHub, then run:"; echo "  $run publish $o"
       echo "  a public release: run:"; echo "  $run publish-cask $o"
       echo "  neither: run:"; echo "  $run publish $o"
-      echo "Then:"; echo "$login"; echo "$run publish-npm $o" ;;
+      echo "Then:"; echo "$login"; pnstep ;;
     exit5)
       echo "$tag is public on GitHub, but its Homebrew cask is not updated, and npm may hold a part of it. Run in order:"
-      echo "$run publish-cask $o"; echo "$login"; echo "$run publish-npm $o" ;;
+      echo "$run publish-cask $o"; echo "$login"; pnstep ;;
     'done github'|'start npm-main')
       echo "$tag is public on GitHub and Homebrew, and npm may hold a part of it. Run in order:"
-      echo "$login"; echo "$run publish-npm $o" ;;
+      echo "$login"; pnstep ;;
     *) echo "$tag is public on GitHub, Homebrew and npm." ;;
   esac
   # after an upload: the wait, and npm's review
