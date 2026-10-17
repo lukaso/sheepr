@@ -1706,6 +1706,10 @@ for k_ in C2 C8; do
   rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmcheckfail" "${FX:?}/pubfail.sheepr" "${FX:?}/onbuild" "${FX:?}/onlogin"
   [ $r = 1 ] && [ ! -e "$NF" ] && grep -q '^release: ship v0.1.0 stopped at' "$FX/o" && ! grep -q 'these steps are also in' "$FX/o" && grep -qF "release: (the next file, $NF, could not be written: these steps are only here)" "$FX/o" \
     && pass "r13a P4: the next file not written ($k_): stdout says so, and never that the steps are also in it" || fail "next file not written ($k_): rc=$r $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)"
+  # (r14b) and its notification names no file: notify.sh gets - for the out dir (the control: row "no
+  # logout (no login was tried)", a written next file, gets $OUTR)
+  [ "$(grep '^notify failed-' "$FX/calls" | sed 's/^notify [^ ]* v0\.1\.0 //')" = - ] \
+    && pass "  r14b: its notification gets - for the out dir (it names no next file)" || fail "  r14b ($k_): the notification: $(grep '^notify failed-' "$FX/calls" | tr '\n' '|')"
   rm -rf "${OUTR:?}"
 done
 # --- REV 11, npm routing (r13a F1-F4): F is the userconfig npm loads; every npm call ship makes has

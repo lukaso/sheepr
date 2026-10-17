@@ -13,7 +13,9 @@
 # (absolute, no control character), makes failed-PHASE and logout-failed-PHASE name the next file by
 # its full path, DIR/TAG.ship-next.txt (release.sh gives it): a notification read later, in another
 # window, must name a file that opens from there. Any other DIR is not used: the text names the file
-# by its name, and the notification is still shown (a stop must not go unseen; stderr says why).
+# by its name, and the notification is still shown (a stop must not go unseen; stderr says why). DIR
+# "-": the next file could not be written (release.sh's wrote=no): the text says the steps are in the
+# terminal, and names no file.
 #
 # Real mode (SR_NOTIFY_OSASCRIPT not set at all): the bell on /dev/tty, then /usr/bin/osascript
 # shows the text, which it gets after `--` (without it, a text that starts with -e is compiled as
@@ -43,13 +45,15 @@ tagre='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
 printf '%s\n' "$tag" | grep -Eq "$tagre" && [ "$(printf '%s' "$tag" | wc -l | tr -d ' ')" = 0 ] \
   || refuse "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
 nf=$tag.ship-next.txt
-if [ -n "$dir" ]; then
+if [ "$dir" = - ]; then nf=""
+elif [ -n "$dir" ]; then
   case $dir in
     *[[:cntrl:]]*) say "the out dir holds a control character: the text names the next file by its name only" ;;
     /*) nf=${dir%/}/$tag.ship-next.txt ;;
     *) say "the out dir '$dir' is not an absolute path: the text names the next file by its name only" ;;
   esac
 fi
+where="in $nf"; [ -n "$nf" ] || where="in the terminal: its next file could not be written"
 case $key in
   password) text="$tag: type the notary keychain password in the terminal" ;;
   password-again) text="$tag: Apple did not accept the submission. Type the notary keychain password again in the terminal, to fetch Apple's log" ;;
@@ -58,13 +62,13 @@ case $key in
   npm-approve-next) text="$tag: npm may ask again: approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
-  logout-failed) text="$tag: ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run is in $nf" ;;
+  logout-failed) text="$tag: ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run is $where" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase. What to run next is in $nf" ;;
+    text="$tag stopped at $phase. What to run next is $where" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run next is in $nf" ;;
+    text="$tag stopped at $phase, and ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run next is $where" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 

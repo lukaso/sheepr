@@ -48,17 +48,24 @@ Sheepr.app/Contents/_CodeSignature/CodeResources"
 Sheepr.app/Contents/CodeResources"
     want=$(printf '%s\n' "$want" | sort)
     wantdirs=$(printf '%s\n' "$want" | while IFS= read -r f; do d=$(dirname "$f"); while [ "$d" != . ]; do echo "$d/"; d=$(dirname "$d"); done; done | sort -u)
-    # the listing: regular files and directories, owners
+    # the listing: regular files and directories, owners. bsdtar exits 0 when its listing cannot be
+    # written (a full temp dir: an empty or a cut listing, read as a defect of the archive;
+    # notes/r14b/arc/list2.out, notes/builder/arc14/x.out): a line written after it must land, or there
+    # is no listing to judge (a write failure that clears before that line is not seen). tar stays
+    # this script's own child (the signal rows send to it there)
     tar -tvzf "$arc" > "$t/list" 2>/dev/null; r_=$?
     [ $r_ -le 125 ] || nocheck "tar stopped by a signal while it listed $arc (exit $r_)"
     [ $r_ = 0 ] || bad "cannot list $arc"
-    files=$(awk '$1 ~ /^-/ {print $NF}' "$t/list" | sort)
-    dirs=$(awk '$1 ~ /^d/ {print $NF}' "$t/list" | sed 's#/*$#/#' | sort -u)
-    others=$(awk '$1 !~ /^[-d]/' "$t/list")
+    { printf 'end\n' >> "$t/list"; } 2>/dev/null && [ "$(tail -n 1 "$t/list")" = end ] \
+      || nocheck "the listing of $arc could not be written into $t (a full or unwritable temp dir)"
+    list=$(sed '$d' "$t/list")
+    files=$(printf '%s\n' "$list" | awk '$1 ~ /^-/ {print $NF}' | sort)
+    dirs=$(printf '%s\n' "$list" | awk '$1 ~ /^d/ {print $NF}' | sed 's#/*$#/#' | sort -u)
+    others=$(printf '%s\n' "$list" | awk '$1 !~ /^[-d]/ && NF')
     [ -z "$others" ] || bad "entries that are neither files nor directories: $others"
     [ "$files" = "$want" ] || bad "the files are not exactly the bundle's: $(printf '%s' "$files" | tr '\n' ' ')"
     [ "$dirs" = "$wantdirs" ] || bad "the directories are not exactly the files' parents: $(printf '%s' "$dirs" | tr '\n' ' ')"
-    owners=$(awk '{print $3 " " $4}' "$t/list" | sort -u)
+    owners=$(printf '%s\n' "$list" | awk 'NF {print $3 " " $4}' | sort -u)
     [ "$owners" = "0 0" ] || bad "owners are not 0/0 without names: $(printf '%s' "$owners" | tr '\n' ',')"
     gzip -dc "$arc" | grep -a -q -e 'SCHILY.xattr' -e 'LIBARCHIVE.xattr' && bad "an xattr pax header"
     # (the listing passed: an extraction that fails is the temp dir's (full, unwritable) or a signal's)

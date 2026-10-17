@@ -70,6 +70,14 @@ for d in 'sheepr-release' "/Users/o/a$(printf '\001')b"; do
   [ $r = 0 ] && [ "$(calls)" = 1 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at push. What to run next is in $T.ship-next.txt]" ] && grep -q 'by its name only' "$FX/err" \
     && pass "an out dir that is not absolute, or holds a control character: the next file by its name, the one notification shown, stderr says why" || fail "bad dir: rc=$r calls=$(calls) '$(cat "$FX/rec" 2>/dev/null)' $(cat "$FX/err")"
 done
+# r14b: the out dir given as - (release.sh's, when the next file could not be written): the text says
+# the steps are in the terminal and names no file
+nt "$FX/osa" failed-push "$T" -
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T stopped at push. What to run next is in the terminal: its next file could not be written]" ] \
+  && pass "failed-PHASE with - (no next file): the steps are in the terminal; no file named" || fail "failed-push with -: rc=$r '$(cat "$FX/rec" 2>/dev/null)' $(cat "$FX/err")"
+nt "$FX/osa" logout-failed "$T" -
+[ $r = 0 ] && [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[$T: ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run is in the terminal: its next file could not be written]" ] \
+  && pass "logout-failed with - (no next file): the steps are in the terminal; no file named" || fail "logout-failed with -: rc=$r '$(cat "$FX/rec" 2>/dev/null)'"
 nt "$FX/osa" password v0.1.4-rc.2
 [ "$(cat "$FX/rec" 2>/dev/null)" = "$pre[v0.1.4-rc.2: type the notary keychain password in the terminal]" ] && pass "an rc tag is a tag" || fail "rc tag: rc=$r $(cat "$FX/err")"
 # only table texts: an unknown key, a bad phase, a bad or missing tag run nothing

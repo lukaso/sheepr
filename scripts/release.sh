@@ -883,8 +883,9 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
 # entry's notifier always runs with SR_NOTIFY_OSASCRIPT set (empty), so even notify.sh given there
 # by mistake shows nothing real; a real entry's runs in the base class (no SR_NOTIFY_OSASCRIPT)
 notify() {
-  # a stop's notification also gets the out dir: its text names the next file's full path
-  case $1 in failed-*|logout-failed*) set -- "$1" "$tag" "$out" ;; *) set -- "$1" "$tag" ;; esac
+  # a stop's notification also gets the out dir: its text names the next file's full path; when that
+  # file could not be written (ship_exit's wrote), -: the text names no file
+  case $1 in failed-*|logout-failed*) if [ "${wrote:-no}" = yes ]; then set -- "$1" "$tag" "$out"; else set -- "$1" "$tag" -; fi ;; *) set -- "$1" "$tag" ;; esac
   if [ -n "$DRYHOME" ]; then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$@"
   else tool base "$NOTIFY" "$@"; fi || echo "release: the notification '$1' failed; the run goes on" >&2
 }

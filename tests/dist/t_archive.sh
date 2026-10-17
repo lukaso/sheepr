@@ -51,6 +51,17 @@ lim=$(( $(wc -c < "$FX/good.tar.gz") / 512 + 4 ))
 [ $rc = 3 ] && grep -q '^archive: cannot check: cannot extract' "$FX/room.o" && pass "r13b F3: the extraction out of room (ulimit -f $lim): exit 3, cannot check" || fail "room: rc=$rc $(tail -2 "$FX/room.o" | tr '\n' '|')"
 "$A" check "$FX/extra.tar.gz" > "$FX/extra.o" 2>&1; rc=$?
 [ $rc = 1 ] && grep -q '^archive: ' "$FX/extra.o" && ! grep -q 'cannot check' "$FX/extra.o" && pass "  control: an extra file: exit 1, its refusal" || fail "  extra: rc=$rc $(tail -1 "$FX/extra.o")"
+# r14b (arc/list2.out): the listing cannot be written to the temp dir (ulimit -f 0 with SIGXFSZ ignored:
+# a write fails as on a full disk, and no signal is sent), and bsdtar's listing then exits 0, empty
+# (notes/builder/arc14/x.out): no finding about the archive: exit 3, cannot check. (Its words through a
+# pipe: the limit covers files.) Control: a truncated archive: exit 1, it cannot be listed
+{ ( trap '' XFSZ; ulimit -f 0; "$A" check "$FX/good.tar.gz"; echo "rc=$?" ) 2>&1; } | cat > "$FX/list.o"
+rc=$(sed -n 's/^rc=//p' "$FX/list.o")
+[ "$rc" = 3 ] && grep -q '^archive: cannot check: ' "$FX/list.o" && ! grep -q 'not exactly the bundle' "$FX/list.o" \
+  && pass "r14b: the listing cannot be written (ulimit -f 0, SIGXFSZ ignored): exit 3, cannot check" || fail "listing unwritable: rc=$rc $(grep '^archive:' "$FX/list.o" | head -1)"
+head -c 300 "$FX/good.tar.gz" > "$FX/cut.tar.gz"
+"$A" check "$FX/cut.tar.gz" > "$FX/cut.o" 2>&1; rc=$?
+[ $rc = 1 ] && grep -q '^archive: cannot list ' "$FX/cut.o" && pass "  control: a truncated archive: exit 1, it cannot be listed" || fail "  truncated: rc=$rc $(tail -1 "$FX/cut.o")"
 # a QUIT (its default runs no EXIT trap) and a USR1 to `archive.sh check` while tar lists the
 # archive (400 MiB of zeros, small once compressed, so tar runs long enough; tests/lib/sigchild.c
 # sends the signal once tar is archive.sh's child): archive.sh waits for tar, exits 1, writes
