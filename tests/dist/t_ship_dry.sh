@@ -57,7 +57,11 @@ printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\n' "$FX" > "$B/sleep"; chmod +x "$B/
 # sr-release) is recorded in $FX/made, so a row can hold every one to a name on the run's stderr
 cat > "$B/mktemp" <<EOF
 #!/bin/sh
+# (\$FX/dryhomefail: the next temp HOME is not made; \$FX/publishro: the next sr-publish dir is made
+# unwritable; each once)
+case "\$*" in *sr-dryhome.*) [ -e "$FX/dryhomefail" ] && { rm -f "$FX/dryhomefail"; echo "mktemp: (stand-in) no dir made" >&2; exit 1; } ;; esac
 d=\$(/usr/bin/mktemp "\$@") || exit \$?
+case \${d##*/} in sr-publish.*) [ -e "$FX/publishro" ] && { rm -f "$FX/publishro"; chmod 500 "\$d"; } ;; esac
 case \${d##*/} in sr-ship.*|sr-publish.*|sr-npmpub.*|sr-dryhome.*|sr-release.*) echo "\$d" >> "$FX/made" ;; esac
 printf '%s\n' "\$d"
 EOF
@@ -111,10 +115,21 @@ cat > "$S/npmcheck" <<EOF
 [ -d "\$HOME" ] || echo "NOHOME npmcheck" >> "$FX/calls"
 echo "npmcheck \$*" >> "$FX/calls"
 [ -e "$FX/onnpmcheck" ] && sh "$FX/onnpmcheck"   # (\$FX/onnpmcheck: a hook at C2's npm-check)
-[ -e "$FX/npmcheckfail" ] && { echo "npm-check: refused (stand-in)" >&2; exit 1; }
+# (\$FX/npmcheckfail: npm-check refuses the build's bytes, as npm_check's own checks do: its words for
+# the kind in the file (hash, control, codesign; any other: a refusal), and the content class into the
+# class file ship gives it, SR_SHIP_DRY_CLASS)
+if [ -e "$FX/npmcheckfail" ]; then
+  case "\$(cat "$FX/npmcheckfail")" in
+    hash) echo "release: sheepr-linux-x64-0.1.0.tgz does not match its manifest hash" >&2 ;;
+    control) echo "release: the manifest is a control build" >&2 ;;
+    codesign) echo "release: codesign: the darwin package's bundle does not meet the release requirement" >&2 ;;
+    *) echo "npm-check: refused (stand-in)" >&2 ;;
+  esac
+  [ -z "\${SR_SHIP_DRY_CLASS:-}" ] || echo content > "\$SR_SHIP_DRY_CLASS"; exit 1
+fi
 d=\$1; tg=\$(basename "\$d")
 [ -e "$FX/npmcheck.swap" ] && echo ' ' >> "\$d/MANIFEST.json"
-printf '%s %s\n' "\$tg" "\$(shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
+printf '%s %s\n' "\$tg" "\$(/usr/bin/shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.badstamp" ] || echo "\$tg 0000" > "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.nostamp" ] || rm -f "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.touchpkg" ] || echo x >> "\$d/sheepr-linux-x64-0.1.0.tgz"
@@ -1615,6 +1630,37 @@ for pt in 'onnpmcheck|INT|npm-check' 'onowner|HUP|checks'; do
     || fail "$sg at $hk: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"
 done
 rm -f "${FX:?}/sigsend"
+# r12b F1: the content class is set only where a defect in the build's bytes is found (npm_check and
+# verify set it themselves; C2's parent sets none): a failure that found none ends "when the cause above
+# is fixed", never "move aside" (a rebuild and a second notarization). A C2 child KILLed (no signal to
+# ship), C2's temp dir not made, C3's private copy of the manifest into a temp dir it cannot write,
+# shasum giving no hash at C3. Controls: npm-check's refusals of the bytes keep "move aside"
+fx1() { # label phase: the last run stopped at phase; nothing is public, the fix ending, no aside; all removed
+  [ $r = 1 ] && grep -q "stopped at $2" "$NF" && grep -qx 'Nothing is public.' "$NF" && endsfix "$NF" && ! grep -q aside "$NF" && gone \
+    && pass "$1: Nothing is public, when the cause is fixed run ship again; no move aside" || fail "$1: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-260)"
+}
+printf 'echo "npm-check child KILLed" >> "%s/calls"; kill -KILL $PPID\n' "$FX" > "$FX/onnpmcheck"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onnpmcheck"
+grep -q '^npm-check child KILLed$' "$FX/calls" || fail "  the KILL hook did not run (the row would prove nothing)"
+fx1 "r12b F1: the npm-check child KILLed (no signal to ship)" npm-check
+printf ': > "%s/dryhomefail"\n' "$FX" > "$FX/onbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onbuild" "${FX:?}/dryhomefail"
+grep -q 'mktemp: (stand-in) no dir made' "$FX/o" || fail "  the temp HOME stand-in did not refuse (the row would prove nothing)"
+fx1 "  C2's temp dir not made" npm-check
+: > "$FX/publishro"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/publishro"
+fx1 "  C3: the manifest's private copy into a temp dir it cannot write" checks
+cat > "$B/shasum" <<EOF
+#!/bin/sh
+[ -e "$FX/shasumnone" ] && exit 0
+exec /usr/bin/shasum "\$@"
+EOF
+chmod +x "$B/shasum"; printf ': > "%s/shasumnone"\n' "$FX" > "$FX/onnpmcheck"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${B:?}/shasum" "${FX:?}/onnpmcheck" "${FX:?}/shasumnone"
+fx1 "  shasum gives no hash at C3 (exit 0, no output)" checks
+for k_ in hash control codesign; do
+  echo "$k_" > "$FX/npmcheckfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmcheckfail"
+  [ $r = 1 ] && grep -qx 'Nothing is public.' "$NF" && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" && gone \
+    && pass "  control: npm-check refuses the bytes ($k_): move the build aside" || fail "  control $k_: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
+done
 printf 'rm -f "%s/tap/sheepr.rb"\n' "$FX" > "$FX/onbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onbuild"; tapset 0.0.9
 [ $r = 1 ] && grep -q 'has no Casks/sheepr.rb' "$NF" && grep -q 'stopped at checks' "$NF" && endsfix "$NF" && ! grep -q aside "$NF" \
   && pass "C3: the tap's cask gone (gh 404): add it, then run ship again; no move aside" || fail "C3 gh 404: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"

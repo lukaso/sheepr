@@ -45,4 +45,50 @@ mv "$D/sheepr-macos-universal.tar.gz" "$D/u.tgz" && mv "$D/sheepr-macos-universa
 v env; rc=$?
 [ $rc = 1 ] && grep -q 'a control build' "$FX/o" && ! grep -q codesign "$FX/o" && pass "a control build's archive (the marker): refused before any real-tool check" || fail "marked: rc=$rc $(tail -1 "$FX/o")"
 mv "$D/u.tgz" "$D/sheepr-macos-universal.tar.gz"
+# r12b F1: the content class only for a defect in the bytes. The real verify, as ship's C3 subshell
+# runs it (__class-verify prints the class it left). A tool that cannot run, or a write that fails
+# for room, leaves fix; codesign's verdict, a truncated archive and a tool that judges, content
+vc() { (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 sh scripts/release.sh __class-verify --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; }
+cls() { sed -n 's/^release: (class) //p' "$FX/o" | tail -1; }
+vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = content ] && grep -q codesign "$FX/o" && pass "control: an unsigned archive (codesign's verdict): class content" || fail "unsigned class: rc=$rc '$(cls)' $(tail -1 "$FX/o")"
+# a full temp dir: the archive's private copy fits, the bundle's unpack does not (ulimit -f, in blocks
+# of 512 bytes: the copy fits, the 16 KB executable does not)
+lim=$(( $(wc -c < "$D/sheepr-macos-universal.tar.gz") / 512 + 2 ))
+[ $(( lim * 512 )) -lt "$(wc -c < "$FX/bin")" ] || fail "premise: the executable fits in $lim blocks (the row would prove nothing)"
+(ulimit -f "$lim"; vc); rc=$?
+[ $rc = 1 ] && [ "$(cls)" = fix ] && grep -q 'cannot unpack' "$FX/o" && pass "r12b F1: verify's unpack into a full temp dir (ulimit -f $lim): class fix" || fail "full temp dir: rc=$rc '$(cls)' $(grep release: "$FX/o" | tail -2 | tr '\n' '|')"
+cp "$D/sheepr-macos-universal.tar.gz" "$FX/whole.tgz" && head -c 600 "$FX/whole.tgz" > "$D/sheepr-macos-universal.tar.gz" || exit 3
+vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = content ] && pass "  control: a truncated archive: class content" || fail "  truncated: rc=$rc '$(cls)' $(tail -1 "$FX/o")"
+cp "$FX/whole.tgz" "$D/sheepr-macos-universal.tar.gz" || exit 3
+# an Apple tool that cannot run: codesign's path in the fixture's realtools.sh replaced by a stand-in
+# (exit 127; an Xcode license text, exit 69; exit 1 with no output), then one that judges (exit 3, words)
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.real" || exit 3
+for t_ in '127|' '69|You have not agreed to the Xcode license agreements.' '1|' '3|test-requirement: code failed to satisfy specified code requirement(s)'; do
+  printf '#!/bin/sh\n[ -z "%s" ] || echo "%s" >&2\nexit %s\n' "${t_#*|}" "${t_#*|}" "${t_%%|*}" > "$FX/cs"; chmod +x "$FX/cs"
+  sed "s#/usr/bin/codesign#$FX/cs#" "$FX/rt.real" > "$REPO/scripts/lib/realtools.sh"
+  grep -q "$FX/cs" "$REPO/scripts/lib/realtools.sh" || fail "premise: codesign's path not replaced"
+  vc; rc=$?; w_=fix; [ "${t_%%|*}" = 3 ] && w_=content
+  [ $rc = 1 ] && [ "$(cls)" = $w_ ] && grep -q 'codesign' "$FX/o" \
+    && pass "$( [ $w_ = content ] && echo '  control: ')an Apple tool that $( [ $w_ = content ] && echo 'judges' || echo 'cannot run or gives no verdict') (exit ${t_%%|*}$( [ -n "${t_#*|}" ] && echo ', words' || echo ', no output')): class $w_" \
+    || fail "codesign stand-in ${t_%%|*}: rc=$rc '$(cls)' $(tail -1 "$FX/o")"
+done
+cp "$FX/rt.real" "$REPO/scripts/lib/realtools.sh" || exit 3
+# rt_judge itself: 0 accepts, 1 judged (an exit that is not 126 or 127, words that name no license),
+# 2 no verdict
+mkdir -p "$FX/rj"; o_=""
+for t_ in '0||0' '127||2' '126||2' '69|You have not agreed to the Xcode license agreements|2' '1||2' '3|rejected|1' '65|does not have a ticket stapled to it|1'; do
+  c_=${t_%%|*}; w_=${t_##*|}; m_=${t_#*|}; m_=${m_%|*}
+  printf '#!/bin/sh\n[ -z "%s" ] || echo "%s"\nexit %s\n' "$m_" "$m_" "$c_" > "$FX/rj/t"; chmod +x "$FX/rj/t"
+  g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=$2/out; rt_judge "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
+  [ "$g_" = "$w_" ] || o_="$o_ exit $c_ '$m_': $g_ (want $w_);"
+done
+[ -z "$o_" ] && pass "rt_judge: accepts 0; judged 1 for an exit with words; no verdict 2 for 126, 127, a license text, no output" || fail "rt_judge:$o_"
+g_=$(sh -c '. "$1/scripts/lib/realtools.sh"; RT_OUT=""; rt_judge "$2/t" x; echo $?' sh "$SR_ROOT" "$FX/rj")
+[ "$g_" = 2 ] && pass "  with no RT_OUT (its words not kept): no verdict, never a judgment" || fail "  no RT_OUT: $g_"
+# the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
+n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple_ok|spctl_ok) "')
+n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -c '|| rtfail \$? "')
+[ "$n_rt" -ge 6 ] && [ "$n_rt" = "$n_ok" ] && pass "every Apple tool call in release.sh ($n_rt lines) hands its status to rtfail" || fail "rt_* calls: $n_rt lines, $n_ok through rtfail"
 finish

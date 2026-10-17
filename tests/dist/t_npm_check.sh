@@ -161,4 +161,23 @@ h1=$(shasum -a 256 "$D/MANIFEST.json" | cut -d' ' -f1)
   && pass "a manifest replaced during npm-check: the stamp names the one checked, so publish refuses the replaced one" || fail "replaced during the check: rc=$r stamp '$(cat "$D/NPM-CHECKED" 2>/dev/null)' checked $h0 now $h1"
 cp "$FX/rt.real" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.real" "$REPO/scripts/lib/archive.sh" || exit 3
 
+# r12b F1: npm_check sets the content class itself, only at a check that found a defect in the bytes
+# (__class-npm-check: npm_check as ship's C2 subshell runs it, then the class it left). Controls: a
+# package hash, a control build, codesign's verdict on the .dev bundle: content. An Apple tool that
+# cannot run (codesign's path in the fixture's realtools.sh replaced by one that exits 127): fix
+ncc() { (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 sh scripts/release.sh __class-npm-check --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; }
+cls() { sed -n 's/^release: (class) //p' "$FX/o" | tail -1; }
+mk signed false; echo x >> "$D/sheepr-linux-x64-$nv.tgz"; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'does not match its manifest hash' "$FX/o" && pass "control: a package not its manifest hash: class content" || fail "hash class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+mk signed true; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'control' "$FX/o" && pass "  control: a control build: class content" || fail "control class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'codesign' "$FX/o" && pass "  control: codesign's verdict on the .dev bundle: class content" || fail "codesign class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep" || exit 3
+printf '#!/bin/sh\nexit 127\n' > "$FX/cs127"; chmod +x "$FX/cs127"
+sed "s#/usr/bin/codesign#$FX/cs127#" "$FX/rt.keep" > "$REPO/scripts/lib/realtools.sh"
+grep -q "$FX/cs127" "$REPO/scripts/lib/realtools.sh" || fail "premise: codesign's path not replaced"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'codesign' "$FX/o" && pass "r12b F1: an Apple tool that cannot run (exit 127): class fix" || fail "codesign 127 class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+cp "$FX/rt.keep" "$REPO/scripts/lib/realtools.sh" || exit 3
 finish

@@ -129,7 +129,7 @@ done
 [ -n "$out" ] || usage
 case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
 case $sub in
-  check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class) ;;
+  check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class|__class-verify|__class-npm-check) ;;
   *) usage ;;
 esac
 [ $sign = no ] || [ "$sub" = build ] || usage
@@ -499,24 +499,43 @@ MAN=""
 # publish-cask then refuse a stamped manifest that names another hash for it. The dry entries skip
 # verify; SR_PUBLISH_DRY_VERIFIED (a hash) stands in for it there, for the cells.
 verified=no verified_ah=""
-stamp_line() { printf '%s %s' "$tag" "$(shasum -a 256 "${MAN:-$1/MANIFEST.json}" | cut -d' ' -f1)"; }
-stamp_ok() { # dir -> 0 if npm-check passed on this tag and this manifest
-  [ -f "$1/NPM-CHECKED" ] && [ -f "${MAN:-$1/MANIFEST.json}" ] && [ "$(cat "$1/NPM-CHECKED")" = "$(stamp_line "$1")" ]
+# sha256 FILE: its sha256 (64 hex digits), or nothing. A hash that cannot be read is no finding about
+# the bytes: each caller that compares one stops with the fix class on nothing (r12b F1)
+sha256() { h_=$(shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1); case $h_ in *[!0-9a-f]*) ;; *) [ ${#h_} = 64 ] && printf '%s' "$h_" ;; esac; }
+hashof() { # FILE: its sha256, or a stop (fix): shasum gave no hash
+  h_=$(sha256 "$1"); [ -n "$h_" ] || die "cannot read the sha256 of $1 (shasum gave no hash)"; printf '%s' "$h_"
+}
+# judged RC FILE PREFIX: 0 when a checking tool's failure is its verdict on the build's bytes: exit 1
+# with a line of its own refusal (PREFIX) in FILE. A tool that cannot run (126, 127), a signal, a usage
+# error, or no such line is no verdict (r12b F1)
+judged() { [ "$1" = 1 ] && grep -q "^$3" "$2" 2>/dev/null; }
+# rtfail RC TEXT: an Apple tool's refusal (rt_judge's status): the content class only for its verdict
+# on the bytes (1), never when it gave none (2: it cannot run, a license stops it, it said nothing)
+rtfail() { [ "$1" = 1 ] && stopclass content; die "$2"; }
+stamp_line() { sh_=$(hashof "${MAN:-$1/MANIFEST.json}") || exit 1; printf '%s %s' "$tag" "$sh_"; }   # (in a $( ): its exit is the substitution's)
+stamp_ok() { # dir -> 0 if npm-check passed on this tag and this manifest (a hash that cannot be read: a stop, fix)
+  [ -f "$1/NPM-CHECKED" ] && [ -f "${MAN:-$1/MANIFEST.json}" ] || return 1
+  sl_=$(stamp_line "$1") || exit 1
+  [ "$(cat "$1/NPM-CHECKED")" = "$sl_" ]
 }
 man_hash() { # dir file -> the file's sha256 in MANIFEST.json (empty if it is not listed)
   sed -n "s/.*\"name\": \"$2\", \"sha256\": \"\([0-9a-f]\{64\}\)\".*/\1/p" "${MAN:-$1/MANIFEST.json}" | head -1
 }
 private_manifest() { # dir tmp: copy the output dir's MANIFEST.json into tmp (0700) and read it from there on
-  cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || { stopclass content; die "no MANIFEST.json in $1"; }
+  # no manifest is a defect of the build (content); a copy that fails (a full or unwritable temp dir)
+  # is not (r12b F1)
+  [ -f "$1/MANIFEST.json" ] || { stopclass content; die "no MANIFEST.json in $1"; }
+  cp "$1/MANIFEST.json" "$2/MANIFEST.json" 2>/dev/null || die "cannot copy $1/MANIFEST.json into $2"
   MAN=$2/MANIFEST.json
   # under ship: the manifest ship checked after the build (C1), and no other
-  [ -z "$ship_mh" ] || [ "$(shasum -a 256 "$MAN" | cut -d' ' -f1)" = "$ship_mh" ] || { stopclass content; die "the manifest in $1 is not the one ship checked after the build (it changed)"; }
+  [ -z "$ship_mh" ] || { mh_=$(hashof "$MAN") || exit 1; [ "$mh_" = "$ship_mh" ]; } || { stopclass content; die "the manifest in $1 is not the one ship checked after the build (it changed)"; }
 }
 files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its hash (npm-check's files)
   fs=$(sed -n 's/.*"name": "\([^"]*\)", "sha256": "[0-9a-f]\{64\}".*/\1/p' "${MAN:-$1/MANIFEST.json}")
   [ -n "$fs" ] || return 1
   for f in $fs; do
-    [ -f "$1/$f" ] && [ "$(shasum -a 256 "$1/$f" | cut -d' ' -f1)" = "$(man_hash "$1" "$f")" ] || { echo "release: $f is missing or not its manifest hash" >&2; return 1; }
+    fh_=""; [ ! -f "$1/$f" ] || { fh_=$(hashof "$1/$f") || exit 1; }
+    [ -f "$1/$f" ] && [ "$fh_" = "$(man_hash "$1" "$f")" ] || { echo "release: $f is missing or not its manifest hash" >&2; return 1; }
   done
 }
 # publish_check: every check publish makes before a write, except the remote tag's (that is the
@@ -947,25 +966,27 @@ npm_check() { # dir
   . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
   . "$root/scripts/lib/realtools.sh" || die "cannot read realtools.sh"
   d=$1 nv=${tag#v}
-  [ -f "$d/MANIFEST.json" ] || die "no $d/MANIFEST.json"
+  # the content class only at a check that found a defect in the build's bytes (r12b F1)
+  [ -f "$d/MANIFEST.json" ] || { stopclass content; die "no $d/MANIFEST.json"; }
   # a stamp from an earlier pass never outlives a check that does not pass
   rm -f "$d/NPM-CHECKED" || die "cannot remove $d/NPM-CHECKED"
   nt=/private/tmp/sr-npmcheck.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   trap 'trap "" $SIGS; rm -rf "$nt"' EXIT; trap 'rm -rf "$nt"; exit 1' $SIGS
   mkdir -m 700 "$nt" "$nt/p" "$nt/ref" || die "no temp dir"
+  RT_OUT=$nt/rt.out   # the Apple tools' words (rt_judge)
   # the manifest every check reads, and the stamp names: a private copy, taken first (a manifest
   # replaced during the check gets no stamp that publish accepts)
   private_manifest "$d" "$nt"; m=$MAN
   mode=$(sed -n 's/^ *"mode": *"\([^"]*\)",*$/\1/p' "$m"); ctl=$(sed -n 's/^ *"control": *\([a-z]*\),*$/\1/p' "$m")
   mtag=$(sed -n 's/^ *"tag": *"\([^"]*\)",*$/\1/p' "$m")
-  [ "$mtag" = "$tag" ] || die "the manifest is for $mtag, not $tag"
-  [ "$mode" = signed ] || die "the manifest's mode is '$mode', not signed"
-  [ "$ctl" = false ] || die "the manifest is a control build"
+  [ "$mtag" = "$tag" ] || { stopclass content; die "the manifest is for $mtag, not $tag"; }
+  [ "$mode" = signed ] || { stopclass content; die "the manifest's mode is '$mode', not signed"; }
+  [ "$ctl" = false ] || { stopclass content; die "the manifest is a control build"; }
   [ -n "${SR_NPM_PKGS:-}" ] || die "scripts/release.conf names no SR_NPM_PKGS"
   for f in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 $(for p in $SR_NPM_PKGS; do printf '%s-%s.tgz\n' "$p" "$nv"; done); do
-    [ -f "$d/$f" ] || die "missing $f (a file of the build, or a package of release.conf's SR_NPM_PKGS)"
-    h=$(shasum -a 256 "$d/$f" | cut -d' ' -f1)
-    grep -q "\"name\": \"$f\", \"sha256\": \"$h\"" "$m" || die "$f does not match its manifest hash"
+    [ -f "$d/$f" ] || { stopclass content; die "missing $f (a file of the build, or a package of release.conf's SR_NPM_PKGS)"; }
+    h=$(hashof "$d/$f") || exit 1
+    grep -q "\"name\": \"$f\", \"sha256\": \"$h\"" "$m" || { stopclass content; die "$f does not match its manifest hash"; }
   done
   # the four packages, read raw, before anything unpacks them (npm-same.py says why), against the
   # tag's license texts, README and launcher
@@ -974,19 +995,26 @@ npm_check() { # dir
   done
   mv "$nt/ref/sheepr" "$nt/ref/launcher"
   dt=$d/sheepr-darwin-universal-$nv.tgz
-  npy packages "$d" "$nv" "$nt/ref" "$SR_NPM_PKGS" || die "an npm package is refused (above)"
-  /usr/bin/tar -xzf "$dt" -C "$nt/p" || die "cannot unpack the darwin package"   # the bundle the real tools judge
+  npy packages "$d" "$nv" "$nt/ref" "$SR_NPM_PKGS" 2> "$nt/npy.err"; r_=$?; cat "$nt/npy.err" >&2
+  [ $r_ = 0 ] || { judged $r_ "$nt/npy.err" 'npm-same: ' && stopclass content; die "an npm package is refused (above)"; }
+  # the bundle the real tools judge: an archive tar cannot list is a defect of its bytes; one that
+  # lists and does not unpack is the temp dir's (full, unwritable)
+  /usr/bin/tar -tzf "$dt" > /dev/null 2>&1 || { stopclass content; die "the darwin package is not a gzip tar archive tar can read"; }
+  /usr/bin/tar -xzf "$dt" -C "$nt/p" || die "cannot unpack the darwin package into $nt/p"
   b=$nt/p/package/Sheepr.app
-  /usr/bin/plutil -extract SheeprControlBuild raw -o - "$b/Contents/Info.plist" >/dev/null 2>&1 && die "the darwin package holds a control build (SheeprControlBuild in its Info.plist)"
-  rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || die "codesign: the darwin package's bundle does not meet the release requirement"
-  rt_staple_ok "$b" || die "stapler: the darwin package's bundle has no valid staple ticket"
-  rt_spctl_ok "$b" || die "spctl: Gatekeeper rejects the darwin package's bundle"
+  /usr/bin/plutil -extract SheeprControlBuild raw -o - "$b/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the darwin package holds a control build (SheeprControlBuild in its Info.plist)"; }
+  rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || rtfail $? "codesign: the darwin package's bundle does not meet the release requirement"
+  rt_staple_ok "$b" || rtfail $? "stapler: the darwin package's bundle has no valid staple ticket"
+  rt_spctl_ok "$b" || rtfail $? "spctl: Gatekeeper rejects the darwin package's bundle"
   # the release archive: its own check (only files and directories, the bundle signed and
   # stapled), then the same files as the package, read raw: path, mode and content (a CDHash is
   # read from the embedded signature, not recomputed, so equal CDHashes prove nothing)
-  "$root/scripts/lib/archive.sh" check "$d/sheepr-macos-universal.tar.gz" --signed || die "the release archive fails its check (above)"
-  npy same "$dt" "$d/sheepr-macos-universal.tar.gz" || die "the darwin package's bundle is not the release archive's bundle (above)"
-  stamp_line "$d" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
+  "$root/scripts/lib/archive.sh" check "$d/sheepr-macos-universal.tar.gz" --signed 2> "$nt/arc.err"; r_=$?; cat "$nt/arc.err" >&2
+  [ $r_ = 0 ] || { judged $r_ "$nt/arc.err" 'archive: ' && stopclass content; die "the release archive fails its check (above)"; }
+  npy same "$dt" "$d/sheepr-macos-universal.tar.gz" 2> "$nt/npy.err"; r_=$?; cat "$nt/npy.err" >&2
+  [ $r_ = 0 ] || { judged $r_ "$nt/npy.err" 'npm-same: ' && stopclass content; die "the darwin package's bundle is not the release archive's bundle (above)"; }
+  sl_=$(stamp_line "$d") || exit 1
+  printf '%s' "$sl_" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
   rm -rf "$nt"; trap - EXIT
   echo "release: the npm tarballs of $tag check out (NPM-CHECKED written)$(next_hint "; publish comes next, then publish-npm")"
 }
@@ -1000,15 +1028,20 @@ verify() { # dir -> exit 1 naming the tool that refused
   vt=/private/tmp/sr-verify.$$.$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')
   trap 'trap "" $SIGS; rm -rf "$vt"' EXIT; trap 'rm -rf "$vt"; exit 1' $SIGS
   # the bundle the real tools judge, from a private copy whose hash publish then binds to the
-  # stamped manifest (an archive replaced after this check is not the one judged)
-  mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" && verified_ah=$(shasum -a 256 "$vt/a.tgz" | cut -d' ' -f1) \
-    && [ -n "$verified_ah" ] && /usr/bin/tar -xzf "$vt/a.tgz" -C "$vt" && rm -f "$vt/a.tgz" || { stopclass content; die "cannot unpack $arc"; }
+  # stamped manifest (an archive replaced after this check is not the one judged). The copy, its hash
+  # and the unpack are the temp dir's (full, unwritable: fix); an archive tar cannot list is a
+  # defect of its bytes (content; r12b F1)
+  mkdir -m 700 "$vt" && cp "$arc" "$vt/a.tgz" || die "cannot copy $arc into $vt"
+  RT_OUT=$vt/rt.out   # the Apple tools' words (rt_judge)
+  verified_ah=$(hashof "$vt/a.tgz") || exit 1
+  /usr/bin/tar -tzf "$vt/a.tgz" > /dev/null 2>&1 || { stopclass content; die "$arc is not a gzip tar archive tar can read"; }
+  /usr/bin/tar -xzf "$vt/a.tgz" -C "$vt" && rm -f "$vt/a.tgz" || die "cannot unpack $arc into $vt"
   a=$vt/Sheepr.app
   # a control build's bundle carries the control marker (bundle.sh --control): never a release
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the archive holds a control build (SheeprControlBuild in its Info.plist)"; }
-  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || { stopclass content; die "codesign: the bundle does not meet the release requirement"; }
-  rt_staple_ok "$a" || { stopclass content; die "stapler: no valid staple ticket"; }
-  rt_spctl_ok "$a" || { stopclass content; die "spctl: Gatekeeper rejects the bundle"; }
+  rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || rtfail $? "codesign: the bundle does not meet the release requirement"
+  rt_staple_ok "$a" || rtfail $? "stapler: no valid staple ticket"
+  rt_spctl_ok "$a" || rtfail $? "spctl: Gatekeeper rejects the bundle"
   rm -rf "$vt"; trap - EXIT
   verified=yes
   echo "release: $d: signed, notarized and stapled (checked from the archive)"
@@ -1126,12 +1159,17 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   post_build_check "$out/$tag"
   ship_mh=$(shasum -a 256 "$out/$tag/MANIFEST.json" | cut -d' ' -f1)
   printf '%s\n' "$ship_mh" | grep -qx '[0-9a-f]\{64\}' || { ship_mh=""; stopclass fix; die "cannot read the hash of $out/$tag/MANIFEST.json (every later phase is bound to it); nothing is public"; }
-  # C2. npm-check (its own traps: a subshell). No class is set ahead of C2 and C3 but fix: a signal, or
-  # a failure that is not about the build (the tap's cask gone, npm's owners), is no content stop;
-  # content is set at each refusal that finds a content problem (npm-check's, and publish_check's,
-  # cask_pre's and verify's own)
+  # C2. npm-check (its own traps: a subshell). No class is set ahead of C2 and C3 but fix, and the
+  # parent sets none after them: a signal, a child killed, a tool that cannot run, or a failure that
+  # is not about the build (the tap's cask gone, npm's owners), is no content stop. content is set
+  # only by a check that found a defect in the build's bytes (npm_check's, publish_check's,
+  # cask_pre's and verify's own; r12b F1). A dry entry's stand-in gets the class file to do the same
   phase=npm-check; stopclass fix
-  ( drysub; shipcall "$SHIP_NPMCHECK" "$out/$tag" ) || { stopclass content; die "npm-check refused $out/$tag (above)"; }
+  if [ "$dryentry" = yes ]; then
+    ( drysub; tool dry /usr/bin/env SR_SHIP_DRY_CLASS="$shipcls" "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"
+  else
+    ( "$SHIP_NPMCHECK" "$out/$tag" ) || die "npm-check refused $out/$tag (above)"
+  fi
   # C3. every check publish makes before a write, but the remote tag's (no remote tag yet): verify
   # binds the archive it judged, so it runs in the same subshell as publish_check
   phase=checks
@@ -1632,4 +1670,10 @@ case $sub in
   __tool-class) tool "${SR_TOOL_CLASS-}" /bin/echo ran ;;   # the cells: tool with SR_TOOL_CLASS's class
   __curl-env) real_tools; tool "$CURLC" /usr/bin/env ;;
   npm-check) npm_check "$out/$tag" ;;
+  # the cells' view of a check's stop class: the check in a subshell, as ship's C2 and C3 run it, with
+  # a class file of its own (fix first, as ship sets it); then the class it left
+  __class-verify|__class-npm-check)
+    shipcls=$(mktemp /private/tmp/sr-class.XXXXXX) || die "no temp file"; echo fix > "$shipcls"
+    if [ "$sub" = __class-verify ]; then ( verify "$out/$tag" ); else ( npm_check "$out/$tag" ); fi; r_=$?
+    echo "release: (class) $(cat "$shipcls")"; rm -f "$shipcls"; exit "$r_" ;;
 esac
