@@ -1273,12 +1273,19 @@ npmauth() {
   echo "$na_ $ro_"
 }
 tokcount() { a_=$(npmauth); echo "${a_%% *}"; }   # N of npmauth, or unreadable
+# rvk_npm: the revoke step, one construction. Every npm token remedy names it before it names npm
+# config delete or removing a registry.npmjs.org login line, whatever npmauth counted: ship's count
+# reads the userconfig by a pattern, not by npm's ini reader, and the two disagree on some spellings
+# (a quoted key, key[]=), so its "one root line" can be two lines, and the delete then removes a live
+# one too. A line removed from disk leaves its token valid on npm's server until it is revoked
+rvk_npm="revoke on npmjs.com (Access Tokens) each token of npm's registry.npmjs.org login lines that npmjs.com still lists"
+readonly rvk_npm
 ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session ship did not make:
   # the token count 0 and whoami ENEEDAUTH
   npm_list; npm_owners "$NPMC" "$NPM" "$st"
   n=$(tokcount)
   if who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" 2> "$st/who.err"); then
-    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server), then run ship again (ship logs in itself, after the build)"
+    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server). If a registry.npmjs.org login line is still in npm's userconfig after it (npm logout cannot remove an _auth, username or _password line), $rvk_npm, then remove that line. Then run ship again (ship logs in itself, after the build)"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
   # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
@@ -1294,23 +1301,24 @@ npmcode() {
 }
 # npmhint FILE: the remedy for npm's exact error code in FILE, as a sentence to append, or nothing.
 # The one place a remedy is named, at every npm failure site; its absence changes nothing else (the
-# class comes from ship's own checks). E401 names npm config delete only when npm's userconfig holds
-# exactly one registry.npmjs.org login line and it is the root _authToken one (npmauth): that line's
-# token expired. With more lines, or another one, npm may have refused another token than a delete
-# would remove, and a live one would stay valid on npm's server: revoke first. With none, the token
-# is outside the userconfig. ENEEDAUTH with lines: lines npm does not use (an empty token, or
-# ${NPM_TOKEN?} unset); ERR_INVALID_AUTH is an _authToken that names no registry
+# class comes from ship's own checks). Each text that removes a login line or names npm config delete
+# names the revoke step first (rvk_npm); the count only picks the words. E401 names npm config delete
+# only when npmauth counts exactly one registry.npmjs.org login line and it is the root _authToken one;
+# with more, or another one, npm may have refused another token than a delete would remove; with none,
+# the token is outside the lines ship counts. ENEEDAUTH with lines: lines whoami does not use (an empty
+# token, ${NPM_TOKEN?} unset, or a line only other npm commands send, as views and uploads send a
+# no-slash or a path-specific line); ERR_INVALID_AUTH is an _authToken that names no registry
 npmhint() {
   hc_=$(npmcode "$1") hn_=""
   case $hc_ in E401|ENEEDAUTH) hn_=$(npmauth) ;; esac
   case $hc_:$hn_ in
-    "E401:0 no") printf '%s' ". npm answered E401, and npm's userconfig has no registry.npmjs.org login line: a token outside the lines ship counts (another file npm reads): look at npm config list and remove it" ;;
+    "E401:0 no") printf '%s' ". npm answered E401, and ship counts no registry.npmjs.org login line in npm's userconfig: a token outside the lines ship counts (a spelling ship does not count, or another file npm reads: look at npm config list). First $rvk_npm, then remove that token's line" ;;
     E401:unreadable) ;;
-    "E401:1 yes") printf '%s' ". npm answered E401 with a login token line in npm's userconfig (an expired token): run npm config delete //registry.npmjs.org/:_authToken" ;;
-    E401:*) printf '%s' ". npm answered E401, and npm's userconfig holds ${hn_%% *} registry.npmjs.org login lines, or one that is not the //registry.npmjs.org/:_authToken line: npm may have refused another token than the one a delete would remove. Revoke the tokens on npmjs.com (Access Tokens) first, then remove those lines" ;;
+    "E401:1 yes") printf '%s' ". npm answered E401 with a login token line in npm's userconfig (an expired token). First $rvk_npm, then run npm config delete //registry.npmjs.org/:_authToken" ;;
+    E401:*) printf '%s' ". npm answered E401, and npm's userconfig holds ${hn_%% *} registry.npmjs.org login lines, or one that is not the //registry.npmjs.org/:_authToken line: npm may have refused another token than the one a delete would remove. First $rvk_npm, then remove those lines" ;;
     "ENEEDAUTH:0 no"|ENEEDAUTH:unreadable) ;;
-    ENEEDAUTH:*) printf '%s' ". npm's userconfig holds a login token line npm does not use (an empty token, or one from a variable that is not set): remove its registry.npmjs.org login lines" ;;
-    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry; remove it, or write it as //registry.npmjs.org/:_authToken=" ;;
+    ENEEDAUTH:*) printf '%s' ". whoami does not use the registry.npmjs.org login lines in npm's userconfig (an empty token, one from a variable that is not set, or a line only other npm commands send). First $rvk_npm, then remove those lines" ;;
+    ERR_INVALID_AUTH:*) printf '%s' ". npm answered ERR_INVALID_AUTH: npm's userconfig holds an _authToken line that names no registry. Write it as //registry.npmjs.org/:_authToken=, or first revoke its token on npmjs.com (Access Tokens), if npmjs.com still lists it, then remove it" ;;
   esac
 }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
@@ -1426,10 +1434,10 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   fi
   if [ "$n" != 0 ]; then
     # npm config delete only removes the line: the token stays live on npm's server unless it has
-    # expired (E401) or is revoked there
-    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error. If it fails with E401 (an expired token, which npm cannot revoke), run npm config delete //registry.npmjs.org/:_authToken; if it fails otherwise, revoke the token on npmjs.com (Access Tokens) before you delete that line"
-    # a delete names one line: only for exactly the root line (npmauth); otherwise revoke first
-    [ "${na:-}" = "1 yes" ] || lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error. If lines stay, revoke the token on npmjs.com (Access Tokens) first, then remove the registry.npmjs.org login lines from npm's userconfig"
+    # expired or is revoked there, so each text names the revoke step first (rvk_npm)
+    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error. If it keeps failing, first $rvk_npm, then run npm config delete //registry.npmjs.org/:_authToken"
+    # a delete names one key: named only for exactly the root line (npmauth); otherwise the lines go
+    [ "${na:-}" = "1 yes" ] || lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error. If lines stay, first $rvk_npm, then remove those lines from npm's userconfig"
     echo "release: $lo"
     drain; [ $wrote = no ] || printf '%s\n' "$lo" >> "$nf" 2>/dev/null
   fi
