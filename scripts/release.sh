@@ -1529,7 +1529,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # release done has a file then too, the step alone
   txt="" keep=no lo="" pl=""
   if [ "$logged_in" = yes ]; then
-    pl="ship logged in to npm in this run, and runs $(npmcmd logout) as it ends. Unless a line after this one says that ship's line is no longer in npm's userconfig, run that command until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). $(npm_delstep)"
+    pl="ship ran npm login in this run, and runs $(npmcmd logout) as it ends. Unless a line after this one says that ship's line is no longer in npm's userconfig, run that command until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). $(npm_delstep)"
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
     txt=$(ship_stoptext)
@@ -1548,7 +1548,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
       body=$txt; [ -z "$pl" ] || body=$(line2 "$txt" "$pl")
       nfput "$body" && wrote=yes
       printf '%s\n' "$body"
-      [ -n "$pl" ] || printf '%s\n' "release: (these steps are also in $nf)"
+      [ -n "$pl" ] || nfsaid
     fi
   fi
   # 2. the npm session ship made: logout, then ship's own login key decides, not logout's code
@@ -1574,12 +1574,12 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   if [ -n "$pl" ] && [ -n "$txt" ] && [ $keep = no ]; then
     drain
     if [ -n "$lo" ]; then
-      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")"
-      printf '%s\n' "release: $lo" "release: (these steps are also in $nf)"
+      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || wrote=no
+      printf '%s\n' "release: $lo"; nfsaid
     else
-      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt"; fi
+      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt" || wrote=no; fi
       printf '%s\n' "release: ship's line is no longer in npm's userconfig after ship's own npm logout: the npm logout step above is done."
-      [ "$shipok" = yes ] || printf '%s\n' "release: (these steps are also in $nf)"
+      [ "$shipok" = yes ] || nfsaid
     fi
   elif [ -n "$lo" ]; then
     drain; echo "release: $lo"
@@ -1615,7 +1615,12 @@ line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1"
 # beside it (the lock is held: one writer), then renamed onto it; a failed write leaves it as it was
 nfput() {
   printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && return 0
-  rm -f "$out/.$tag.ship-next.tmp"; return 1
+  rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1
+}
+# nfsaid: where else the steps are: the next file, or that it could not be written (wrote, ship_exit's)
+nfsaid() {
+  if [ "$wrote" = yes ]; then printf '%s\n' "release: (these steps are also in $nf)"
+  else printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here)"; fi
 }
 # ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started
 # or finished), the stop's class and its cause; no network read. Every command names --out

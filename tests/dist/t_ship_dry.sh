@@ -1356,6 +1356,7 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 # again until it ends with no error or answers E401, the line left as it is, and the clock time ship's
 # session ends by itself (REV 9 rule 2)
 hm() { sed -E 's/[0-9]{2}:[0-9]{2} [A-Za-z0-9+-]+ on [0-9]{4}-[0-9]{2}-[0-9]{2}/HH:MM ZONE on DATE/g'; }   # the session's clock time and its zone, normalized
+PL_TEXT="ship ran npm login in this run, and runs $LGF as it ends. Unless a line after this one says that ship's line is no longer in npm's userconfig, run that command until it ends with no error. ship's session ends by itself at HH:MM ZONE on DATE (2 hours after its login). Only after HH:MM ZONE on DATE (ship's own session's end), and only when no npm login ran since ship's, run $DLF."
 LOGOUT_TEXT="ship's npm login line is still in npm's userconfig after npm logout. Deleting or editing a login line ends no token. A session from npm login ends by itself 2 hours after that login and is not on npmjs.com's Access Tokens list; an access token ends when you revoke it under Access Tokens on npmjs.com; a \${VAR} line holds no token in the file, and ship runs npm with no environment variables. npm logout asks npm's server to end the token npm sends for registry.npmjs.org, wherever that token is used, and removes its line only when the server accepted. Remove a login line only once that line's token has ended (an _auth line holds a user name and password, not a token). Run $LGF again until it ends with no error. ship's session ends by itself at HH:MM ZONE on DATE (2 hours after its login). Only after HH:MM ZONE on DATE (ship's own session's end), and only when no npm login ran since ship's, run $DLF."
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
 [ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hm < "$FX/o" | grep -qxF "release: $LOGOUT_TEXT" \
@@ -1620,6 +1621,44 @@ for k_ in E401 E503 ETIMEDOUT control; do
     && pass "$( [ $k_ = control ] && echo '  control (the npm_ shape, which npm masks): ' || echo "REV 11 rule 5: ")npm logout's error ($k_) naming /-/user/token/<ship's token>: the token in no stdout, stderr or next-file line" \
     || fail "logout error token ($k_): rc=$r stdout/stderr $(grep -cF "$tk_" "$FX/o") next file $(grep -cF "$tk_" "$NF" 2>/dev/null): $(grep -F "$tk_" "$FX/o" | head -1 | cut -c1-200)"
   rm -f "${FX:?}/npmrc"
+done
+# (r13a F5) the logout step (pl) exactly, as ship prints it at once and puts it on the next file's
+# line 2 before the logout runs; a stop after the login, the logout removing ship's line
+: > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/pubfail.sheepr"
+[ $r = 1 ] && hm < "$FX/o" | grep -qxF "$PL_TEXT" \
+  && pass "r13a F5: the logout step's text, exactly (printed before the logout ran)" || fail "the logout step's text: '$(grep -m1 'ran npm login\|logged in to npm' "$FX/o" | hm | cut -c1-300)'"
+# (r13a X2) F cannot be read after the logout (the logout's hook takes its read permission): ship
+# cannot vouch that its line is gone: the remedy ("cannot tell"), logout-failed, exit 1, never done
+printf 'chmod 000 "%s/npmrc"\n' "$FX" > "$FX/onlogout"; : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/onlogout" "${FX:?}/logoutstays"
+chmod 600 "$FX/npmrc" 2>/dev/null
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "ship cannot tell whether its npm login line is still in npm's userconfig after npm logout (the userconfig cannot be read)" "$FX/o" \
+  && ! grep -q "^release: ship's line is no longer in npm's userconfig after ship's own npm logout" "$FX/o" \
+  && pass "r13a X2: F unreadable after the logout: 'cannot tell', the logout again, logout-failed, exit 1" \
+  || fail "r13a X2: rc=$r '$(nots)' $(grep "userconfig" "$FX/o" | tail -1 | cut -c1-200)"
+rm -f "${FX:?}/npmrc"
+# (r13a X3) the login takes 10 minutes (a browser approval): the session's end is 2 hours after the
+# login RETURNED. A date stand-in first in PATH answers +%s from $FX/epoch; the login's hook moves it on
+cat > "$B/date" <<EOD
+#!/bin/sh
+if [ "\$1" = +%s ] && [ -s "$FX/epoch" ]; then cat "$FX/epoch"; exit 0; fi
+exec /bin/date "\$@"
+EOD
+chmod +x "$B/date"
+E_=$(/bin/date +%s); echo "$E_" > "$FX/epoch"; printf 'echo %s > "%s/epoch"\n' "$((E_ + 600))" "$FX" > "$FX/onlogin"
+echo ETIMEDOUT > "$FX/logoutcode"; rm -rf "${OUTR:?}"; SETX=TZ=UTC; ship; r=$?; SETX=; rm -f "${FX:?}/logoutcode" "${FX:?}/onlogin" "${FX:?}/epoch" "${FX:?}/npmrc" "${B:?}/date"
+w_=$(TZ=UTC /bin/date -r "$((E_ + 600 + 7200))" '+%H:%M %Z on %Y-%m-%d'); g_=$(grep "after npm logout" "$FX/o" | grep -o 'ends by itself at [^(]*' | head -1)
+[ "$g_" = "ends by itself at $w_ " ] && pass "r13a X3: a login that takes 10 minutes: the end time is 2 hours after the login returned" \
+  || fail "r13a X3: '$g_', want 'ends by itself at $w_' (2 hours after the login returned)"
+# (r13a P4) the next file cannot be written (its temp file's name taken by a directory): no line says
+# the steps are also in it; it says the file could not be written. A stop before the login (C2), and
+# one after it (C8)
+for k_ in C2 C8; do
+  if [ $k_ = C2 ]; then : > "$FX/npmcheckfail"; printf 'mkdir -p "%s/.v0.1.0.ship-next.tmp"\n' "$OUTR" > "$FX/onbuild"
+  else : > "$FX/pubfail.sheepr"; printf 'mkdir -p "%s/.v0.1.0.ship-next.tmp"\n' "$OUTR" > "$FX/onlogin"; fi
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmcheckfail" "${FX:?}/pubfail.sheepr" "${FX:?}/onbuild" "${FX:?}/onlogin"
+  [ $r = 1 ] && [ ! -e "$NF" ] && grep -q '^release: ship v0.1.0 stopped at' "$FX/o" && ! grep -q 'these steps are also in' "$FX/o" && grep -qF "release: (the next file, $NF, could not be written: these steps are only here)" "$FX/o" \
+    && pass "r13a P4: the next file not written ($k_): stdout says so, and never that the steps are also in it" || fail "next file not written ($k_): rc=$r $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)"
+  rm -rf "${OUTR:?}"
 done
 # --- REV 11, npm routing (r13a F1-F4): F is the userconfig npm loads; every npm call ship makes has
 # --scope= (and --registry); every printed npm credential command names F
