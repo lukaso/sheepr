@@ -1435,8 +1435,8 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
   [ "$got" = "$(printf '%s\n' "$want" | sort)" ] || die "the dry-run push lists other refs than $( [ $pushmain = no ] || echo 'main and ')$tag: $(tr '\t\n' ' ;' < "$st/dry")"
 }
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
-  exec 1>&8 2>&9   # ship's own stdout and stderr, whatever call a signal interrupted (ship_run)
   trap '' $SIGS PIPE
+  exec 1>&8 2>&9   # ship's own stdout and stderr, whatever call a signal interrupted (ship_run); before any output
   rc=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
   [ "$shipok" = yes ] || [ "$rc" != 0 ] || rc=1   # a stop is never status 0
   # a write to a closed stdout leaves its bytes in the shell's buffer, and bash 3.2 hands them to the
