@@ -16,11 +16,10 @@
 #     its manifest read): a QUIT (whose default runs no EXIT trap) and a USR1 (whose default runs
 #     it at once, without waiting for the running tool), each sent to the script by its pid while
 #     the tool runs (a stand-in that succeeds, so only the trap can end the script with 1): the
-#     script waits for the tool, writes none of its own later lines, then its temp dir is gone. sign.sh's and
-#     install.sh's rows are in their own cells (t_sign, t_install). exec-guard.sh's checks and
-#     archive.sh's check have no such point (PATH pinned to /usr/bin:/bin, their tools called by
-#     path, a regular file as input; plutil does not block on a FIFO plist: measured): the sweep
-#     is all they get.
+#     script waits for the tool, writes none of its own later lines, then its temp dir is gone. sign.sh's,
+#     install.sh's, exec-guard.sh's (its judging subshell) and archive.sh's rows are in their own
+#     cells (t_sign, t_install, t_exec_guard, t_archive); the last two find their moment with
+#     tests/lib/sigchild.c, since those scripts pin PATH and call their tools by path.
 set -u
 . "$(dirname "$0")/lib.sh"
 [ "$(uname -s)" = Darwin ] || { echo "SKIP (macOS only)"; exit 0; }

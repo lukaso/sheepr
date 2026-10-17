@@ -111,6 +111,27 @@ p=$(fx_build dev_symlink); rec="$FX/rec.t"; : > "$rec"
 SR_EXEC_RECORD="$rec" "$DOOR" exec "$p" >/dev/null 2>&1
 [ "$(cat "$rec")" = "would exec $p" ] && pass "exec keeps the typed path" || fail "recorded: $(cat "$rec")"
 
+# a QUIT (its default runs no EXIT trap) and a USR1 to the door's judging subshell once it has made
+# its temp dir (tests/lib/sigchild.c finds the moment: no shell loop is fast enough): the
+# subshell's trap removes the dir, the door exits 1 and writes nothing; the control, no signal
+# (sigchild's 0): the same check allows the file (0)
+cc -o "$FX/sigchild" "$SR_ROOT/tests/lib/sigchild.c" || exit 3
+p=$(fx_build dev_bare); FXDOOROUT=$FX/door.out; export FXDOOROUT
+for sg in QUIT USR1 0; do
+  case $sg in QUIT) n=3 ;; USR1) n=30 ;; *) n=0 ;; esac
+  "$FX/sigchild" door $n /bin/sh -c 'exec "$0" "$@" > "$FXDOOROUT" 2>&1' /bin/sh -p "$DOOR" check "$p" > "$FX/sc.o" 2>&1
+  dp=$(sed -n 's/^pid //p' "$FX/sc.o"); sent=$(sed -n 's/^sent //p' "$FX/sc.o"); rc=$(sed -n 's/^rc //p' "$FX/sc.o")
+  left=$(ls -d /private/tmp/sr-exec-guard.$dp.* 2>/dev/null)
+  if [ $sg = 0 ]; then
+    [ "$rc" = 0 ] && [ -z "$left" ] && pass "control: with no signal the door's check allows the file (0)" || fail "control: rc=$rc left: $left ($(tr '\n' '|' < "$FX/sc.o"))"
+  else
+    [ -n "$dp" ] && [ -n "$sent" ] && [ "$sent" != none ] && [ "$rc" = 1 ] && [ ! -s "$FX/door.out" ] && [ -z "$left" ] \
+      && pass "a $sg to the door's judging subshell: its temp dir is gone, the door exits 1, says nothing" \
+      || fail "$sg to the judging subshell: pid '$dp' sent '$sent' rc=$rc out: $(head -2 "$FX/door.out" 2>/dev/null | tr '\n' '|') left: $left"
+  fi
+  for d in $left; do rm -rf "${d:?}"; done   # a red row's leftover: its door's pid is in the name
+done
+
 # nothing was ever run
 [ -e "$FX/ran" ] && fail "a fixture ran: $(cat "$FX/ran")" || pass "no fixture ran"
 finish
