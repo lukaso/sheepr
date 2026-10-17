@@ -81,8 +81,10 @@ usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|pub
 # (name:tag@sha256:<64 hex>) is not one. The ssh user git alone is kept: ship's own accepted spellings
 # name it. An insteadOf rule puts a credential in what `git remote
 # get-url` answers, and a tool may name such a URL in its own message: neither is ever printed,
-# written to the next file or kept as the cause (die and the exit-5 text pass it here)
-redact() { printf '%s' "$*" | sed -E -e 's#@(sha256:[0-9a-f]{64})#<sr-digest>\1#g' \
+# written to the next file or kept as the cause (die and the exit-5 text pass it here). And npm's
+# /-/user/token/<token> (npm logout's request URL names the token it sends, and npm masks only its own
+# npm_ shape): the token replaced by <redacted> (REV 11 rule 5)
+redact() { printf '%s' "$*" | sed -E -e 's#@(sha256:[0-9a-f]{64})#<sr-digest>\1#g' -e 's#(/-/user/token/)[^[:space:]]*#\1<redacted>#g' \
   -e 's#([A-Za-z][A-Za-z0-9+.-]*://)([^/[:space:]]{4,}|[^/[:space:]]{1,2}|[^g/[:space:]][^/[:space:]]{2}|g[^i/[:space:]][^/[:space:]]|gi[^t/[:space:]])@#\1<redacted>@#g' \
   -e "s#(^|[[:space:]'\"(<])[^/[:space:]'\"(<]*:[^/[:space:]]*@([A-Za-z0-9._-]+:)#\\1<redacted>@\\2#g" -e 's#<sr-digest>#@#g'; }
 # urluser URL: its userinfo, up to the last @ of its authority (scheme://userinfo@host/..., or the
@@ -1552,7 +1554,8 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # 2. the npm session ship made: logout, then ship's own login key decides, not logout's code
   # (in a dry entry the temp HOME still exists here)
   if [ "$logged_in" = yes ]; then
-    tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$st/logout.err"; cat "$st/logout.err" >&2
+    # (npm's words to ship's stderr only through redact: its URL names the token it sends; REV 11 rule 5)
+    tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$st/logout.err"; [ ! -s "$st/logout.err" ] || { redact "$(cat "$st/logout.err")"; echo; } >&2
     # ship's line is still there when ship's own root _authToken key is (REV 10 rule 4: keys only, never
     # a value, never a count of other lines); a userconfig that cannot be read cannot vouch for it
     drain; sk=$(shipkey); n=0; [ "$sk" = no ] || n=1; lw=$(errcut "$st/logout.err" 200)

@@ -289,9 +289,20 @@ case \$1 in
     # (with a scope, npm login writes <scope>:registry=<--registry>: the scope's routing is rewritten)
     [ -n "\$SC" ] && { grep -v "^\$SC:registry=" "\$UC" > "\$UC.n" 2>/dev/null; echo "\$SC:registry=https://registry.npmjs.org/" >> "\$UC.n"; mv "\$UC.n" "\$UC"; echo "REQ A login rewrote \$SC:registry" >> "$FX/reqs"; }
     [ -e "$FX/loginnormalizes" ] && [ -f "\$UC" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }
-    echo "\${TOK}npm_dry" >> "\$UC"; exit 0 ;;
+    # (\$FX/logintoken: the token the login writes, instead of npm_dry)
+    if [ -s "$FX/logintoken" ]; then echo "\${TOK}\$(cat "$FX/logintoken")" >> "\$UC"; else echo "\${TOK}npm_dry" >> "\$UC"; fi; exit 0 ;;
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
+    # (\$FX/logoutmsg CODE: the logout fails with npm's own words for CODE, the request's URL naming the
+    # token it sends (npm masks only its npm_ shape, as npm_***: notes/r13a/np/t9b-*), and the line stays)
+    if [ -s "$FX/logoutmsg" ]; then
+      t_=\$(sed -n "s|^\$TOK||p" "\$UC" | tail -1); case \$t_ in npm_*) t_='npm_***' ;; esac
+      case \$(cat "$FX/logoutmsg") in
+        E401) printf 'npm error code E401\nnpm error 401 Unauthorized - DELETE https://registry.npmjs.org/-/user/token/%s - token expired or revoked\n' "\$t_" >&2 ;;
+        E503) printf 'npm error code E503\nnpm error 503 Service Unavailable - DELETE https://registry.npmjs.org/-/user/token/%s - down\n' "\$t_" >&2 ;;
+        *) printf 'npm error code FETCH_ERROR\nnpm error errno FETCH_ERROR\nnpm error network timeout at: https://registry.npmjs.org/-/user/token/%s\n' "\$t_" >&2 ;;
+      esac; exit 1
+    fi
     # (\$FX/logoutcode: the logout fails with that npm error code, and the line stays)
     [ -e "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
     # (a username and _password pair and no token line: npm logout removes the pair, as npm does)
@@ -1597,6 +1608,19 @@ done
   || fail "dq:$(printf '%s' "$bad_" | cut -c1-400)"
 dqrun sh "  sh $oroot/scripts/release.sh publish --out $out $tag" "$w1_" && fail "  control: a line with the path unquoted ran as intended (the row would prove nothing)" \
   || pass "  control: the same line with the path unquoted is caught"
+# REV 11 rule 5 (r13a F6): npm logout's error names the request's URL, /-/user/token/<the token it
+# sends>; npm masks only its npm_ shape. ship's own session token, in another shape (a session from
+# another registry's login, an older npm), is in no stdout, stderr or next-file line, whatever the code
+# (E401, E503, a network timeout). Control: the npm_ shape
+for k_ in E401 E503 ETIMEDOUT control; do
+  if [ $k_ = control ]; then echo npm_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 > "$FX/logintoken"; echo E401 > "$FX/logoutmsg"; tk_=npm_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
+  else echo "sessXk$k_-7f3a9c0e-1b2d-4e5f-8a9b-0c1d2e3f4a5b" > "$FX/logintoken"; echo $k_ > "$FX/logoutmsg"; tk_=$(cat "$FX/logintoken"); fi
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logintoken" "${FX:?}/logoutmsg"
+  [ $r = 1 ] && grep -q "still in npm's userconfig after npm logout" "$FX/o" && grep -q '/-/user/token/' "$FX/o" && ! grep -qF "$tk_" "$FX/o" && ! grep -qF "$tk_" "$NF" \
+    && pass "$( [ $k_ = control ] && echo '  control (the npm_ shape, which npm masks): ' || echo "REV 11 rule 5: ")npm logout's error ($k_) naming /-/user/token/<ship's token>: the token in no stdout, stderr or next-file line" \
+    || fail "logout error token ($k_): rc=$r stdout/stderr $(grep -cF "$tk_" "$FX/o") next file $(grep -cF "$tk_" "$NF" 2>/dev/null): $(grep -F "$tk_" "$FX/o" | head -1 | cut -c1-200)"
+  rm -f "${FX:?}/npmrc"
+done
 # --- REV 11, npm routing (r13a F1-F4): F is the userconfig npm loads; every npm call ship makes has
 # --scope= (and --registry); every printed npm credential command names F
 # rule 1 (r13a F2): a userconfig= key in the file npm loads names another file: npm's config get
