@@ -75,7 +75,11 @@ root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 sourced=scripts/lib/sigs.sh
 . "$root/$sourced" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
-die() { echo "release: $*" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$*" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary)
+# redact TEXT: every URL's userinfo (user:password@) removed. An insteadOf rule puts a credential in
+# what `git remote get-url` answers, and a tool may name such a URL in its own message: neither is
+# ever printed, written to the next file or kept as the cause (die and the exit-5 text pass it here)
+redact() { printf '%s' "$*" | sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]*@#\1#g'; }
+die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$m_" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
 # the remedy around it
@@ -591,7 +595,7 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
 # file is read back at the commit the write made.
 TAP=lukaso/homebrew-tap CASK=Casks/sheepr.rb ARCHIVE=sheepr-macos-universal.tar.gz
 cask_fail() { # publish's failure after the PATCH: the release is public, its cask is not done (5)
-  echo "release: $tag is public, but its Homebrew cask is not updated: $*.$(next_hint " Run: sh scripts/release.sh publish-cask --out \"$out\" $tag")" >&2; exit 5
+  echo "release: $tag is public, but its Homebrew cask is not updated: $(redact "$*").$(next_hint " Run: sh scripts/release.sh publish-cask --out \"$out\" $tag")" >&2; exit 5
 }
 blob_id() { { printf 'blob %d\0' "$(wc -c < "$1" | tr -d ' ')"; cat "$1"; } | shasum -a 1 | cut -d' ' -f1; }   # git's id of a file's bytes
 cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and cask_blob, or refuses (1)

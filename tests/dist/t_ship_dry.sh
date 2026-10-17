@@ -512,6 +512,17 @@ pt_row() { # label want-text: set up by the caller; one run
 }
 echo https://github.com/someone/sheepr.git > "$FX/pushurl"; pt_row "a push URL that is not lukaso/sheepr" "is not lukaso/sheepr"; rm -f "$FX/pushurl"
 echo git@gh-alias:lukaso/sheepr.git > "$FX/pushurl"; pt_row "an ssh host alias" "ssh host alias"; rm -f "$FX/pushurl"
+# a credential in a URL is never printed: origin's URL as `remote get-url` gives it once an insteadOf
+# rule put a user and a password in it; and git's own message naming such a URL (the ls-remote of
+# github.com/lukaso/sheepr, rewritten the same way). Each refusal names the host and the path; no
+# SECRET in stdout, stderr or the next file
+echo 'https://user:SECRET1@host.invalid/lukaso/sheepr.git' > "$FX/pushurl"; pt_row "origin's URL with a credential in it" "is not lukaso/sheepr"; rm -f "${FX:?}/pushurl"
+! grep -q SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -q 'https://host.invalid/lukaso/sheepr.git is not lukaso/sheepr' "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "  no credential in stdout or the next file; the host and the path named" || fail "  credential printed: $(grep -c SECRET1 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ')"
+printf "fatal: unable to access 'https://user:SECRET2@host.invalid/lukaso/sheepr/': Could not resolve host: host.invalid\n" > "$FX/lserr"; : > "$FX/lsfail"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/lsfail" "${FX:?}/lserr"
+[ $r = 1 ] && ! grep -q SECRET2 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && grep -q "https://host.invalid/lukaso/sheepr/" "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "git's message naming a URL with a credential: kept in the cause without the credential" || fail "git's message: rc=$r $(grep -c SECRET2 "$FX/o" "$OUTR/v0.1.0.ship-next.txt" | tr '\n' ' ') $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-160)"
 printf 'https://github.com/lukaso/sheepr.git\ngit@github.com:lukaso/sheepr.git\n' > "$FX/pushurl"; pt_row "two push URLs" "push URLs"; rm -f "$FX/pushurl"
 echo https://example.com/lukaso/sheepr.git > "$FX/fetchurl"; pt_row "a fetch URL that is not lukaso/sheepr" "is not lukaso/sheepr"; rm -f "$FX/fetchurl"
 for u in git@github.com:lukaso/sheepr.git https://github.com/lukaso/sheepr ssh://git@github.com/lukaso/sheepr.git; do
