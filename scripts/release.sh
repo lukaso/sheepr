@@ -282,11 +282,14 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
   # every call: it is deprecated), workspaces and provenance (every call, or the upload, fails),
   # update-notifier (a notice and a call of its own). What it leaves to the npmrc only makes a call
   # fail, in npm's own words: the network settings (proxy, TLS, retries, timeouts), the credentials,
-  # and the keys an environment cannot reset (an empty value is ignored): workspace, provenance-file
+  # and the keys an environment cannot reset (an empty value is ignored): workspace, provenance-file.
+  # And logs-max=0 (REV 11a rule 10): npm's debug log, under its cache's _logs, is not written (npm
+  # 10.9.2 writes the token of a failed logout's request into it; notes/r14a/np/t5;
+  # notes/builder/np14/t14m5-*: npm 9.6.7, 10.5.2, 10.9.2 and 11.6.0 write no log file with it)
   ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" ${u:+NPM_CONFIG_USERCONFIG="$u"} \
     npm_config_color=false npm_config_loglevel=notice npm_config_heading=npm npm_config_json=false npm_config_usage=false \
     npm_config_dry_run=false npm_config_tag=latest npm_config_offline=false npm_config_prefer_offline=false \
-    npm_config_workspaces=false npm_config_provenance=false npm_config_update_notifier=false \
+    npm_config_workspaces=false npm_config_provenance=false npm_config_update_notifier=false npm_config_logs_max=0 \
     ${HTTPS_PROXY:+HTTPS_PROXY="$HTTPS_PROXY"} ${https_proxy:+https_proxy="$https_proxy"} \
     ${HTTP_PROXY:+HTTP_PROXY="$HTTP_PROXY"} ${http_proxy:+http_proxy="$http_proxy"} \
     ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} \

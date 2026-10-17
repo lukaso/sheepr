@@ -1662,6 +1662,14 @@ for k_ in E401 E503 ETIMEDOUT control; do
     || fail "logout error token ($k_): rc=$r stdout/stderr $(grep -cF "$tk_" "$FX/o") next file $(grep -cF "$tk_" "$NF" 2>/dev/null): $(grep -F "$tk_" "$FX/o" | head -1 | cut -c1-200)"
   rm -f "${FX:?}/npmrc"
 done
+# (r14a RR1) a token whose pieces are joined by . / + = and _ (another registry's shape; npm's URL may
+# carry it so): no piece of it in stdout, stderr or the next file
+echo 'sessXk.qzxv/wvyb+uktn=jpmr_rsqw' > "$FX/logintoken"; echo E401 > "$FX/logoutmsg"
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logintoken" "${FX:?}/logoutmsg"
+lk_=""; for pc_ in qzxv wvyb uktn jpmr rsqw; do ! grep -qF "$pc_" "$FX/o" && ! grep -qF "$pc_" "$NF" || lk_="$lk_ $pc_"; done
+[ $r = 1 ] && grep -q '/-/user/token/<redacted>' "$FX/o" && [ -z "$lk_" ] \
+  && pass "r14a RR1: a token joined by . / + = _ in npm logout's error: no piece of it in stdout, stderr or the next file" || fail "RR1: pieces left:$lk_; $(grep -F '/-/user/token/' "$FX/o" | head -1 | cut -c1-200)"
+rm -f "${FX:?}/npmrc"
 # (r13a F5) the logout step (pl) exactly, as ship prints it at once and puts it on the next file's
 # lines 2-5 before the logout runs; a stop after the login, the logout removing ship's line
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/pubfail.sheepr"
