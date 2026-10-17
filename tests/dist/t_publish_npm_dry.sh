@@ -47,6 +47,8 @@ mkout() { # dir tag [control] [commit]: the four packages, the manifest naming e
   printf '%s %s\n' "$2" "$(shasum -a 256 "$1/MANIFEST.json" | cut -d' ' -f1)" > "$1/NPM-CHECKED"
 }
 integrity() { python3 -c 'import base64,hashlib,sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$1"; }
+# `config get userconfig` answers $FX/dryrc. $FX/whoamicode, $FX/viewcode.<package> (the views before its
+# upload) and $FX/viewcodeafter.<package> (the views after it): that call answers the file's npm error code.
 # `whoami` prints $FX/whoami (exit 1 with ENEEDAUTH if $FX/whoamifail exists); `owner ls NAME`
 # prints a `user <email>` line per line of $FX/owner.NAME (default: lukasco), or exits 1 with E404
 # ($FX/ownerfail.NAME) or another error ($FX/ownerbad.NAME), as npm 11.6.0 was measured to.
@@ -71,6 +73,8 @@ case \$1 in
     [ -f "$FX/onview.\$p" ] && sh "$FX/onview.\$p"
     if [ -f "$FX/viewempty.\$p" ]; then exit 0; fi
     if [ -f "$FX/viewfail.\$p" ]; then printf '{\\n  "error": {\\n    "code": "ETIMEDOUT"\\n  }\\n}\\n'; echo "npm error code ETIMEDOUT" >&2; exit 1; fi
+    if [ -f "$FX/viewcode.\$p" ] && [ ! -f "$FX/pub.\$p" ]; then echo "npm error code \$(cat "$FX/viewcode.\$p")" >&2; exit 1; fi
+    if [ -f "$FX/viewcodeafter.\$p" ] && [ -f "$FX/pub.\$p" ]; then echo "npm error code \$(cat "$FX/viewcodeafter.\$p")" >&2; exit 1; fi
     if [ -f "$FX/pub.\$p" ]; then
       if [ -f "$FX/viewfailafter.\$p" ]; then printf '{\\n  "error": {\\n    "code": "ETIMEDOUT"\\n  }\\n}\\n'; echo "npm error code ETIMEDOUT" >&2; exit 1; fi
       e=\$(cat "$FX/emptyafter.\$p" 2>/dev/null || echo 0)
@@ -84,7 +88,9 @@ case \$1 in
     if [ "\$k" -gt 0 ]; then echo \$((k - 1)) > "$FX/scan.\$p"; printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1 ;;
-  whoami) [ -f "$FX/onwhoami" ] && sh "$FX/onwhoami"; if [ -f "$FX/whoamifail" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi; cat "$FX/whoami"; exit 0 ;;
+  whoami) [ -f "$FX/onwhoami" ] && sh "$FX/onwhoami"; if [ -f "$FX/whoamifail" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi
+    if [ -f "$FX/whoamicode" ]; then echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; fi; cat "$FX/whoami"; exit 0 ;;
+  config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/dryrc"; exit 0; }; exit 1 ;;
   owner) p=\$3
     if [ -f "$FX/ownerfail.\$p" ]; then echo "npm error owner ls Couldn't get owner data \$p" >&2; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/ownerbad.\$p" ]; then echo "npm error code ETIMEDOUT" >&2; exit 1; fi
@@ -168,6 +174,20 @@ h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*)
 nopub() { ! grep -q -e '^npm publish' -e '^npm view' "$FX/calls"; }
 mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail"
 [ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && pass "not logged in to npm: refused before any view or upload" || fail "whoami fails: rc=$r $(order) $(tail -1 "$FX/o")"
+# npm's E401 with a counted login line in npm's userconfig (an expired token) names its remedy, npm
+# config delete, at each npm call of publish-npm that can answer it: whoami, a view before an upload,
+# and the wait's last view after one (each site's own npmhint). Control: no counted line, no delete
+echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/dryrc"
+mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
+[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && pass "whoami answering E401, a counted token line: refused before any upload, naming npm config delete //registry.npmjs.org/:_authToken" || fail "whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+mkout "$D" v0.1.0; echo E401 > "$FX/viewcode.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcode.sheepr-linux-arm64"
+[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'cannot tell whether sheepr-linux-arm64@0.1.0 is on npm' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && pass "a view before an upload answering E401, a counted token line: refused there, naming npm config delete //registry.npmjs.org/:_authToken" || fail "view E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+mkout "$D" v0.1.0; echo E401 > "$FX/viewcodeafter.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcodeafter.sheepr-linux-arm64"
+[ $r = 1 ] && grep -q 'sheepr-linux-arm64@0.1.0 is not visible on npm after' "$FX/o" && grep -q 'the last view: E401' "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
+  && pass "the views after an upload answering E401 to the wait's limit, a counted token line: the stop names npm config delete //registry.npmjs.org/:_authToken" || fail "wait E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+rm -f "$FX/dryrc"
+mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
+[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "control: whoami E401 with no counted line: no npm config delete" || fail "control whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 mkout "$D" v0.1.0; echo other > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && ! grep -q '^npm owner' "$FX/calls" && grep -q 'logged in to npm as other' "$FX/o" && pass "logged in to npm as another user than release.conf's: refused before any owner, view or upload call" || fail "other user: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; printf 'lukasco\nnpm notice x\n' > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
@@ -404,7 +424,8 @@ integrity "$D/sheepr-0.1.0.tgz" > "$FX/view.sheepr"; PART=main; pub v0.1.0; r=$?
 [ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && grep -q 'already on npm (the same file)' "$FX/o" \
   && pass "main: the main package already on npm (this file): skipped, no notification (0)" || fail "main, main there: rc=$r $(order)"
 # the real entry, which no dry run reaches: its body exactly, defined once, and its dispatch arm
-want='publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'
+# (NPMC too: the class npmhint's token count reads npm's userconfig with; unset, it read none)
+want='publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'
 [ "$(grep -c '^publish_npm() ' "$SR_ROOT/scripts/release.sh")" = 1 ] && grep -qxF "$want" "$SR_ROOT/scripts/release.sh" \
   && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
 grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass "the dispatch: '  publish-npm) publish_npm ;;'" || fail "the publish-npm dispatch arm"

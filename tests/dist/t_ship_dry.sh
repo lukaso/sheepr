@@ -130,13 +130,14 @@ echo "gh \$*" >> "$FX/calls"
 case "\$*" in
   *"@tsv"*) [ -e "$FX/relsfail" ] && { if [ -e "$FX/relserr" ]; then cat "$FX/relserr" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; tr ' ' '\t' < "$FX/rels" ;;
   *".[].tag_name"*) awk '{print \$1}' "$FX/rels" ;;
-  *"repos/lukaso/sheepr --jq .permissions.push"*) cat "$FX/repoperm" 2>/dev/null || echo true ;;
-  *"repos/lukaso/homebrew-tap --jq .permissions.push"*) [ -e "$FX/tappermfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; cat "$FX/tapperm" 2>/dev/null || echo true ;;
+  # (\$FX/repopermfail, tappermfail, tapreadfail: that read fails, with the file's text on stderr, or gh: HTTP 502)
+  *"repos/lukaso/sheepr --jq .permissions.push"*) [ -e "$FX/repopermfail" ] && { if [ -s "$FX/repopermfail" ]; then cat "$FX/repopermfail" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; cat "$FX/repoperm" 2>/dev/null || echo true ;;
+  *"repos/lukaso/homebrew-tap --jq .permissions.push"*) [ -e "$FX/tappermfail" ] && { if [ -s "$FX/tappermfail" ]; then cat "$FX/tappermfail" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; cat "$FX/tapperm" 2>/dev/null || echo true ;;
   *"-X PUT repos/lukaso/homebrew-tap/contents/Casks/sheepr.rb"*)
     [ -e "$FX/putfail" ] && { echo "gh: HTTP 409" >&2; exit 1; }
     for a; do case \$a in content=*) printf '%s' "\${a#content=}" | base64 -d > "$FX/tap/sheepr.rb" ;; esac; done
     echo c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff ;;
-  *"homebrew-tap/contents/Casks/sheepr.rb"*) [ -e "$FX/tapreadfail" ] && { echo "gh: HTTP 502" >&2; exit 1; }; [ -f "$FX/tap/sheepr.rb" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$FX/tap/sheepr.rb" ;;
+  *"homebrew-tap/contents/Casks/sheepr.rb"*) [ -e "$FX/tapreadfail" ] && { if [ -s "$FX/tapreadfail" ]; then cat "$FX/tapreadfail" >&2; else echo "gh: HTTP 502" >&2; fi; exit 1; }; [ -f "$FX/tap/sheepr.rb" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }; cat "$FX/tap/sheepr.rb" ;;
   *"releases/tags/"*"--jq .draft, (.assets"*|*"releases/4242 --jq .draft, (.assets"*)
     echo false; i=0; for f in \$(ls "$FX/up"); do i=\$((i+1)); [ "\$f" = sheepr-macos-universal.tar.gz ] && echo \$i; done ;;
   "api -X POST repos/lukaso/sheepr/releases "*) [ -e "$FX/postfail" ] && exit 1; echo 4242 ;;
@@ -182,6 +183,8 @@ case \$1 in
     [ -e "$FX/owner404.\$p" ] && { echo "npm error code E404" >&2; exit 1; }   # a name not on npm: every view is E404
     [ -e "$FX/owner404json.\$p" ] && { printf '{\n  "error": {\n    "code": "E404",\n    "summary": "Not Found"\n  }\n}\n'; exit 1; }   # the same, said only in --json's stdout
     [ -e "$FX/viewfail.\$p" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    # (\$FX/viewcode.FIELD: the view of FIELD, time or dist-tags.latest, answers that npm error code)
+    [ -e "$FX/viewcode.\$last" ] && { echo "npm error code \$(cat "$FX/viewcode.\$last")" >&2; echo "npm error the view of \$p \$last (stand-in)" >&2; exit 1; }
     case \$last in
       time) cat "$FX/time.\$p" 2>/dev/null || printf '{\n  "created": "2026-10-01T00:00:00.000Z",\n  "0.0.9": "2026-10-02T00:00:00.000Z"\n}\n'; exit 0 ;;
       dist-tags.latest) printf '"%s"\n' "\$(cat "$FX/latest.\$p" 2>/dev/null || echo 0.0.9)"; exit 0 ;;
@@ -211,6 +214,8 @@ case \$1 in
     # (\$FX/whoamiansi: the code it answers, in npm's colours, as color=always writes it)
     [ -e "$FX/whoamiansi" ] && { printf '\033[1mnpm\033[22m \033[31merror\033[39m \033[94mcode\033[39m %s\n' "\$(cat "$FX/whoamiansi")" >&2; exit 1; }
     [ -e "$FX/whoamicode" ] && { echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; }   # (\$FX/whoamicode: the code it answers)
+    # (\$FX/whoamipostlogin: the code it answers once npm login ran: C4's whoami, not A6's)
+    [ -e "$FX/whoamipostlogin" ] && grep -q '^npm login' "$FX/calls" && { echo "npm error code \$(cat "$FX/whoamipostlogin")" >&2; exit 1; }
     # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
     [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     if grep -q "^\$TOK" "$FX/npmrc" 2>/dev/null; then
@@ -303,7 +308,7 @@ case \$1 in push|fetch|ls-remote)
 esac
 extra="" real=no lie=""
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { if [ -e "$FX/lserr" ]; then cat "$FX/lserr" >&2; else echo "fatal: unable to access (stand-in)" >&2; fi; exit 128; }
-[ "\$1" = fetch ] && [ -e "$FX/fetchfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
+[ "\$1" = fetch ] && [ -e "$FX/fetchfail" ] && { if [ -s "$FX/fetchfail" ]; then cat "$FX/fetchfail" >&2; else echo "fatal: unable to access (stand-in)" >&2; fi; exit 128; }
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfailafter" ] && [ -e "$FX/pushtried" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
 if [ "\$1" = push ]; then
   case " \$* " in *" --dry-run "*) [ -e "$FX/dryextra" ] && extra=1 ;; *) real=yes; : > "$FX/pushtried"; [ -e "$FX/onpush" ] && [ ! -e "$FX/onpush.done" ] && { : > "$FX/onpush.done"; sh "$FX/onpush"; } ;; esac
@@ -773,6 +778,19 @@ hx=$(env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" whoami 2>&1 >/dev/null)
 [ "$hx" = "xyz error code ENEEDAUTH" ] && [ "$hn" = "npm error code ENEEDAUTH" ] && pass "control: the npm stand-in writes the npmrc's heading, and the environment's over it" || fail "control: the stand-in's heading: '$hx' '$hn'"
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
 completed && pass "A6, an npmrc with heading=xyz (no token line): npm's heading pinned, the clean state passes, the run completes" || fail "npmrc heading=xyz: $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
+# npm's E401 with a counted login line (an expired token) names its remedy, npm config delete, at A4's
+# `time` and `dist-tags.latest` views and at C4's whoami after the login (each site's own npmhint)
+for vf in time dist-tags.latest; do
+  echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/viewcode.$vf"
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/viewcode.$vf" "${FX:?}/npmrc"
+  [ $r = 1 ] && nobuild && grep -q " $vf: npm error code E401" "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
+    && endsfix "$OUTR/v0.1.0.ship-next.txt" && pass "A4's $vf view answering E401 (a counted token line): stopped before the build; the stop names npm config delete //registry.npmjs.org/:_authToken" \
+    || fail "A4 $vf E401: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
+done
+echo E401 > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamipostlogin" "${FX:?}/npmrc"
+[ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code E401' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
+  && ! grep -q '^npm publish' "$FX/calls" && pass "C4's whoami after the login answering E401 (the login's token line): nothing published; the stop names npm config delete //registry.npmjs.org/:_authToken" \
+  || fail "C4 whoami E401: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
 # a coloured E401 with a counted line: the remedy named
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/whoamiansi"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamiansi" "${FX:?}/npmrc"
 pre_row "a counted token line, whoami's E401 in npm's colours" "npm config delete //registry.npmjs.org/:_authToken"
@@ -1087,6 +1105,25 @@ rm -rf "${OUTR:?}"
 for sw in lsfail fetchfail; do
   : > "$FX/$sw"; ship; r=$?; rm -f "$FX/$sw"
   [ $r = 1 ] && endsfix "$NF" && pass "$sw: when the cause is fixed, run ship again" || fail "$sw: $(tr '\n' '|' < "$NF" 2>/dev/null)"
+  rm -rf "${OUTR:?}"
+done
+# each of those reads keeps the tool's own words in the next file's first line: A3's fetch; A5's
+# write-right reads of the tap and of lukaso/sheepr (before the build: nothing built, the class fix);
+# C3's tap read and write-right read (after it)
+printf 'fatal: stand-in fetch failure 7f3a (A3)\n' > "$FX/fetchfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/fetchfail"
+[ $r = 1 ] && head -1 "$NF" | grep -q 'stand-in fetch failure 7f3a' && endsfix "$NF" && pass "A3's fetch failing: the next file's first line keeps git's words" || fail "A3 fetch words: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-240)"
+rm -rf "${OUTR:?}"
+for pw in 'tappermfail:HTTP 502: stand-in write-right read of the tap 5c1e (A5)' 'repopermfail:HTTP 503: stand-in write-right read of lukaso/sheepr 6d2f (A5)'; do
+  sw=${pw%%:*}; printf '%s\n' "${pw#*:}" > "$FX/$sw"; ship; r=$?; rm -f "${FX:?}/$sw"
+  [ $r = 1 ] && nobuild && head -1 "$NF" | grep -q -F "${pw#*:}" && endsfix "$NF" \
+    && pass "A5, $sw: stopped before the build; the next file keeps gh's words and ends '$FIXL'" || fail "A5 $sw: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-240) last '$(tail -1 "$NF" 2>/dev/null)'"
+  rm -rf "${OUTR:?}"
+done
+for pw in 'tapreadfail:HTTP 502: stand-in tap read 9d2b (C3)' 'tappermfail:HTTP 504: stand-in write-right read of the tap 8e4a (C3)'; do
+  sw=${pw%%:*}; printf '%s\n' "${pw#*:}" > "$FX/$sw.txt"; printf 'cp "%s/%s.txt" "%s/%s"\n' "$FX" "$sw" "$FX" "$sw" > "$FX/onbuild"
+  ship; r=$?; rm -f "${FX:?}/onbuild" "${FX:?}/$sw" "${FX:?}/$sw.txt"
+  [ $r = 1 ] && grep -q '^build ' "$FX/calls" && head -1 "$NF" | grep -q -F "${pw#*:}" && endsfix "$NF" \
+    && pass "C3, $sw: the next file's first line keeps gh's words" || fail "C3 $sw: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-240)"
   rm -rf "${OUTR:?}"
 done
 cat > "$FX/onbuild" <<EOF

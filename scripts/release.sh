@@ -877,8 +877,9 @@ publish_npm_exec() { # dir
   else echo "release: the four npm packages of $tag are on npm.$(next_hint " Next: npm logout, and the token check (PHASE3.md §5)")"; fi
 }
 # the entries set their tools with plain assignments: an assignment before a function call is
-# exported, and stays, under the system's sh (measured)
-publish_npm() { NPM=npm NETC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
+# exported, and stays, under the system's sh (measured). NPMC with NETC: npmhint's token count reads
+# npm's userconfig through NPMC (left unset, it read nothing, and no E401 named its remedy)
+publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
 publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the real one
   dryentry=yes
   standins SR_PUBLISH_DRY_NPM
@@ -896,7 +897,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
   [ -z "${SR_PUBLISH_DRY_NPM_PART+set}" ] || npm_part=$SR_PUBLISH_DRY_NPM_PART
-  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry
+  NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry NPMC=npmdry
   publish_npm_exec "$out/$tag"
   rm -rf "$DRYHOME"
 }
