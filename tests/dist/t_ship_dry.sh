@@ -218,6 +218,8 @@ case \$1 in
     [ -e "$FX/whoamipostlogin" ] && grep -q '^npm login' "$FX/calls" && { echo "npm error code \$(cat "$FX/whoamipostlogin")" >&2; exit 1; }
     # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
     [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    # (a username and _password pair: whoami answers the user name, as npm does)
+    grep -q '^//registry.npmjs.org/:username=' "$FX/npmrc" 2>/dev/null && grep -q '^//registry.npmjs.org/:_password=' "$FX/npmrc" && { sed -n 's|^//registry.npmjs.org/:username=||p' "$FX/npmrc" | head -1; exit 0; }
     # (an //registry.npmjs.org/:_auth= line: whoami answers its user, as npm does for basic auth)
     grep -q '^//registry.npmjs.org/:_auth=' "$FX/npmrc" 2>/dev/null && { cat "$FX/whoami" 2>/dev/null || echo lukasco; exit 0; }
     if grep -q "^\$TOK" "$FX/npmrc" 2>/dev/null; then
@@ -229,6 +231,12 @@ case \$1 in
     if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else echo "npm error code ENEEDAUTH" >&2; fi; exit 1 ;;
   login) [ -e "$FX/loginfail" ] && exit 1; echo "\${TOK}npm_dry" >> "$FX/npmrc"; exit 0 ;;
   logout) [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
+    # (\$FX/logoutcode: the logout fails with that npm error code, and the line stays)
+    [ -e "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
+    # (a username and _password pair and no token line: npm logout removes the pair, as npm does)
+    if grep -q '^//registry.npmjs.org/:username=' "$FX/npmrc" 2>/dev/null && ! grep -q "^\$TOK" "$FX/npmrc"; then
+      grep -v -e '^//registry.npmjs.org/:username=' -e '^//registry.npmjs.org/:_password=' "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"; exit 0
+    fi
     # (an _auth line and no token line: npm logout answers ENEEDAUTH and leaves the line)
     grep -q '^//registry.npmjs.org/:_auth=' "$FX/npmrc" 2>/dev/null && ! grep -q "^\$TOK" "$FX/npmrc" && { echo "npm error code ENEEDAUTH" >&2; exit 1; }
     [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "$FX/npmrc"; exit 0; }
@@ -710,25 +718,33 @@ pre_row "an npm session from before ship" "npm logout"; ! grep -q '^npm logout' 
 # any other whoami failure cannot tell whether that session is live (deleting the line would leave a
 # live token on npm's server); and a count that cannot be read names no delete either
 A6NF=$OUTR/v0.1.0.ship-next.txt
-# rvfirst FILE: FILE names revoking the token on npmjs.com (Access Tokens), and nothing before that
-# names npm config delete or removing a line: whatever ship counted, a line removed from disk leaves
-# its token valid on npm's server until it is revoked
+# rvfirst FILE: FILE names how each live token ends (PLAN-ship.md REV 9, rule 1: "deleting or editing a
+# login line ends no token"; a session's 2-hour end; Access Tokens for an access token) before anything
+# in it names npm config delete or removing a line: whatever ship counted, a line removed from disk ends
+# no token
 rvfirst() {
-  t_=$(tr '\n' ' ' < "$1" 2>/dev/null); case $t_ in *'Access Tokens'*) ;; *) return 1 ;; esac
-  b_=${t_%%Access Tokens*}
-  case $b_ in *'config delete'*|*'remove it'*|*'remove its'*|*'remove that'*|*'remove those'*|*'remove the '*) return 1 ;; esac
+  t_=$(tr '\n' ' ' < "$1" 2>/dev/null); case $t_ in *'ends no token'*) ;; *) return 1 ;; esac
+  b_=${t_%%ends no token*}; a_=${t_#*ends no token}
+  case $a_ in *'2 hours after that login'*) ;; *) return 1 ;; esac
+  case $a_ in *'Access Tokens'*) ;; *) return 1 ;; esac
+  case $b_ in *'config delete'*|*'remove it'*|*'remove its'*|*'remove that'*|*'remove those'*|*'remove the '*|*'remove them'*) return 1 ;; esac
 }
-# the class: every npm token text in release.sh that names npm config delete or removing a line names
-# the revoke step, rvk_npm (one construction; the ERR_INVALID_AUTH text names its own line's token),
-# whatever the count picked; and no text says npm does not use a line (whoami does not use it)
-tx_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'npmjs\.(org|com)|npm config|npm logout' | grep -E 'config delete|remove (it|its|that|those|the line)')
-nt=$(printf '%s\n' "$tx_" | grep -c .); nb=$(printf '%s\n' "$tx_" | grep -cvE '\$rvk_npm|revoke its token on npmjs.com \(Access Tokens\)')
+# the class: every npm token text in release.sh that deletes or removes a login line, in any spelling
+# (npm config delete, npm config set KEY=, delete the line, remove it/that/those/them), names how each
+# live token ends (npm_tokens, one construction) or says the line holds no token (a ${VAR} line);
+# notify.sh's texts name none; no text says "revoke" but npm_tokens; none says npm does not use a line
+tre_='config delete|config set [^ ]*(_authToken|_auth|_password|username)|delete (it|the|that|its|those)|remove (it|its|that|those|them|the line)'
+tx_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'npmjs\.(org|com)|npm config|npm logout|login line' | grep -E "$tre_")
+nt=$(printf '%s\n' "$tx_" | grep -c .); nb=$(printf '%s\n' "$tx_" | grep -cvE '\$npm_tokens|holds no token')
+nf_=$(grep -v '^ *#' "$SR_ROOT/scripts/lib/notify.sh" | grep -cE "$tre_")
+nr_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep 'revoke' | grep -cv '^npm_tokens=')
 nn=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -c 'npm does not use')
-[ "$nb" = 0 ] && [ "$nn" = 0 ] && [ "$nt" -ge 8 ] && pass "every npm token text that deletes or removes a line names the revoke step ($nt texts); none says npm does not use a line" \
-  || fail "token texts: $nt, $nb without the revoke step, $nn saying npm does not use a line"
+[ "$nb" = 0 ] && [ "$nf_" = 0 ] && [ "$nr_" = 0 ] && [ "$nn" = 0 ] && [ "$nt" -ge 8 ] \
+  && pass "every npm token text that deletes or removes a line names how each token ends ($nt texts); notify.sh names no removal; no bare revoke; none says npm does not use a line" \
+  || fail "token texts: $nt, $nb without npm_tokens; notify.sh $nf_; revoke outside npm_tokens $nr_; 'npm does not use' $nn"
 : > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/expired"
 pre_row "an expired npm token (the count 1, whoami E401)" "npm config delete //registry.npmjs.org/:_authToken"
-rvfirst "$A6NF" && pass "  revoke on npmjs.com named first, then the delete" || fail "  the expired root line: no revoke step before the delete: $(head -1 "$A6NF" | cut -c1-200)"
+rvfirst "$A6NF" && grep -q '(an expired token)' "$A6NF" && pass "  how each token ends named first, then the delete; still called expired (a literal token)" || fail "  the expired root line: $(head -1 "$A6NF" | cut -c1-200)"
 grep -q 'E401' "$FX/o" && pass "  the reason named: npm's E401" || fail "  E401 row: $(lastline)"
 [ "$(tail -1 "$A6NF")" = 'When the cause above is fixed, run ship again.' ] && pass "  class fix: its next file ends 'When the cause above is fixed, run ship again.'" || fail "  E401 class: '$(tail -1 "$A6NF")'"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
@@ -773,11 +789,11 @@ endsfix "$A6NF" && ! grep -q 'config delete' "$A6NF" && pass "  when the cause i
 echo E401 > "$FX/whoamicode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamicode"
 pre_row "no token line ship counts, whoami E401" "a token outside the lines ship counts"
 endsfix "$A6NF" && ! grep -q 'config delete' "$A6NF" && pass "  when the cause is fixed, run ship again; no npm config delete" || fail "  E401 with no counted line: last '$(tail -1 "$A6NF")'"
-rvfirst "$A6NF" && pass "  revoke on npmjs.com named before removing the line" || fail "  E401 with no counted line: no revoke step first: $(head -1 "$A6NF" | cut -c1-200)"
+rvfirst "$A6NF" && pass "  how each token ends named before removing the line" || fail "  E401 with no counted line: $(head -1 "$A6NF" | cut -c1-200)"
 echo ERR_INVALID_AUTH > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/ownercode"
 pre_row "npm owner ls answering ERR_INVALID_AUTH" "an _authToken line that names no registry"
 endsfix "$A6NF" && pass "  when the cause is fixed, run ship again" || fail "  owner ls ERR_INVALID_AUTH: last line '$(tail -1 "$A6NF")'"
-rvfirst "$A6NF" && pass "  revoke on npmjs.com named before removing the line" || fail "  ERR_INVALID_AUTH: no revoke step first: $(head -1 "$A6NF" | cut -c1-200)"
+rvfirst "$A6NF" && pass "  how each token ends named before removing the line" || fail "  ERR_INVALID_AUTH: $(head -1 "$A6NF" | cut -c1-200)"
 # every npm command that reaches the registry answers E401, a counted token line in the userconfig:
 # A4's views fail first, and the stop still names the remedy
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"
@@ -900,27 +916,51 @@ for nl in "'//registry.npmjs.org/:_authToken'=npm_old" '//registry.npmjs.org/:_a
   printf '//registry.npmjs.org/:_authToken=npm_live\n%s\n' "$nl" > "$FX/npmrc"; echo E401 > "$FX/whoamicode"
   rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamicode" "${FX:?}/npmrc"
   [ $r = 1 ] && nobuild && rvfirst "$OUTR/v0.1.0.ship-next.txt" && rvfirst "$FX/o" && endsfix "$OUTR/v0.1.0.ship-next.txt" \
-    && pass "a live root line and $nl, whoami E401: revoke on npmjs.com named before any delete (stdout, the next file)" \
+    && pass "a live root line and $nl, whoami E401: how each token ends named before any delete (stdout, the next file)" \
     || fail "live root + $nl: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
 done
 # a line whoami does not send but views and uploads do (//registry.npmjs.org:_authToken, no slash):
 # whoami ENEEDAUTH; the text says neither that npm does not use it nor a bare remove: revoke first
 echo '//registry.npmjs.org:_authToken=npm_noslash' > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
 [ $r = 1 ] && nobuild && ! grep -q 'npm does not use' "$FX/o" "$OUTR/v0.1.0.ship-next.txt" && rvfirst "$OUTR/v0.1.0.ship-next.txt" && endsfix "$OUTR/v0.1.0.ship-next.txt" \
-  && pass "a no-slash token line, whoami ENEEDAUTH: no 'npm does not use', revoke on npmjs.com before removing it" \
+  && pass "a no-slash token line, whoami ENEEDAUTH: no 'npm does not use'; how each token ends named before removing it" \
   || fail "no-slash line: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
 # an _auth line: whoami answers (a session), and npm logout cannot remove it (ENEEDAUTH): the text names
 # npm logout and, for a line still there after it, revoking on npmjs.com and removing the line. Its
 # steps end the loop: the logout fails and leaves the line; removed (after the revoke), ship runs
 echo '//registry.npmjs.org/:_auth=bHVrYXNjbzpwdw==' > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && nobuild && grep -q 'an npm session exists' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'npm logout' "$OUTR/v0.1.0.ship-next.txt" \
-  && grep -q 'Access Tokens' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'remove that line' "$OUTR/v0.1.0.ship-next.txt" \
-  && pass "an _auth line (whoami answers): npm logout, and for a line still there after it, revoke on npmjs.com and remove it" \
+  && rvfirst "$OUTR/v0.1.0.ship-next.txt" && grep -q 'remove that line' "$OUTR/v0.1.0.ship-next.txt" && ! grep -q 'username or _password' "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "an _auth line (whoami answers): npm logout, and for a line still there after it, how each token ends, then remove it" \
   || fail "_auth line: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
-env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" logout --registry=https://registry.npmjs.org/ > /dev/null 2>&1; lr=$?
-grep -q '^//registry.npmjs.org/:_auth=' "$FX/npmrc" && [ $lr != 0 ] && pass "  its step 1: npm logout fails and leaves the line (the stand-in, as npm does)" || fail "  _auth logout: rc=$lr"
-rm -f "${FX:?}/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?
-completed && pass "  its step 2 (revoke, then remove the line): ship runs; the loop ends" || fail "  after removing the _auth line: rc=$r $(lastline)"
+# its steps, as the text gives them (stepsdo: npm logout when the text names it; a line still there
+# afterwards removed only when the text says to remove it), then ship again: the loop ends
+stepsdo() { # next-file -> rc of the run after the steps
+  grep -q 'npm logout' "$1" && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" logout --registry=https://registry.npmjs.org/ > /dev/null 2>&1
+  if grep -q '^//registry.npmjs.org/' "$FX/npmrc" 2>/dev/null && grep -q -e 'still in npm.s userconfig after it.*remove that line' "$1"; then
+    grep -v '^//registry.npmjs.org/' "$FX/npmrc" > "$FX/npmrc.n"; mv "$FX/npmrc.n" "$FX/npmrc"
+  fi
+  rm -rf "${OUTR:?}"; ship
+}
+cp "$OUTR/v0.1.0.ship-next.txt" "$FX/steps.nf"; stepsdo "$FX/steps.nf"; r=$?
+completed && pass "  its steps (npm logout fails and leaves the line; then the line removed, as the text says): ship runs; the loop ends" \
+  || fail "  the _auth line's steps: rc=$r, the line $(grep -c '^//registry.npmjs.org/:_auth=' "$FX/npmrc" 2>/dev/null) left; $(lastline)"
+rm -f "${FX:?}/npmrc" "${FX:?}/steps.nf"
+# a username and _password pair (whoami answers): npm logout removes it (F7: the text never says it
+# cannot); its steps end the loop with the logout alone
+printf '//registry.npmjs.org/:username=lukasco\n//registry.npmjs.org/:_password=cHc=\n' > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?
+[ $r = 1 ] && nobuild && grep -q 'an npm session exists' "$OUTR/v0.1.0.ship-next.txt" && ! grep -q -e 'username or _password' -e 'cannot remove a username' "$OUTR/v0.1.0.ship-next.txt" \
+  && pass "a username and _password session: npm logout named; no text says npm logout cannot remove that pair" \
+  || fail "username/_password: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
+cp "$OUTR/v0.1.0.ship-next.txt" "$FX/steps.nf"; stepsdo "$FX/steps.nf"; r=$?
+completed && pass "  its steps (npm logout removes the pair): ship runs" || fail "  username/_password steps: rc=$r $(lastline)"
+rm -f "${FX:?}/npmrc" "${FX:?}/steps.nf"
+# a ${VAR} line (whoami E401: ship's npm gets no variable, so npm sends the text itself): the line cannot
+# work under ship: remove it; no revoke, no "expired". (A literal expired token keeps its text: above)
+echo '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$FX/npmrc"; : > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/expired" "${FX:?}/npmrc"
+[ $r = 1 ] && nobuild && grep -q 'no environment variables' "$OUTR/v0.1.0.ship-next.txt" && grep -q 'remove it' "$OUTR/v0.1.0.ship-next.txt" \
+  && ! grep -q -i -e revoke -e expired "$OUTR/v0.1.0.ship-next.txt" && pass "a \${NPM_TOKEN} line, whoami E401: ship's npm gets no variables, remove it; no revoke, no 'expired'" \
+  || fail "\${NPM_TOKEN} line: rc=$r $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-240)"
 # a coloured E401 with a counted line: the remedy named
 echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo E401 > "$FX/whoamiansi"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamiansi" "${FX:?}/npmrc"
 pre_row "a counted token line, whoami's E401 in npm's colours" "npm config delete //registry.npmjs.org/:_authToken"
@@ -1150,12 +1190,13 @@ completed && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "np
 grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.ship-progress")\$" "$FX/calls" && [ "$(grep -c '^caffeinate' "$FX/calls")" = 1 ] \
   && pass "caffeinate once: -i -w ship's pid" || fail "caffeinate: $(grep caffeinate "$FX/calls" | tr '\n' ' ') pid $(head -1 "$OUTR/.v0.1.0.ship-progress")"
 # a success whose logout leaves the token: no done, one logout-failed, exit 1; the text: npm logout
-# again until it ends with no error; if it keeps failing, revoke the token on npmjs.com first, then
-# npm config delete (a deleted line leaves a live token on npm's server)
-LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/ again until it ends with no error. If it keeps failing, first revoke on npmjs.com (Access Tokens) each token of npm's registry.npmjs.org login lines that npmjs.com still lists, then run npm config delete //registry.npmjs.org/:_authToken"
+# again until it ends with no error or answers E401, the line left as it is, and the clock time ship's
+# session ends by itself (REV 9 rule 2)
+hm() { sed -E 's/[0-9]{2}:[0-9]{2} on [0-9]{4}-[0-9]{2}-[0-9]{2}/HH:MM on DATE/g'; }   # the session's clock time, normalized
+LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/ again until it ends with no error or answers E401. Until then leave ship's line as it is: npm logout can end ship's session sooner only while that line is there. ship's session ends by itself at HH:MM on DATE (2 hours after its login)."
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
-[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -qxF "release: $LOGOUT_TEXT" "$FX/o" && [ ! -e "$NF" ] && gone \
-  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, npm config delete only after E401, else revoke on npmjs.com" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
+[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hm < "$FX/o" | grep -qxF "release: $LOGOUT_TEXT" && [ ! -e "$NF" ] && gone \
+  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, the line left, the session's own end" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
 # a failure after the login: one logout, one failed-PHASE; with the token left, one notification naming both
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
@@ -1163,8 +1204,8 @@ LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1)
 [ -z "$(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | grep -v -e '^npm logout --registry=https://registry.npmjs.org/$' -e '^npm config get userconfig$' -e '^notify ')" ] \
   && pass "  after the stop: no read but the logout and the token count (the stop text reads nothing)" || fail "  calls after the stop: $(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | tr '\n' ' ')"
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail" "$FX/pubfail.sheepr"
-[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "$LOGOUT_TEXT" ] && gone \
-  && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null)'"
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF" | hm)" = "$LOGOUT_TEXT" ] && gone \
+  && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null | hm)'"
 # an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
 # goes on; the token left: logout-failed, everything removed, exit 1
 : > "$FX/logoutint"; rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "$FX/logoutint"
@@ -1218,12 +1259,23 @@ n_ph=$(sed -n 's/.*[ ;]phase=\([a-z0-9-]*\)[ ;].*/\1/p; s/.*[ ;]phase=\([a-z0-9-
 no_osascript env -i PATH=/usr/bin:/bin SR_NOTIFY_OSASCRIPT="$S/notify" HOME="$FX/ghome" sh "$REPO/scripts/lib/notify.sh" failed-Npm v0.1.0 2> "$FX/nerr" >/dev/null
 grep -q refused "$FX/nerr" && pass "control: an upper-case phase is refused by notify.sh" || fail "control: failed-Npm accepted"
 
+# the logout of ship's own session fails with ETIMEDOUT (or any answer but E401): npm logout is the only
+# remedy (it ends the session only while its line is there); the text names the clock time the session
+# ends by itself (2 hours after ship's login), never a delete of its line, never Access Tokens
+echo ETIMEDOUT > "$FX/logoutcode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutcode" "${FX:?}/npmrc"
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "npm logout did not end ship's npm login" "$FX/o" \
+  && ! grep -q -e 'config delete' -e 'Access Tokens' -e 'remove ' "$FX/o" && grep -qE "ends by itself at [0-9]{2}:[0-9]{2} on [0-9]{4}-[0-9]{2}-[0-9]{2}" "$FX/o" \
+  && pass "ship's logout failing with ETIMEDOUT: npm logout again is the only remedy; the session's own end named as a clock time; no delete, no Access Tokens" \
+  || fail "logout ETIMEDOUT: rc=$r '$(nots)' $(grep 'npm logout did not end' "$FX/o" | cut -c1-240)"
+echo E401 > "$FX/logoutcode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutcode" "${FX:?}/npmrc"
+grep -q "npm logout answered E401" "$FX/o" && rvfirst "$FX/o" && grep -q 'npm config delete //registry.npmjs.org/:_authToken' "$FX/o" \
+  && pass "control: ship's logout answering E401: how each token ends, then npm config delete" || fail "logout E401: rc=$r $(grep -e 'npm logout' "$FX/o" | tail -1 | cut -c1-240)"
 # a login line left after the logout that is not the root one (npm logout clears only the root line;
-# here a path-specific one): it counts, so no done, exit 1; the text names no npm config delete (it
-# would not remove that line, and the token may be live): revoke on npmjs.com first
+# here a path-specific one): it counts, so no done, exit 1; the logout did not end with E401, so the
+# text names npm logout again and the session's own end, no delete
 echo '//registry.npmjs.org/-/:_authToken=npm_pathline' > "$FX/logoutleaves"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutleaves" "${FX:?}/npmrc"
 [ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "npm logout did not end ship's npm login (login token lines left: 1)" "$FX/o" \
-  && ! grep -q 'config delete' "$FX/o" && grep -q 'Access Tokens' "$FX/o" && pass "a path-specific login line left after the logout: logout-failed, exit 1; no npm config delete, revoke on npmjs.com" \
+  && ! grep -q -e 'config delete' -e 'Access Tokens' "$FX/o" && grep -qE "ends by itself at [0-9]{2}:[0-9]{2}" "$FX/o" && pass "a path-specific login line left after the logout: logout-failed, exit 1; npm logout again, the session's own end; no delete, no Access Tokens" \
   || fail "line left after the logout: rc=$r '$(nots)' $(grep 'npm logout did not end' "$FX/o" | cut -c1-200)"
 # the count decides, not logout's exit code: a logout that fails but removes the token is done
 : > "$FX/logoutlies"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutlies"
