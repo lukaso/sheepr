@@ -710,6 +710,13 @@ NPMREG=https://registry.npmjs.org/   # pinned on the command line: an npmrc's re
 # views (NPM_WAIT_MAX seconds of them); each view's own time comes on top.
 NPM_WAIT_MAX=1800 NPM_WAIT_STEP=10
 readonly NPM_WAIT_MAX NPM_WAIT_STEP   # a second assignment (an entry, a caller) fails loudly
+# notafter PACKAGE: what this step did not upload after PACKAGE, true in every mode: under main the
+# batch (C6, or an earlier publish-npm) uploaded the platform packages, and this step uploads only
+# the main package; otherwise this step uploads in SR_NPM_PKGS's order (mainp: publish_npm_exec's)
+notafter() {
+  if [ "$npm_part" = main ] && [ "$1" != "$mainp" ]; then printf '%s' "this step did not upload the main package"
+  else printf '%s' "this step uploaded nothing after it"; fi
+}
 npm_visible() {
   w=0
   while :; do
@@ -717,9 +724,9 @@ npm_visible() {
     got=$(printf '%s' "$vout" | tr -d ' "\n\r')
     if [ $r = 0 ] && [ -n "$got" ]; then
       [ "$got" = "$3" ] && return 0
-      die "$1@$2 is on npm with another file ($got) than ${4:-the one just published}; nothing after it is published"
+      die "$1@$2 is on npm with another file ($got) than ${4:-the one just published}; $(notafter "$1")"
     fi
-    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(sed -n 's/^npm error code \(.*\)$/\1/p' "$pc/err" | head -1 | grep . || echo "exit $r, an empty answer")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}$(next_hint "; once it shows, run publish-npm again (it skips a version already there with this file)"). A blocked version needs a new version number. Nothing after it is published"
+    [ "$w" -lt "$NPM_WAIT_MAX" ] || die "$1@$2 is not visible on npm after $((NPM_WAIT_MAX / NPM_WAIT_STEP)) waits of $NPM_WAIT_STEP s, $NPM_WAIT_MAX s in all, each view's own time on top (the last view: $(sed -n 's/^npm error code \(.*\)$/\1/p' "$pc/err" | head -1 | grep . || echo "exit $r, an empty answer")). npm scans every upload before it shows it: it may still be scanning, or it held the version for review or blocked it. Look at https://www.npmjs.com/package/$1 and npm's email to ${SR_NPM_USER:-the owner}$(next_hint "; once it shows, run publish-npm again (it skips a version already there with this file)"). A blocked version needs a new version number. $(notafter "$1" | sed 's/^t/T/')"
     sleep "$NPM_WAIT_STEP"; w=$((w + NPM_WAIT_STEP))
   done
 }
@@ -794,10 +801,10 @@ publish_npm_exec() { # dir
     [ "$p" = "$mainp" ] && [ "$npm_part" = platform ] && continue
     f=$p-$nv.tgz
     # npm gets a private copy, hashed against the manifest: the bytes checked are the bytes sent
-    cp "$d/$f" "$pc/$f" 2>/dev/null || die "no $f in $d; nothing after it is published"
+    cp "$d/$f" "$pc/$f" 2>/dev/null || die "no $f in $d; $(notafter "$p")"
     h=$(shasum -a 256 "$pc/$f" | cut -d' ' -f1)
     [ -n "$h" ] && [ "$h" = "$(man_hash "$d" "$f")" ] \
-      || die "$f does not match its manifest hash (changed after npm-check?); nothing after it is published"
+      || die "$f does not match its manifest hash (changed after npm-check?); $(notafter "$p")"
     want=$(npy integrity "$pc/$f") || die "cannot hash $f"
     if [ "$p" != "$mainp" ] && [ "$npm_part" = main ]; then
       npm_visible "$p" "$nv" "$want" "this build's (uploaded earlier, by the batch)"; waited=yes
@@ -809,11 +816,11 @@ publish_npm_exec() { # dir
     vout=$(tool "$NETC" "$NPM" view --json --prefer-online --registry="$NPMREG" "$p@$nv" dist.integrity 2> "$pc/err"); r=$?
     got=$(printf '%s' "$vout" | tr -d ' "\n\r')
     if [ $r = 0 ] && [ -n "$got" ]; then
-      [ "$got" = "$want" ] || die "$p@$nv is already on npm with another file ($got); nothing after it is published"
+      [ "$got" = "$want" ] || die "$p@$nv is already on npm with another file ($got); $(notafter "$p")"
       echo "release: $p@$nv is already on npm (the same file): skipped"
       continue
     elif ! { [ $r != 0 ] && printf '%s\n' "$vout" | cat - "$pc/err" | grep -q 'E404'; }; then
-      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' ')); nothing after it is published"
+      die "cannot tell whether $p@$nv is on npm (npm view: exit $r, $(head -c 300 "$pc/err" | tr '\n' ' ')); $(notafter "$p")"
     fi
     # the operator may have left during a wait: a notification before each upload that follows one
     # (npm-approve-again for the main package, npm-approve-next for another), none before the first;
@@ -825,7 +832,7 @@ publish_npm_exec() { # dir
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" "$@" "$pc/$f" \
-      || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out$(next_hint ": run publish-npm again (it skips a version already there with this file)" " may be the cause"). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}$(next_hint ", wait, then run publish-npm again"). A blocked version needs a new version number. Nothing after it is published"
+      || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out$(next_hint ": run publish-npm again (it skips a version already there with this file)" " may be the cause"). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}$(next_hint ", wait, then run publish-npm again"). A blocked version needs a new version number. $(notafter "$p" | sed 's/^t/T/')"
     if [ "$npm_part" = platform ]; then
       progress "done npm-platform $p"
       echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"

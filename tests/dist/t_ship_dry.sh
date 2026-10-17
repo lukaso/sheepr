@@ -338,7 +338,7 @@ postpush_scan() {
   ! grep -q '^push refused' "$pf" || return 0
   echo x >> "$FX/postpush.runs"
   for f_ in "$nf_" "$FX/o"; do
-    [ -f "$f_" ] && grep -n -i -E 'nothing (is|was) publi|made nothing public' "$f_" | sed "s|^|$f_:|" >> "$FX/postpush.bad"
+    [ -f "$f_" ] && grep -n -i -E 'nothing (is|was) publi|made nothing public|nothing after it is publi' "$f_" | sed "s|^|$f_:|" >> "$FX/postpush.bad"
   done
   return 0
 }
@@ -980,7 +980,7 @@ done_all() { # the release is complete: the tag on origin, the tap at 0.1.0, fou
   git --git-dir="$FX/origin.git" rev-parse -q --verify refs/tags/v0.1.0 >/dev/null && grep -q '^  version "0.1.0"$' "$FX/tap/sheepr.rb" \
     && [ "$(ls "$FX"/pub.* 2>/dev/null | grep -c .)" = 4 ]
 }
-postpush_ok() { ! grep -i -q -E -e 'nothing (is|was) publi' -e 'made nothing public' -e 'not public\.' "$NF"; }
+postpush_ok() { ! grep -i -q -E -e 'nothing (is|was) publi' -e 'made nothing public' -e 'not public\.' -e 'nothing after it is publi' "$NF"; }
 stoprow() { # label: the steps of the next file ran and the release is complete
   cont; [ $RC = 0 ] && done_all && pass "$1: the steps named ($(tr '\n' ' ' < "$FX/cont")) complete the release" || fail "$1: $(tr '\n' ' ' < "$FX/cont")"
   world_reset
@@ -1070,6 +1070,15 @@ printf 'echo 100000 > "%s/processing.sheepr-linux-x64"\n' "$FX" > "$FX/afterpush
 rm -f "$FX"/processing.*   # npm's scan finished
 stoprow "the C8 wait timed out (then the scan finished)"
 rm -rf "${OUTR:?}"
+# C8's wait times out on the first platform package (C6 of the same run uploaded the two after it):
+# the stop says what this step did not do (the main package), never "nothing after it is published",
+# and the next file keeps "npm may hold a part of it"; then on the last platform package
+for pk in sheepr-linux-arm64 sheepr-darwin-universal; do
+  printf 'echo 100000 > "%s/processing.%s"\n' "$FX" "$pk" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX"/processing.*
+  [ $r = 1 ] && head -1 "$NF" | grep -q "$pk@0.1.0 is not visible on npm" && ! head -1 "$NF" | grep -q -i 'after it is published' \
+    && head -1 "$NF" | grep -q 'This step did not upload the main package' && grep -q 'npm may hold a part of it' "$NF" && postpush_ok \
+    && pass "C8's wait on $pk timed out: 'this step did not upload the main package', npm may hold a part of it" || fail "C8 wait on $pk: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-80)…$(head -1 "$NF" 2>/dev/null | tail -c 120)"
+done
 
 # --- next_hint: under ship, no message but the stop text names an entry to run next; the remedies stay
 hint_free() { # the lines of the run's output that are not the stop text name no entry to run next
