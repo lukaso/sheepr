@@ -464,8 +464,10 @@ want='publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.
   && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
 grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass "the dispatch: '  publish-npm) publish_npm ;;'" || fail "the publish-npm dispatch arm"
 nb=$(sed -n '/^notify() {/,/^}/p' "$SR_ROOT/scripts/release.sh")
-printf '%s\n' "$nb" | grep -qF 'then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$1" "$tag"' && printf '%s\n' "$nb" | grep -qF 'else tool base "$NOTIFY" "$1" "$tag"; fi' \
-  && pass "notify(): a dry entry's notifier with SR_NOTIFY_OSASCRIPT set, a real entry's in the base class" || fail "notify()'s body: $(printf '%s' "$nb" | tr '\n' ' ')"
+# (its arguments: the key and the tag; a stop's key also the out dir, so its text names the next file)
+printf '%s\n' "$nb" | grep -qF 'then tool dry /usr/bin/env SR_NOTIFY_OSASCRIPT= "$NOTIFY" "$@"' && printf '%s\n' "$nb" | grep -qF 'else tool base "$NOTIFY" "$@"; fi' \
+  && printf '%s\n' "$nb" | grep -qF 'case $1 in failed-*|logout-failed-*) set -- "$1" "$tag" "$out" ;; *) set -- "$1" "$tag" ;; esac' \
+  && pass "notify(): a dry entry's notifier with SR_NOTIFY_OSASCRIPT set, a real entry's in the base class; a stop's key gets the out dir" || fail "notify()'s body: $(printf '%s' "$nb" | tr '\n' ' ')"
 
 # __publish-npm-dry refuses a stand-in outside the fixtures, for the npm and for the notifier, each
 # with the other one valid and a full release to publish: the refusal names it, the outside one is
