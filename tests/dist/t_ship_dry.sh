@@ -758,10 +758,13 @@ completed && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "np
   && pass "a success: one logout, then 'done' (the last notification); an earlier next file removed; everything removed" || fail "success: rc=$r nots '$(nots)' next $(ls "$NF" 2>/dev/null) $(lastline)"
 grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.ship-progress")\$" "$FX/calls" && [ "$(grep -c '^caffeinate' "$FX/calls")" = 1 ] \
   && pass "caffeinate once: -i -w ship's pid" || fail "caffeinate: $(grep caffeinate "$FX/calls" | tr '\n' ' ') pid $(head -1 "$OUTR/.v0.1.0.ship-progress")"
-# a success whose logout leaves the token: no done, one logout-failed, exit 1, npm logout named
+# a success whose logout leaves the token: no done, one logout-failed, exit 1; the text: npm logout
+# again until it ends with no error; npm config delete only after an E401 (an expired token), and
+# otherwise revoke the token on npmjs.com first (a deleted line leaves a live token on npm's server)
+LOGOUT_TEXT="npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/ again until it ends with no error. If it fails with E401 (an expired token, which npm cannot revoke), run npm config delete //registry.npmjs.org/:_authToken; if it fails otherwise, revoke the token on npmjs.com (Access Tokens) before you delete that line"
 : > "$FX/logoutstays"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutstays"
-[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q 'run npm logout --registry=https://registry.npmjs.org/' "$FX/o" && grep -q 'run npm config delete //registry.npmjs.org/:_authToken' "$FX/o" && [ ! -e "$NF" ] && gone \
-  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done), npm logout and npm config delete named" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
+[ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -qxF "release: $LOGOUT_TEXT" "$FX/o" && [ ! -e "$NF" ] && gone \
+  && pass "a success whose logout leaves the token: exit 1, one logout-failed (no done); npm logout again, npm config delete only after E401, else revoke on npmjs.com" || fail "success, logout fails: rc=$r '$(nots)' $(lastline)"
 # a failure after the login: one logout, one failed-PHASE; with the token left, one notification naming both
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?
 [ $r = 1 ] && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again failed-npm-main " ] && gone \
@@ -769,7 +772,7 @@ grep -q "^caffeinate -i -w $(sed -n 's/^run \([0-9]*\) .*/\1/p' "$OUTR/.v0.1.0.s
 [ -z "$(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | grep -v -e '^npm logout --registry=https://registry.npmjs.org/$' -e '^npm config get userconfig$' -e '^notify ')" ] \
   && pass "  after the stop: no read but the logout and the token count (the stop text reads nothing)" || fail "  calls after the stop: $(sed -n '/^STOP$/,$p' "$FX/calls" | sed 1d | tr '\n' ' ')"
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail" "$FX/pubfail.sheepr"
-[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "npm logout did not end ship's npm login (login token lines left: 1): run npm logout --registry=https://registry.npmjs.org/; if a line stays (an expired token, which npm logout cannot revoke), run npm config delete //registry.npmjs.org/:_authToken" ] && gone \
+[ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed-npm-main " ] && [ "$(tail -1 "$NF")" = "$LOGOUT_TEXT" ] && gone \
   && pass "a failure, and the logout leaves the token: one notification naming both; the next file ends with npm logout" || fail "failure + logout fails: rc=$r '$(nots)' '$(tail -1 "$NF" 2>/dev/null)'"
 # an INT while the logout runs (the stand-in resets INT, then sends it to ship's group): the handler
 # goes on; the token left: logout-failed, everything removed, exit 1

@@ -1280,7 +1280,9 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     drain; n=$(tokcount)
   fi
   if [ "$n" != 0 ]; then
-    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG; if a line stays (an expired token, which npm logout cannot revoke), run npm config delete //registry.npmjs.org/:_authToken"
+    # npm config delete only removes the line: the token stays live on npm's server unless it has
+    # expired (E401) or is revoked there
+    rc=1 lo="npm logout did not end ship's npm login (login token lines left: $n): run npm logout --registry=$NPMREG again until it ends with no error. If it fails with E401 (an expired token, which npm cannot revoke), run npm config delete //registry.npmjs.org/:_authToken; if it fails otherwise, revoke the token on npmjs.com (Access Tokens) before you delete that line"
     echo "release: $lo"
     drain; [ $wrote = no ] || printf '%s\n' "$lo" >> "$nf" 2>/dev/null
   fi
