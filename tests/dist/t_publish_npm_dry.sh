@@ -290,6 +290,16 @@ for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'NPM_CONFIG_USERCONFIG=${HOME}/npmrc' 
   [ $r != 0 ] && printf '%s\n' "$eu" | grep -qF "${uv%%=*} is '${uv#*=}', not an absolute path" && ! printf '%s\n' "$eu" | grep -q -e '^HOME=' -e '^NPM_CONFIG_USERCONFIG=' \
     && pass "the npm class refuses $uv: not an absolute path; npm never ran" || fail "$uv: rc=$r $(printf '%s\n' "$eu" | grep -e USERCONFIG -e '^release:' | head -2 | tr '\n' ' ')"
 done
+# REV 11a rule 8 (r14a F1): an absolute one holding a $ (npm expands ${VAR} in it from the environment
+# it runs in) is refused too, the variable named: the npm class, and publish-npm before any npm call
+for uv in "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/\$SRFOO/npmrc"; do
+  eu=$(ne "$uv"); r=$?
+  [ $r != 0 ] && printf '%s\n' "$eu" | grep -qF "${uv%%=*} is '${uv#*=}': it holds a \$" && ! printf '%s\n' "$eu" | grep -q -e '^HOME=' -e '^NPM_CONFIG_USERCONFIG=' \
+    && pass "REV 11a rule 8: the npm class refuses ${uv%%=*} holding a \$; npm never ran" || fail "\$ in ${uv%%=*}: rc=$r $(printf '%s\n' "$eu" | grep -e USERCONFIG -e '^release:' | head -2 | tr '\n' ' ')"
+done
+mkout "$D" v0.1.0; PUBX="NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc"; pub v0.1.0; r=$?; PUBX=
+[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -qF "NPM_CONFIG_USERCONFIG is '$FX/v/\${SRFOO}rc': it holds a \$" "$FX/o" \
+  && pass "  publish-npm with NPM_CONFIG_USERCONFIG holding a \$: refused before any npm call" || fail "  publish-npm, \$: rc=$r $(tail -1 "$FX/o" | cut -c1-200)"
 # publish-npm refuses it too, before any npm call
 mkout "$D" v0.1.0; PUBX='NPM_CONFIG_USERCONFIG=~/npmrc'; pub v0.1.0; r=$?; PUBX=
 [ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -qF "NPM_CONFIG_USERCONFIG is '~/npmrc', not an absolute path" "$FX/o" \

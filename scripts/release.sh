@@ -259,6 +259,7 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
   # call, and npm never runs with one). A relative CA file is made absolute before the cd below, from
   # a current directory that can be read
   case $u in ''|/*) ;; *) echo "release: $(redact "$(npm_ucbad || printf '%s' "npm's userconfig '$u' is not an absolute path")")" >&2; return 2 ;; esac
+  case $u in *'$'*) echo "release: $(redact "$(npm_ucbad || printf '%s' "npm's userconfig '$u' holds a \$")")" >&2; return 2 ;; esac
   case $ca in
     ''|/*) ;;
     *) p_=$(pwd -P 2>/dev/null) && [ -n "$p_" ] \
@@ -295,12 +296,16 @@ npm_env() { # HOME USERCONFIG command...: base, the proxies and a CA npm may nee
 # may leave a gc or maintenance child running, or start fsmonitor's daemon, with whatever it inherits)
 git() { command git "$@" 8>&- 9>&-; }
 # npm_ucbad: why npm's userconfig variable is refused, or nothing (1): each spelling must be empty or
-# an absolute path. npm expands ~ and ${VAR} in it itself, and ship runs npm from /, so any other
-# spelling names another file than the one meant (made absolute here, '~/rc' was <cwd>/~/rc)
+# an absolute path with no $ in it. npm expands ~ and ${VAR} in it itself, and ship runs npm from /,
+# so any other spelling names another file than the one meant (made absolute here, '~/rc' was
+# <cwd>/~/rc)
 npm_ucbad() {
   for v_ in NPM_CONFIG_USERCONFIG npm_config_userconfig; do
     eval "x_=\${$v_:-}"
     case $x_ in ''|/*) ;; *) printf '%s' "$v_ is '$x_', not an absolute path: set it to the absolute path of npm's userconfig, or unset it"; return 0 ;; esac
+    # (REV 11a rule 8: npm, not the shell, expands ${VAR} in it, from the environment it runs in: ship
+    # runs npm with none, the operator's shell may hold the variable, so the two would use two files)
+    case $x_ in *'$'*) printf '%s' "$v_ is '$x_': it holds a \$, which npm expands from the environment it runs in (ship runs npm with none; your shell may hold that variable), so ship and your shell would use two files: set it to the plain absolute path of npm's userconfig, or unset it"; return 0 ;; esac
   done
   return 1
 }

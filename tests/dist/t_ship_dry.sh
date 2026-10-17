@@ -1020,6 +1020,17 @@ for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'npm_config_userconfig=rel/npmrc'; do
 done
 SETX="NPM_CONFIG_USERCONFIG=$FX/abs-npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
 completed && pass "control: an absolute NPM_CONFIG_USERCONFIG: the run completes" || fail "control, absolute userconfig: rc=$r $(lastline)"
+# REV 11a rule 8 (r14a F1, R2): an absolute userconfig variable holding a $ (npm, not the shell, expands
+# ${VAR} in it, from the environment it runs in: ship's npm has none, the operator's shell may): refused
+# before any npm call, the variable named; nothing made (no build, no lock left). Both spellings
+mkdir -p "$FX/v" || exit 3
+for uv in "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/v/\$SRFOO/rc"; do
+  echo ETIMEDOUT > "$FX/logoutcode"; SETX=$uv; rm -rf "${OUTR:?}"; ship; r=$?; SETX=; rm -f "${FX:?}/logoutcode"
+  [ $r = 1 ] && nobuild && ! grep -q '^npm ' "$FX/calls" && grep -qF "${uv%%=*} is '${uv#*=}': it holds a \$" "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && gone \
+    && pass "REV 11a rule 8: ${uv%%=*} holding a \$: ship refuses before any npm call, the variable named; nothing made" \
+    || fail "${uv%%=*} with a \$: rc=$r, $(grep -c '^npm ' "$FX/calls") npm calls; $(grep -m1 "${uv%%=*}" "$FX/o" | cut -c1-200)"
+done
+rm -rf "${FX:?}/v"
 # npm's login lines for registry.npmjs.org count in any spelling (any spacing, any path under the
 # host, _authToken, _auth, _password or username: npm reads each). The remedy names npm config delete
 # //registry.npmjs.org/:_authToken only for exactly one such line that is the root _authToken line:
