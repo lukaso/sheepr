@@ -741,7 +741,10 @@ npm_owners() { # after npm_list, which read release.conf: the list checked is th
     own=$(tool "$1" "$2" owner ls "$p" --registry="$NPMREG" 2> "$3/err"); r=$?
     if [ $r != 0 ]; then
       grep -q 'E404' "$3/err" && { stopclass fix; die "$p is not on npm yet: reserve the name first (publish a 0.0.0 placeholder as $SR_NPM_USER)$(next_hint ", then run this again"); this step uploaded nothing"; }
-      stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); this step uploaded nothing"
+      c_=$(npmcode "$3/err")
+      netcode "$c_" && { stopclass network; die "cannot read the owners of $p on npm (npm owner ls: exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')); this step uploaded nothing"; }
+      # a definite answer: a rerun would stop the same way
+      stopclass fix; die "npm owner ls answered ${c_:-no npm error code} for $p, not a network failure (exit $r, $(head -c 200 "$3/err" | tr '\n' ' ')): look at that answer and at npm config list (ERR_INVALID_AUTH: an _authToken that names no registry); this step uploaded nothing"
     fi
     printf '%s\n' "$own" | awk -v me="$SR_NPM_USER" '$1 == me {f = 1} END {exit !f}' \
       || { stopclass fix; die "$p on npm belongs to $(printf '%s\n' "$own" | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'), not to $SR_NPM_USER; this step uploaded nothing"; }
@@ -1182,13 +1185,25 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
     die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run npm logout (it also revokes the token on npm's server), then run ship again (ship logs in itself, after the build)"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
-  # a token line and npm's E401: the token expired, and only deleting its line ends it; any other
-  # failure cannot tell whether the session is live (a deleted line would leave a live token on npm)
-  if [ "$n" != 0 ] && grep -q E401 "$st/who.err"; then
-    die "npm's userconfig holds a login token npm refuses (npm whoami: E401, an expired token; token lines: $n): run npm config delete //registry.npmjs.org/:_authToken, then run ship again"
-  fi
-  { [ "$n" = 0 ] && grep -q ENEEDAUTH "$st/who.err"; } || { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $(head -c 200 "$st/who.err" | tr '\n' ' '))"; }
+  # whoami's answer, by its npm error code: no token line and ENEEDAUTH is no session; a network code
+  # cannot tell (run ship again); every other answer is definite (a rerun stops the same way), so it
+  # names the code and what to look at, class fix. Only E401 on a counted line makes the fix
+  # `npm config delete`: any other answer may leave a live token on npm's server
+  c_=$(npmcode "$st/who.err") e_=$(head -c 200 "$st/who.err" | tr '\n' ' ')
+  [ "$n" = 0 ] && [ "$c_" = ENEEDAUTH ] && return 0
+  netcode "$c_" && { stopclass network; die "cannot tell whether an npm session exists (npm whoami: $e_)"; }
+  stopclass fix
+  case $n:$c_ in
+    0:E401) die "npm whoami answered E401, but npm's userconfig has no //registry.npmjs.org/:_authToken= line ship counts: a token outside the lines ship counts (spaces around =, another file npm reads, or an _authToken that names no registry): look at npm config list, remove that token, then run ship again" ;;
+    *:E401) die "npm's userconfig holds a login token npm refuses (npm whoami: E401, an expired token; token lines: $n): run npm config delete //registry.npmjs.org/:_authToken, then run ship again" ;;
+    *:ENEEDAUTH) die "npm's userconfig holds a login token line npm does not use (token lines: $n; npm whoami: ENEEDAUTH): an empty token, or one from a variable that is not set (\${NPM_TOKEN?}): look at its //registry.npmjs.org/:_authToken line, remove it, then run ship again" ;;
+    *) die "npm whoami answered ${c_:-no npm error code}, not a network failure ($e_): look at that answer and at npm config list, then run ship again" ;;
+  esac
 }
+# npmcode FILE: the first npm error code npm wrote there (`npm error code X`), or nothing
+npmcode() { sed -n 's/^npm error code \([A-Za-z0-9_]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
+# netcode CODE: 0 for a network failure, the one answer a rerun may change
+netcode() { case $1 in ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|E5[0-9][0-9]) return 0 ;; *) return 1 ;; esac; }
 post_build_check() { # dir: a finished build of this tag and commit, signed, not a control, its files
   # its manifest's, and no control manifest inside it (-mindepth 2: a control build beside it is not)
   [ -f "$1/MANIFEST.json" ] || { stopclass content; die "no $1/MANIFEST.json"; }

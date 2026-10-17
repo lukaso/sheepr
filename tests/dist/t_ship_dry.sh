@@ -177,12 +177,14 @@ case \$1 in
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\n  "error": {\n    "code": "E404"\n  }\n}\n'; echo "npm error code E404" >&2; exit 1 ;;
   owner) [ -e "$FX/ownerfail" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    [ -e "$FX/ownercode" ] && { echo "npm error code \$(cat "$FX/ownercode")" >&2; exit 1; }   # (\$FX/ownercode: the code it answers)
     # (\$FX/ownerfailafter: fails once three uploads are recorded, i.e. after C6)
     [ -e "$FX/ownerfailafter" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     [ -e "$FX/owner404.\$3" ] && { echo "npm error code E404" >&2; exit 1; }
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
   config) [ "\$2 \$3" = "get userconfig" ] && { echo "$FX/npmrc"; exit 0; } ;;
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+    [ -e "$FX/whoamicode" ] && { echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; }   # (\$FX/whoamicode: the code it answers)
     # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
     [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     if grep -q "^\$TOK" "$FX/npmrc" 2>/dev/null; then
@@ -582,6 +584,7 @@ A6NF=$OUTR/v0.1.0.ship-next.txt
 : > "$FX/expired"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/expired"
 pre_row "an expired npm token (the count 1, whoami E401)" "npm config delete //registry.npmjs.org/:_authToken"
 grep -q 'E401' "$FX/o" && ! grep -q 'cannot tell whether an npm session' "$FX/o" && pass "  the reason named: npm's E401" || fail "  E401 row: $(lastline)"
+[ "$(tail -1 "$A6NF")" = 'When the cause above is fixed, run ship again.' ] && pass "  class fix: its next file ends 'When the cause above is fixed, run ship again.'" || fail "  E401 class: '$(tail -1 "$A6NF")'"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
 pre_row "a token line, and whoami failing with ETIMEDOUT" "cannot tell whether an npm session exists"
 ! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && grep -qx 'Run ship again.' "$A6NF" \
@@ -590,6 +593,29 @@ chmod 000 "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?; chmod 644 "$FX/npmrc"; rm
 pre_row "npm's userconfig unreadable (the count unreadable), whoami failing" "cannot count npm's login tokens"
 ! grep -q 'config delete' "$FX/o" && ! grep -q 'config delete' "$A6NF" && pass "  no npm config delete" || fail "  unreadable count: $(grep 'config delete' "$FX/o" "$A6NF" | head -2 | tr '\n' '|')"
 : > "$FX/whoamibad"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad"; pre_row "a whoami failure that is not ENEEDAUTH" "cannot tell whether an npm session"
+# "Run ship again." only for a network code (ETIMEDOUT, ECONNREFUSED, ECONNRESET, ENOTFOUND,
+# EAI_AGAIN, E5xx): any other npm answer is definite (a rerun stops the same way), so class fix,
+# with a text that names the code and what to look at
+FIXL='When the cause above is fixed, run ship again.'
+a6row() { # label token-line(yes|no) whoami-code want-text want-last-line
+  [ "$2" = yes ] && echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/npmrc"; echo "$3" > "$FX/whoamicode"
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamicode" "$FX/npmrc"
+  pre_row "$1" "$4"
+  [ "$(tail -1 "$A6NF")" = "$5" ] && ! grep -q 'config delete' "$A6NF" && { [ "$5" = 'Run ship again.' ] || ! grep -qx 'Run ship again.' "$A6NF"; } \
+    && pass "  its next file ends '$5', and names no npm config delete" || fail "  $1: last line '$(tail -1 "$A6NF")', delete lines $(grep -c 'config delete' "$A6NF")"
+}
+a6row "a token line, whoami E403" yes E403 "npm whoami answered E403" "$FIXL"
+a6row "a token line npm does not use (the count 1, whoami ENEEDAUTH)" yes ENEEDAUTH "a login token line npm does not use" "$FIXL"
+a6row "no token line ship counts, whoami E401" no E401 "a token outside the lines ship counts" "$FIXL"
+a6row "control: a token line, whoami ETIMEDOUT" yes ETIMEDOUT "cannot tell whether an npm session exists" "Run ship again."
+a6row "control: no token line, whoami ETIMEDOUT" no ETIMEDOUT "cannot tell whether an npm session exists" "Run ship again."
+a6row "control: no token line, whoami E503" no E503 "cannot tell whether an npm session exists" "Run ship again."
+echo ERR_INVALID_AUTH > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownercode"
+pre_row "npm owner ls answering ERR_INVALID_AUTH" "npm owner ls answered ERR_INVALID_AUTH"
+[ "$(tail -1 "$A6NF")" = "$FIXL" ] && ! grep -qx 'Run ship again.' "$A6NF" && pass "  class fix: '$FIXL'" || fail "  owner ls ERR_INVALID_AUTH: last line '$(tail -1 "$A6NF")'"
+echo ECONNRESET > "$FX/ownercode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/ownercode"
+pre_row "control: npm owner ls answering ECONNRESET" "cannot read the owners of"
+[ "$(tail -1 "$A6NF")" = 'Run ship again.' ] && pass "  class network: 'Run ship again.'" || fail "  owner ls ECONNRESET: last line '$(tail -1 "$A6NF")'"
 # A7: the build's preconditions
 : > "$FX/nodocker"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nodocker"; pre_row "Docker does not answer" "Docker"
 : > "$FX/nobase"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nobase"; pre_row "the pinned base image missing" "no local image rust:"
