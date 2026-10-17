@@ -241,16 +241,22 @@ if [ "\$1 \$2" = "remote get-url" ]; then
 fi
 up=\$(cat "$FX/updir" 2>/dev/null || echo "file://$FX/origin.git")
 n=\$#; for a; do [ "\$a" = https://github.com/lukaso/sheepr ] && a=\$up; set -- "\$@" "\$a"; done; shift \$n
-# only local bare repos: any other remote is refused before git runs (the network is never reached)
+# only local bare repos: the remote argument (the first one after the subcommand that is not an
+# option) is resolved as git would resolve it, in the repo the call names: a remote's every URL and
+# push URL (insteadOf applied), else the argument itself as git reads it (an scp form, a path, a
+# URL); anything that is not file:// is refused before git runs (the network is never reached)
 case \$1 in push|fetch|ls-remote)
-  for a; do case \$a in
-    file://*) ;;
-    *://*|*@*:*) echo "SGIT REFUSED \$a" >> "$FX/calls"; echo "sgit: refused \$a (only file:// remotes)" >&2; exit 1 ;;
-    origin) # the named remote: its url and push url, in the repo the call names
-      for u in \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.url 2>/dev/null) \$(GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} config --get-all remote.origin.pushurl 2>/dev/null); do
-        case \$u in file://*) ;; *) echo "SGIT REFUSED origin \$u" >> "$FX/calls"; echo "sgit: refused origin \$u" >&2; exit 1 ;; esac
-      done ;;
-  esac; done ;;
+  rem=""; for a in "\$@"; do [ "\$a" = "\$1" ] && continue; case \$a in -*) ;; *) rem=\$a; break ;; esac; done
+  [ -n "\$rem" ] || { echo "SGIT REFUSED (no remote argument)" >> "$FX/calls"; echo "sgit: no remote argument" >&2; exit 1; }
+  sg() { GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \${c:+-C "\$c"} "\$@"; }
+  if sg remote get-url "\$rem" >/dev/null 2>&1; then
+    urls=\$(sg remote get-url --all "\$rem"; sg remote get-url --push --all "\$rem"; sg ls-remote --get-url "\$rem")
+  else
+    urls=\$(sg ls-remote --get-url "\$rem")
+  fi
+  [ -n "\$urls" ] || { echo "SGIT REFUSED \$rem (no URL)" >> "$FX/calls"; echo "sgit: refused \$rem" >&2; exit 1; }
+  for u in \$urls; do case \$u in file://*) ;; *) m=\$u; [ "\$u" = "\$rem" ] || m="\$rem \$u"
+    echo "SGIT REFUSED \$m" >> "$FX/calls"; echo "sgit: refused \$m (only file:// remotes)" >&2; exit 1 ;; esac; done ;;
 esac
 extra="" real=no lie=""
 [ "\$1" = ls-remote ] && [ -e "$FX/lsfail" ] && { echo "fatal: unable to access (stand-in)" >&2; exit 128; }
@@ -477,6 +483,24 @@ pre_row() { # label want-text: the last run refused before the build, naming wan
 # A4: anything of the version public
 g push -q --no-follow-tags origin "$T:refs/tags/v0.1.0" || exit 3
 rm -rf "${OUTR:?}"; ship; r=$?; pre_row "the tag on origin (and on github.com)" "public"
+# every remote argument is resolved (a URL in scp form with no user, a named remote other than
+# origin with an ssh URL) and only file:// goes on; git's ssh is a recorder here, so a remote that
+# got through is seen without any network; the control: a named remote with a file:// URL is taken
+printf '#!/bin/sh\necho "SSH REACHED $*" >> "%s/calls"\nexit 1\n' "$FX" > "$FX/sshrec"; chmod +x "$FX/sshrec"
+g remote add other ssh://host.invalid/x.git && g remote add otherfile "file://$FX/origin.git" || exit 3
+sgrow() { # label args...: refused, and git's ssh never reached
+  l=$1; shift; rm -f "$FX/calls"
+  env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_SSH_COMMAND="$FX/sshrec" "$S/sgit" "$@" > /dev/null 2>&1; r=$?
+  [ $r != 0 ] && grep -q '^SGIT REFUSED' "$FX/calls" && ! grep -q '^SSH REACHED' "$FX/calls" && pass "the stand-in git refuses $l, before git runs" \
+    || fail "sgit and $l: rc=$r $(grep -e REFUSED -e REACHED "$FX/calls" | tr '\n' '|')"
+}
+sgrow "an scp-form URL with no user (ls-remote)" ls-remote host.invalid:x/y
+sgrow "an scp-form URL with no user (push)" -C "$REPO" push host.invalid:x/y "$C:refs/heads/main"
+sgrow "a named remote with an ssh URL (ls-remote)" -C "$REPO" ls-remote other
+sgrow "a named remote with an ssh URL (fetch)" -C "$REPO" fetch -q other main
+rm -f "$FX/calls"; env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_SSH_COMMAND="$FX/sshrec" "$S/sgit" -C "$REPO" ls-remote otherfile > /dev/null 2>&1; r=$?
+[ $r = 0 ] && ! grep -q -e '^SGIT REFUSED' -e '^SSH REACHED' "$FX/calls" && pass "control: the stand-in git takes a named remote whose URL is file://" || fail "control: sgit and a file:// named remote: rc=$r $(tr '\n' '|' < "$FX/calls")"
+g remote remove other; g remote remove otherfile
 :
 for rel in "v0.1.0 false false" "v0.1.0 true false"; do
   printf 'v0.0.9 false false\n%s\n' "$rel" > "$FX/rels"; rm -rf "${OUTR:?}"; ship; r=$?; pre_row "a release '$rel' on GitHub" "public"
