@@ -912,8 +912,12 @@ publish_npm_exec() { # dir
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
   me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?)$(next_hint ": log in as ${SR_NPM_USER:-the owner} with $(npmcmd login), then publish-npm again"); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")"
-  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}$(next_hint ": log in as that user with $(npmcmd login), then publish-npm again"); this step uploaded nothing"
+    || die "npm whoami failed (not logged in to npm?); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")$(next_hint ".
+Log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
+  $(npmcmd login)")"
+  [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; this step uploaded nothing$(next_hint ".
+Log in as that user with this, then run publish-npm again:
+  $(npmcmd login)")"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
@@ -963,7 +967,8 @@ publish_npm_exec() { # dir
     echo "release: $p@$nv published, and npm shows this file"
   done
   if [ "$npm_part" = platform ]; then echo "release: the platform packages of $tag are uploaded; npm shows each one after its scan"
-  else echo "release: the four npm packages of $tag are on npm.$(next_hint " Next: run $(npmcmd logout) (PHASE3.md §5)")"; fi
+  else echo "release: the four npm packages of $tag are on npm.$(next_hint " Next (PHASE3.md §5), run this logout:
+  $(npmcmd logout)")"; fi
 }
 # the entries set their tools with plain assignments: an assignment before a function call is
 # exported, and stays, under the system's sh (measured). NPMC with NETC: npmhint's token count reads
@@ -1370,7 +1375,9 @@ npm_file() {
 }
 # npmcmd login|logout|delete: the npm credential commands ship prints, one construction (REV 11 rule
 # 3): from / (no project config), npmjs's registry, no scope (npm's scope routes login and logout to
-# the scope's registry), and F by name, through dq (the operator's shell may name another userconfig)
+# the scope's registry), and F by name, through dq (the operator's shell may name another userconfig).
+# Each is printed as a line of its own, two spaces in, with nothing after it (REV 11a rule 6: a
+# sentence's period copied with it made --userconfig=F.); the text around it is on lines of its own
 npmcmd() {
   f_=$(dq "$(npm_file)")
   case $1 in
@@ -1380,7 +1387,7 @@ npmcmd() {
 }
 # npm_delstep: the delete of ship's own line, with when it may run (REV 11 rule 3): only after the
 # clock time ship's own session ends by itself, and only when no npm login ran since ship's
-npm_delstep() { printf '%s' "Only after ${ship_end:-that time} (ship's own session's end), and only when no npm login ran since ship's, run $(npmcmd delete)."; }
+npm_delstep() { printf '%s\n  %s' "Only after ${ship_end:-that time} (ship's own session's end), and only when no npm login ran since ship's, run this:" "$(npmcmd delete)"; }
 # npmauth: the number of npm's login lines for registry.npmjs.org in F, or "unreadable" (no file: 0).
 # It counts every spelling ship knows npm reads: any spacing, a quoted key, a port, any path under the
 # host, and _authToken, _auth, _password or username. Only A6's clean state reads it (0 lines and
@@ -1416,7 +1423,9 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
   n=$(tokcount)
   if who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$st/who.err"); then
     # REV 11 rule 4: the logout step; how a token and an _auth line end
-    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')): run $(npmcmd logout). For a token, npm logout asks npm's server to end it, and npm's docs say that invalidates it everywhere it is used; an _auth line (a user name and password) is not ended by npm logout. If it fails, npm's words say why, and the next run stops here again. $npm_tokens. Then run ship again (ship logs in itself, after the build)"
+    die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')). Run this logout:
+  $(npmcmd logout)
+For a token, npm logout asks npm's server to end it, and npm's docs say that invalidates it everywhere it is used; an _auth line (a user name and password) is not ended by npm logout. If it fails, npm's words say why, and the next run stops here again. $npm_tokens. Then run ship again (ship logs in itself, after the build)"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
   # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
@@ -1538,12 +1547,15 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # its file first (a closed terminal or pipe cannot lose it), then to stdout, at once. A stop before
   # A8 that cannot vouch for an earlier run's file (an A4 refusal, or a stop before A4 passed: both
   # before the push) keeps it; from A8 on, this run's own text is the file (C5's A4 refusal included).
-  # When ship logged in (REV 10 rule 6), the text's line 2 is the logout step, before any `npm login`
-  # line, in the file before the logout runs: a KILL during the logout leaves the step in place. A
-  # release done has a file then too, the step alone
+  # When ship logged in (REV 10 rule 6), the text's lines 2-5 are the logout step (its command on line
+  # 3, a line of its own: REV 11a rule 6), before any `npm login` line, in the file before the logout
+  # runs: a KILL during the logout leaves the step in place. A release done has a file then too, the
+  # step alone
   txt="" keep=no lo="" pl=""
   if [ "$logged_in" = yes ]; then
-    pl="ship ran npm login in this run, and runs $(npmcmd logout) as it ends. Unless a line after this one says that ship's line is no longer in npm's userconfig, run that command until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). $(npm_delstep)"
+    pl="ship ran npm login in this run, and runs this logout as it ends:
+  $(npmcmd logout)
+Unless a line below says that ship's line is no longer in npm's userconfig, run that logout until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). $(npm_delstep)"
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
     txt=$(ship_stoptext)
@@ -1581,7 +1593,9 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
     rc=1
     lo="ship's npm login line is still in npm's userconfig after npm logout$( [ -n "$lw" ] && printf ' (npm logout: %s)' "$(redact "$lw")")"
     [ "$sk" != unreadable ] || lo="ship cannot tell whether its npm login line is still in npm's userconfig after npm logout (the userconfig cannot be read)$( [ -n "$lw" ] && printf ' (npm logout: %s)' "$(redact "$lw")")"
-    lo="$lo. $npm_tokens. Run $(npmcmd logout) again until it ends with no error. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). $(npm_delstep)"
+    lo="$lo. $npm_tokens. ship's session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). Run this logout again until it ends with no error:
+  $(npmcmd logout)
+$(npm_delstep)"
   fi
   # the logout's outcome (REV 10 rule 6): the file rewritten whole (nfput), the logout's remedy in the
   # step's place, or the step taken out (a release done: no file); then stdout
