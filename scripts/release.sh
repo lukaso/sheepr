@@ -69,8 +69,9 @@ unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE S
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
 GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
-# the one file this script sources from the checkout before ship's frozen tree: ship compares it
-# with the tag's, as it compares $0 (every later source command reads the frozen tree under ship)
+# the one file this script sources from the checkout before ship's frozen tree (every later source
+# command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
+# the tag's bytes
 sourced=scripts/lib/sigs.sh
 . "$root/$sourced" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
@@ -1000,10 +1001,20 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   checks
   git -C "$root" show "$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
   cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
-  for f_ in $sourced; do
-    git -C "$root" show "$tag:$f_" > "$st/sourced" 2>/dev/null || die "cannot read $tag's $f_"
-    cmp -s "$root/$f_" "$st/sourced" || die "this $f_ is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
-  done
+  # every file the tag tracks under scripts/ (the sourced sigs.sh among them, and whatever any
+  # spelling sources from there) holds the tag's bytes in this checkout, read from the file and never
+  # from the index, so assume-unchanged and skip-worktree hide nothing: a regular file by its blob
+  # hash (no filters), a symlink by its target; any other entry (a submodule) is refused
+  git -C "$root" ls-tree -r --full-tree "$tag" -- scripts > "$st/scripts.tree" 2>/dev/null && [ -s "$st/scripts.tree" ] \
+    || die "cannot list $tag's files under scripts/"
+  while IFS= read -r l_; do
+    m_=${l_%% *} h_=${l_#* * } f_=${l_#*	}; h_=${h_%%	*}
+    case $m_ in
+      100644|100755) [ -f "$root/$f_" ] && [ ! -L "$root/$f_" ] && [ "$(git -C "$root" hash-object --no-filters -- "$f_" 2>/dev/null)" = "$h_" ] ;;
+      120000) [ -L "$root/$f_" ] && [ "$(readlink "$root/$f_")" = "$(git -C "$root" cat-file blob "$h_" 2>/dev/null)" ] ;;
+      *) false ;;
+    esac || die "this $f_ is not $tag's (an edit, maybe hidden by assume-unchanged or skip-worktree): run ship from a clean checkout of the tag"
+  done < "$st/scripts.tree"
   tagobj=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag") || die "no tag $tag"
   # the commit the checks passed on must be the recorded object's (a tag moved in between is refused)
   tc=$(git -C "$root" rev-parse -q --verify "$tagobj^{commit}") && [ "$tc" = "$commit" ] \

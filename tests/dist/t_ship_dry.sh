@@ -46,7 +46,7 @@ done
 # \$FX/onshow: a hook run once, before release.sh reads the tag's own release.sh (its \$0 compare)
 if [ -e "$FX/onshow" ] && [ ! -e "$FX/onshow.done" ]; then case " \$* " in *" show v0.1.0:scripts/release.sh "*) : > "$FX/onshow.done"; sh "$FX/onshow" ;; esac; fi
 case \$sub in
-  status|show|rev-parse|worktree|tag|merge-base|config|cat-file|for-each-ref|show-ref) exec /usr/bin/git "\$@" ;;
+  status|show|rev-parse|worktree|tag|merge-base|config|cat-file|for-each-ref|show-ref|ls-tree|hash-object) exec /usr/bin/git "\$@" ;;
 esac
 echo "PATH git \$*" >> "$FX/pathcalls"
 exit 1
@@ -451,6 +451,19 @@ rm -rf "${OUTR:?}"; ship; r=$?
 cp "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh"; g update-index --no-assume-unchanged scripts/lib/sigs.sh
 [ $r = 1 ] && grep -q "scripts/lib/sigs.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
   && pass "a scripts/lib/sigs.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "sigs.sh compare: rc=$r $(lastline)"
+# every file the tag tracks under scripts/ is compared with this checkout's bytes, read from the files
+# (not the index): an edit of scripts/lib/sign.sh hidden by assume-unchanged, then by skip-worktree,
+# is refused before any remote call, by name; the control: the clean checkout passes the compare
+for fl in assume-unchanged skip-worktree; do
+  g update-index --$fl scripts/lib/sign.sh && cp "$REPO/scripts/lib/sign.sh" "$FX/sign.keep" && echo '# an edit' >> "$REPO/scripts/lib/sign.sh" \
+    && ! cmp -s "$FX/sign.keep" "$REPO/scripts/lib/sign.sh" && [ -z "$(g status --porcelain)" ] || fail "the hidden sign.sh edit ($fl) was not made"
+  rm -rf "${OUTR:?}"; ship; r=$?
+  cp "$FX/sign.keep" "$REPO/scripts/lib/sign.sh"; g update-index --no-$fl scripts/lib/sign.sh
+  [ $r = 1 ] && grep -q "scripts/lib/sign.sh is not v0.1.0's" "$FX/o" && ! grep -q '^sgit' "$FX/calls" 2>/dev/null \
+    && pass "a scripts/lib/sign.sh that is not the tag's ($fl): refused before any remote call, by name" || fail "sign.sh compare ($fl): rc=$r $(lastline)"
+done
+rm -rf "${OUTR:?}"; ship; r=$?
+! grep -q "is not v0.1.0's" "$FX/o" && grep -q "^sgit -C $WTP push --dry-run" "$FX/calls" && pass "control: a clean checkout of the tag passes the compare of scripts/ (the run goes on to the push)" || fail "control, a clean checkout: rc=$r $(lastline)"
 # the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
 # outside any function are one, and it reads the list ship compares ($sourced)
 topsrc() { # file -> "LINE top WORDS" for each source command (`.` or `source`, any quoting) outside
