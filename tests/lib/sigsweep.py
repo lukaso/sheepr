@@ -3,6 +3,7 @@
 one signal list (scripts/lib/sigs.sh), and holds further signals off while it cleans up.
 
     sigsweep.py DIR SIGS-LINE RENDERED-FILE
+    sigsweep.py --sources FILE      (each source command, top-level or in a function body)
 
 It reads each shell file under DIR (a .sh or .conf name, or a #! line naming sh) as the shell
 does: words, quotes, $( ), comments and heredocs. A command is a `trap` only where a command
@@ -170,9 +171,13 @@ class Word:
 
 
 def commands(s, line=1):
-    """The simple commands of s, in order: lists of Words (reserved words at the start dropped)."""
+    """The simple commands of s, in order: lists of Words (reserved words at the start dropped).
+    Each command's first Word has .infunc: whether it is inside a function's body (`NAME() {` up
+    to its matching `}`; a `{ ...; }` group is not a body)."""
     cmds, cur, pending = [], [], []
     i, n = 0, len(s)
+    braces = []      # one entry per open `{`: True for a function's body, False for a group
+    fdef = 0         # 1: a lone NAME then `(`; 2: then `)`, so the next `{` opens a body
 
     def close():
         nonlocal cur
@@ -180,6 +185,7 @@ def commands(s, line=1):
                                      'until', '!', '{', '}', 'time'):
             cur = cur[1:]
         if cur:
+            cur[0].infunc = any(braces)
             cmds.append(cur)
         cur = []
 
@@ -234,6 +240,12 @@ def commands(s, line=1):
             i = k
             continue
         if c in ';&|()':
+            if c == '(':
+                fdef = 1 if len(cur) == 1 and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', cur[0].raw) else 0
+            elif c == ')':
+                fdef = 2 if fdef == 1 else 0
+            else:
+                fdef = 0
             close()
             i += 1
             continue
@@ -241,10 +253,16 @@ def commands(s, line=1):
         raw = s[i:k]
         w = Word(raw, line, k)
         line += raw.count('\n')
-        if raw in ('{', '}'):
+        if raw == '{':
             close()
+            braces.append(fdef == 2)
+        elif raw == '}':
+            close()
+            if braces:
+                braces.pop()
         else:
             cur.append(w)
+        fdef = 0 if raw != '{' else fdef
         i = k
     close()
     return cmds
@@ -282,7 +300,19 @@ def is_shell(path):
     return first.startswith(b'#!') and re.search(rb'\bsh\b', first) is not None
 
 
+def list_sources(path):
+    """`sigsweep.py --sources FILE`: each source command (`.` or `source`) of FILE, as
+    `LINE top|func WORDS`: top when it is outside every function body."""
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        for c in commands(fh.read()):
+            if c[0].raw in ('.', 'source'):
+                print(f"{c[0].line} {'func' if c[0].infunc else 'top'} {' '.join(w.raw for w in c)}")
+
+
 def main():
+    if sys.argv[1] == '--sources':
+        list_sources(sys.argv[2])
+        return
     root, sigs_line, rendered = sys.argv[1], sys.argv[2], os.path.realpath(sys.argv[3])
     listnames = re.fullmatch(r'SIGS="([A-Z0-9 ]*)"', sigs_line)
     names = set(listnames.group(1).split()) if listnames else set()

@@ -433,9 +433,24 @@ cp "$FX/sg.keep" "$REPO/scripts/lib/sigs.sh"; g update-index --no-assume-unchang
   && pass "a scripts/lib/sigs.sh that is not the tag's (assume-unchanged): refused before any remote call" || fail "sigs.sh compare: rc=$r $(lastline)"
 # the files ship's parent sources from the checkout, enumerated from release.sh: the source commands
 # outside any function are one, and it reads the list ship compares ($sourced)
-awk '/^[a-z_]+\(\) *\{/ {f = 1} /^}/ {f = 0} !f && /(^|[;&|{(]|then|else|do)[ \t]*\.[ \t]+"/ {print NR ": " $0}' "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
+topsrc() { # file -> "LINE top WORDS" for each source command (`.` or `source`, any quoting) outside
+           # every function body, read as the shell reads it (tests/lib/sigsweep.py's reader)
+  python3 -I "$SR_ROOT/tests/lib/sigsweep.py" --sources "$1" | grep '^[0-9]* top '
+}
+topsrc "$SR_ROOT/scripts/release.sh" > "$FX/top.src"
 [ "$(grep -c . "$FX/top.src")" = 1 ] && grep -q '\. "\$root/\$sourced"' "$FX/top.src" && grep -q '^sourced=scripts/lib/sigs\.sh$' "$SR_ROOT/scripts/release.sh" \
   && pass "ship's parent sources one file from the checkout before its frozen tree, the one it compares" || fail "top-level source commands: $(tr '\n' '|' < "$FX/top.src")"
+# the controls, each a copy of release.sh with one more top-level source command: at line 100 (after
+# the one-line functions), before the dispatch, unquoted, and spelled `source`: each must count 2
+RSL=$SR_ROOT/scripts/release.sh; dl=$(grep -n '^case \$sub in$' "$RSL" | tail -1 | cut -d: -f1)
+for pc in "100:. \"\$root/scripts/lib/realtools.sh\" || exit 1" "$dl:. \"\$root/scripts/lib/realtools.sh\" || exit 1" \
+          "100:. \$root/scripts/lib/realtools.sh" "100:source \"\$root/scripts/lib/realtools.sh\""; do
+  pl=${pc%%:*} pt=${pc#*:}
+  awk -v L="$pl" -v T="$pt" 'NR == L {print T} {print}' "$RSL" > "$FX/rs.plant"
+  [ "$(sed -n "${pl}p" "$FX/rs.plant")" = "$pt" ] || fail "control: the plant '$pt' is not at line $pl"
+  n=$(topsrc "$FX/rs.plant" | grep -c .)
+  [ "$n" = 2 ] && pass "control: a top-level '$pt' at line $pl is counted (2)" || fail "control: a top-level '$pt' at line $pl: counted $n, want 2"
+done
 # the push target
 pt_row() { # label want-text: set up by the caller; one run
   rm -rf "${OUTR:?}"; ship; r=$?
