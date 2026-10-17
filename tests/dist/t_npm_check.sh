@@ -24,7 +24,7 @@ mk() { # mode control
   "$SR_ROOT/scripts/lib/archive.sh" make "$app" "$D/sheepr-macos-universal.tar.gz" || exit 3
   printf '#!/bin/sh\necho aarch64\n' > "$D/sheepr-linux-aarch64"; printf '#!/bin/sh\necho x86_64\n' > "$D/sheepr-linux-x86_64"
   chmod 755 "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64"
-  sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$D" >/dev/null || exit 3
+  mkdir -p "$FX/tmp" && TMPDIR=$FX/tmp sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$D" >/dev/null || exit 3   # (npm pack's temp dir under the fixture: RULES line 13)
   { printf '{\n  "v": 1,\n  "tag": "v0.1.0",\n  "commit": "%s",\n  "mode": "%s",\n  "control": %s,\n  "files": [\n' "$(g rev-parse 'v0.1.0^{commit}')" "$1" "$2"
     sep=""; for f in "$D"/sheepr-macos-universal.tar.gz "$D"/sheepr-linux-aarch64 "$D"/sheepr-linux-x86_64 "$D"/*.tgz; do printf '%s    {"name": "%s", "sha256": "%s"}' "$sep" "$(basename "$f")" "$(shasum -a 256 "$f" | cut -d' ' -f1)"; sep=",
 "; done; printf '\n  ]\n}\n'; } > "$D/MANIFEST.json"
@@ -207,4 +207,31 @@ for t_ in '3|archive: cannot check: cannot extract x into y (a full or unwritabl
     && pass "$( [ $w_ = content ] && echo '  control: ')r13b F3: archive.sh exit ${t_%%|*}$( [ $w_ = fix ] && echo ' (cannot check)' || echo ' (its refusal)'): class $w_" || fail "archive.sh ${t_%%|*}: rc=$r '$(cls)' $(tail -1 "$FX/o")"
 done
 cp "$FX/rt.keep2" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep2" "$REPO/scripts/lib/archive.sh" || exit 3
+# RULES line 13 (round 13 item 6): the fixture's own npm pack (npm-pack.sh, what the build runs too) is
+# walled: its temp HOME, userconfig, global config and cache under its own temp dir (in the fixture: mk
+# gives npm-pack.sh TMPDIR=$FX/tmp), no update notifier,
+# the proxies at 127.0.0.1:9 and NO_PROXY 127.0.0.1. A stand-in npm first on PATH, for one npm-pack.sh
+# run, writes those variables only (never the whole environment) and makes no file
+mkdir -p "$FX/npmrec" || exit 3
+cat > "$FX/npmrec/npm" <<'EOS'
+#!/bin/sh
+o_=$(dirname "$0")/env.$$
+for k in HOME NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG npm_config_cache npm_config_update_notifier HTTPS_PROXY HTTP_PROXY NO_PROXY npm_config_userconfig NPM_CONFIG_REGISTRY; do
+  eval "v_=\${$k-<unset>}"; printf '%s=%s\n' "$k" "$v_"
+done > "$o_"
+exit 0
+EOS
+chmod +x "$FX/npmrec/npm"
+mkdir -p "$FX/pk.out" "$FX/tmp"; TMPDIR=$FX/tmp PATH="$FX/npmrec:$PATH" sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$FX/pk.out" > /dev/null 2>&1
+e_=$(ls "$FX"/npmrec/env.* 2>/dev/null | head -1); bad_=""
+if [ -z "$e_" ]; then bad_=" no npm call recorded"; else
+  pd_=$(sed -n 's/^HOME=\(.*\)\/home$/\1/p' "$e_")
+  case $pd_ in "$FX/tmp/sr-npmpack."*) ;; *) bad_="$bad_ HOME=$(sed -n 's/^HOME=//p' "$e_") (not under the fixture)" ;; esac
+  for kv in "NPM_CONFIG_USERCONFIG=$pd_/npmrc" "NPM_CONFIG_GLOBALCONFIG=$pd_/globalrc" "npm_config_cache=$pd_/cache" npm_config_update_notifier=false \
+            HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1 'npm_config_userconfig=<unset>' 'NPM_CONFIG_REGISTRY=<unset>'; do
+    grep -qxF "$kv" "$e_" || bad_="$bad_ [want $kv: $(grep "^${kv%%=*}=" "$e_")]"
+  done
+fi
+[ -z "$bad_" ] && pass "npm-pack.sh's npm pack: its HOME, userconfig, global config and cache in its own temp dir; no update notifier; the proxies walled" || fail "npm pack's isolation:$bad_"
+rm -rf "${FX:?}/npmrec" "${FX:?}/pk.out"
 finish
