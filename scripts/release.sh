@@ -1595,7 +1595,7 @@ ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fet
 ship_exit() { # rc: ship's one exit handler, set once by ship_run and never replaced
   trap '' $SIGS PIPE
   exec 1>&8 2>&9   # ship's own stdout and stderr, whatever call a signal interrupted (ship_run); before any output
-  rc=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no
+  rc=$1 n=0 nf=$out/$tag.ship-next.txt wrote=no nfleft=no
   [ "$shipok" = yes ] || [ "$rc" != 0 ] || rc=1   # a stop is never status 0
   # a write to a closed stdout leaves its bytes in the shell's buffer, and bash 3.2 hands them to the
   # next builtin write with a redirection, or to a $( ) (measured 2026-10-12): one byte to /dev/null
@@ -1630,7 +1630,7 @@ Unless a line below says that ship's line is no longer in npm's userconfig, run 
       cat "$nf" 2>/dev/null
     else
       body=$txt; [ -z "$pl" ] || body=$(line2 "$txt" "$pl")
-      nfput "$body" && wrote=yes
+      if nfput "$body"; then wrote=yes; else nfgone; fi
       printf '%s\n' "$body"
       [ -n "$pl" ] || nfsaid
     fi
@@ -1660,11 +1660,11 @@ $(npm_delstep)"
   if [ -n "$pl" ] && [ -n "$txt" ] && [ $keep = no ]; then
     drain
     if [ -n "$lo" ]; then
-      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || wrote=no
+      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || { wrote=no; nfgone; }
       printf '%s\n' "release: $lo"; nfsaid
     else
       # (the logout ended with no error: the file's text names the login plainly, REV 11b rule 12)
-      if [ "$shipok" = yes ]; then rm -f "$nf"; else lgstate=done; txt=$(ship_stoptext); [ $wrote = no ] || nfput "$txt" || wrote=no; fi
+      if [ "$shipok" = yes ]; then rm -f "$nf"; else lgstate=done; txt=$(ship_stoptext); [ $wrote = no ] || nfput "$txt" || { wrote=no; nfgone; }; fi
       printf '%s\n' "release: ship's line is no longer in npm's userconfig after ship's own npm logout: the npm logout step above is done."
       [ "$shipok" = yes ] || nfsaid
     fi
@@ -1700,13 +1700,26 @@ ship_clock() {
 line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1" | sed 1d; }
 # nfput TEXT: the next file holds TEXT, whole or not at all (REV 10 rule 6): written to a temp file
 # beside it (the lock is held: one writer), then renamed onto it; a failed write leaves it as it was
+# (ship_exit then calls nfgone). It succeeds only when the name then holds a regular file (REV 11b rule
+# 15): mv -f onto a directory puts the text inside it and says it worked (r15b N5)
 nfput() {
-  printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && return 0
+  [ ! -d "$nf" ] || return 1
+  { printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp"; } 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
   rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1
 }
-# nfsaid: where else the steps are: the next file, or that it could not be written (wrote, ship_exit's)
+# nfgone: after a write of the next file failed, no other text stays at its name (REV 11b rule 15: an
+# earlier run's, or this run's from before its logout, names steps that are not these): ship removes
+# it; nfleft says what is there now (removed, or yes: something ship cannot remove, a directory), for nfsaid
+nfgone() {
+  [ -e "$nf" ] || [ -L "$nf" ] || return 0
+  if [ ! -d "$nf" ] && rm -f "$nf" 2>/dev/null && [ ! -e "$nf" ] && [ ! -L "$nf" ]; then nfleft=removed; else nfleft=yes; fi
+}
+# nfsaid: where else the steps are: the next file, or that it could not be written (wrote, ship_exit's),
+# and what nfgone did with what was at its name
 nfsaid() {
   if [ "$wrote" = yes ]; then printf '%s\n' "release: (these steps are also in $nf)"
+  elif [ "$nfleft" = removed ]; then printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here. ship removed the earlier next file that was there)"
+  elif [ "$nfleft" = yes ]; then printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here. What is at $nf is not these steps: do not use it)"
   else printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here)"; fi
 }
 # ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started

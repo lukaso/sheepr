@@ -1716,6 +1716,39 @@ for k_ in C2 C8; do
     && pass "  r14b: its notification gets - for the out dir (it names no next file)" || fail "  r14b ($k_): the notification: $(grep '^notify failed-' "$FX/calls" | tr '\n' '|')"
   rm -rf "${OUTR:?}"
 done
+# REV 11b rule 15 (r15b P3-1, P4-5, P4-6): when the next file cannot be written, no earlier text stays
+# at its name: ship removes it and stdout says so; what it cannot remove (a directory there) stdout
+# calls not these steps. r15b N1: run 1 stops before the push (its file names ship again); run 2 stops
+# after the push and cannot write its file. N2: run 2 writes its file before the logout, then cannot
+# rewrite it after a logout that ended the session. N5: a directory at the file's name (mv would put
+# the text inside it): not written. Control N0: every write works
+TMPN=$OUTR/.v0.1.0.ship-next.tmp
+for k_ in N1 N2 N5 N0; do
+  rm -rf "${OUTR:?}"
+  case $k_ in
+    N1) : > "$FX/loginfail"; ship; r1_=$?; rm -f "${FX:?}/loginfail"; grep -q 'stopped at npm-login' "$NF" || fail "  N1: run 1 left no next file (the row would prove nothing)"
+        : > "$FX/pubfail.sheepr"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogin" ;;
+    N2) : > "$FX/pubfail.sheepr"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogout" ;;
+    N5) mkdir -p "$NF" || exit 3; : > "$FX/pubfail.sheepr" ;;
+    N0) : > "$FX/pubfail.sheepr" ;;
+  esac
+  ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/onlogin" "${FX:?}/onlogout"; rmdir "$TMPN" 2>/dev/null
+  nt_=$(grep '^notify failed-' "$FX/calls" | sed 's/^notify [^ ]* v0\.1\.0 //')
+  case $k_ in
+    N1|N2) [ $r = 1 ] && [ ! -e "$NF" ] && [ "$nt_" = - ] && grep -qF "release: (the next file, $NF, could not be written: these steps are only here. ship removed the earlier next file that was there)" "$FX/o" \
+        && pass "REV 11b rule 15 (r15b $k_): the next file not written: the earlier one $( [ $k_ = N1 ] && echo "(run 1's)" || echo "(this run's, from before its logout)") removed, and stdout says so; the notification names none" \
+        || fail "rule 15 ($k_): rc=$r; at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-60) $(head -1 "$NF" 2>/dev/null | cut -c1-100); stdout: $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)" ;;
+    N5) [ $r = 1 ] && [ -d "$NF" ] && [ "$nt_" = - ] && ! grep -q 'these steps are also in' "$FX/o" \
+        && grep -qF "release: (the next file, $NF, could not be written: these steps are only here. What is at $NF is not these steps: do not use it)" "$FX/o" \
+        && pass "REV 11b rule 15 (r15b N5): a directory at the next file's name: not written, the notification names none, stdout says what is there is not these steps" \
+        || fail "rule 15 (N5): rc=$r notify '$nt_'; stdout: $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)"
+        rm -rf "${NF:?}" ;;
+    N0) [ $r = 1 ] && [ -f "$NF" ] && grep -qF "release: (these steps are also in $NF)" "$FX/o" && [ "$nt_" = "$OUTR" ] \
+        && pass "  control (r15b N0): every write works: the next file written, stdout says so, the notification names the out dir" || fail "  rule 15 control: rc=$r notify '$nt_' $(grep 'these steps' "$FX/o" | tr '\n' '|')" ;;
+  esac
+  world_reset; rm -f "${FX:?}/npmrc"
+done
+rm -rf "${OUTR:?}"
 # --- REV 11, npm routing (r13a F1-F4): F is the userconfig npm loads; every npm call ship makes has
 # --scope= (and --registry); every printed npm credential command names F
 # rule 1 (r13a F2; REV 11a, r14a F5): npm's config get userconfig must name F. Real npm answers the file
