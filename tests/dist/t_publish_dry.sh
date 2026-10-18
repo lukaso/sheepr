@@ -107,6 +107,7 @@ cat > "$FX/npm" <<EOF
 #!/bin/sh
 n=\$(ls "$FX" | grep -c '^env\\.npm\\.'); env > "$FX/env.npm.\$n"
 echo "npm \$*" >> "$FX/calls"
+for a_; do case \$a_ in --userconfig=*) wc -c < "\${a_#--userconfig=}" | tr -d ' ' >> "$FX/ucsize" ;; esac; done   # (the size of the npm file each call names)
 case \$1 in owner) p=\$3
   if [ -f "$FX/ownerfail.\$p" ]; then echo "npm error code E404" >&2; exit 1; fi
   if [ -f "$FX/owner.\$p" ]; then echo "\$(cat "$FX/owner.\$p") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
@@ -164,8 +165,27 @@ grep -q '^curl -q -fsSL --proto =https https://github.com/lukaso/sheepr/releases
 # the npm names are checked before anything else: GitHub must not go public when npm would then
 # refuse (the first v0.1.0 did exactly that). `npm owner ls` needs no login; the owner is release.conf's
 REG="--registry=https://registry.npmjs.org/ --scope="   # the registry pinned, and no scope (REV 11 rule 2)
-[ "$(sed -n 1,4p "$FX/calls" | tr '\n' ',')" = "npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
+UCP=$(sed -n 's/^npm owner ls sheepr .* --userconfig=\(\/private\/tmp\/sr-publish\.[A-Za-z0-9]*\/npmrc\)$/\1/p' "$FX/calls" | head -1)   # (publish's own npm file: REV 12)
+[ -n "$UCP" ] && [ "$(sed -n 1,4p "$FX/calls" | tr '\n' ',')" = "npm owner ls sheepr-linux-arm64 $REG --userconfig=$UCP,npm owner ls sheepr-linux-x64 $REG --userconfig=$UCP,npm owner ls sheepr-darwin-universal $REG --userconfig=$UCP,npm owner ls sheepr $REG --userconfig=$UCP," ] \
   && pass "before any git or gh call: the npm owners of all four names" || fail "the first calls: $(sed -n 1,4p "$FX/calls" | tr '\n' ',')"
+# REV 12: publish on its own never logs in: its npm calls name an empty npm file of its own run (in its
+# private temp dir: gone after it), never ship's P (an earlier run's, here with a dead token: byte-
+# identical) and never the operator's (the HOME's .npmrc and NPM_CONFIG_USERCONFIG's file, each with a
+# live line: byte-identical); under ship (SR_PUBLISH_DRY_SHIPPING), they name ship's P
+PD_=$FX/out/.v0.1.0.npm; mkdir -p "$PD_" "$FX/ghome" && echo '//registry.npmjs.org/:_authToken=npm_dead' > "$PD_/npmrc" || exit 3
+echo '//registry.npmjs.org/:_authToken=npm_decoyHOME' > "$FX/ghome/.npmrc"; echo '//registry.npmjs.org/:_authToken=npm_decoyENV' > "$FX/decoy-npmrc"
+s0_=$(cat "$PD_/npmrc" "$FX/ghome/.npmrc" "$FX/decoy-npmrc" | cksum)
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; rm -f "$FX/ucsize"; PUBX="NPM_CONFIG_USERCONFIG=$FX/decoy-npmrc"; pub v0.1.0 v0.1.0; r=$?; PUBX=
+u_=$(sed -n 's/^npm .* --userconfig=\([^ ]*\)$/\1/p' "$FX/calls" | sort -u)
+[ $r = 0 ] && [ "$(grep -c '^npm ' "$FX/calls")" = 4 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v ' --userconfig=/private/tmp/sr-publish\.[A-Za-z0-9]*/npmrc$')" ] && [ "$(printf '%s\n' "$u_" | grep -c .)" = 1 ] \
+  && [ ! -e "$u_" ] && [ "$(sort -u "$FX/ucsize" 2>/dev/null)" = 0 ] && [ "$(cat "$PD_/npmrc" "$FX/ghome/.npmrc" "$FX/decoy-npmrc" | cksum)" = "$s0_" ] \
+  && pass "REV 12: publish on its own: every npm call names one empty npm file of its own run (gone after it), never P or the operator's, those byte-identical" \
+  || fail "REV 12, publish's npm file: rc=$r files: $(printf '%s' "$u_" | tr '\n' ' ') sizes: $(sort -u "$FX/ucsize" 2>/dev/null | tr '\n' ' ') $(grep '^npm ' "$FX/calls" | head -1 | cut -c1-200)"
+AH_=$(shasum -a 256 "$FX/out/v0.1.0/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)
+SR_PUBLISH_DRY_VERIFIED=$AH_; export SR_PUBLISH_DRY_VERIFIED; PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && [ "$(grep -c '^npm ' "$FX/calls")" = 4 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v -- " --userconfig=$PD_/npmrc\$")" ] \
+  && pass "  under ship: publish's npm calls name ship's P" || fail "  under ship, publish's npm file: rc=$r $(grep '^npm ' "$FX/calls" | head -1 | cut -c1-200)"
+rm -rf "${PD_:?}"; rm -f "${FX:?}/ghome/.npmrc" "${FX:?}/decoy-npmrc" "${FX:?}/ucsize"
 [ "$(grep -c '^git ls-remote https://github.com/lukaso/sheepr refs/tags/v0.1.0\*$' "$FX/calls")" = 2 ] \
   && pass "the tag is read from github.com/lukaso/sheepr itself (twice)" || fail "ls-remote: $(grep ls-remote "$FX/calls" | head -1)"
 bad=""; for f in "$FX"/env.gh.* "$FX"/env.git.*; do for k in $(sed 's/=.*//' "$f"); do   # npm has its own class and row
@@ -558,7 +578,7 @@ done
 # environment. A shasum on PATH (release.sh runs shasum itself, outside the tool classes) records
 # which of their names it sees (names only), then runs the real one
 mkdir -p "$FX/envbin"
-printf '#!/bin/sh\nfor k in GH GITCMD NPM NPMC DRY NETC CURL CURLC NOTIFY npm_part shipping; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\nexec /usr/bin/shasum "$@"\n' "$FX" > "$FX/envbin/shasum"; chmod +x "$FX/envbin/shasum"
+printf '#!/bin/sh\nfor k in GH GITCMD NPM NPMC DRY NETC CURL CURLC NOTIFY npm_part shipping npmuc; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\nexec /usr/bin/shasum "$@"\n' "$FX" > "$FX/envbin/shasum"; chmod +x "$FX/envbin/shasum"
 mkout "$FX/out/v0.1.0" v0.1.0 "$C"; rm -f "$FX/exported"; PUBX="PATH=$FX/envbin:$PATH"; pub v0.1.0 v0.1.0; r=$?; PUBX=
 [ $r = 0 ] && [ ! -e "$FX/exported" ] && pass "__publish-dry: none of its tool variables is exported (0)" || fail "__publish-dry exports: rc=$r $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
 rm -f "$FX/exported"; tapset 0.0.9; PUBX="PATH=$FX/envbin:$PATH"; cask v0.1.0; r=$?; PUBX=

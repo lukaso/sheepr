@@ -8,8 +8,8 @@
 # thing put into it, and the phase of failed-PHASE and logout-failed-PHASE (a letter, then letters,
 # digits and -, at most 32 in all). Never a tool's output. The keys: password, password-again,
 # npm-login, npm-approve, npm-approve-next, npm-approve-again, done, logout-failed, failed-PHASE,
-# logout-failed-PHASE (a stop, and ship's npm login line still there after its logout, or not known:
-# one notification names both; no npm command: the next file holds the steps). DIR, the out dir
+# logout-failed-PHASE (a stop, and ship's own npm session not ended by its logout: one notification
+# names both; no npm command: the next file holds the steps). DIR, the out dir
 # (absolute, no control character), makes failed-PHASE and logout-failed-PHASE name the next file by
 # its full path, DIR/TAG.ship-next.txt (release.sh gives it): a notification read later, in another
 # window, must name a file that opens from there. Any other DIR is not used: the text names the file
@@ -57,18 +57,18 @@ where="in $nf"; [ -n "$nf" ] || where="in the terminal: its next file could not 
 case $key in
   password) text="$tag: type the notary keychain password in the terminal" ;;
   password-again) text="$tag: Apple did not accept the submission. Type the notary keychain password again in the terminal, to fetch Apple's log" ;;
-  npm-login) text="$tag: log in to npm in the browser (npm login)" ;;
+  npm-login) text="$tag: log in to npm in the browser" ;;
   npm-approve) text="$tag: approve the npm upload in the browser (tick skip for 5 minutes)" ;;
   npm-approve-next) text="$tag: npm may ask again: approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
-  logout-failed) text="$tag: ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run is $where" ;;
+  logout-failed) text="$tag: ship's npm session could not be ended; it ends by itself, and the next run logs out of it first. More is $where" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
     text="$tag stopped at $phase. What to run next is $where" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and ship's npm login line is still in npm's userconfig after npm logout, or ship cannot tell. What to run next is $where" ;;
+    text="$tag stopped at $phase, and ship's npm session could not be ended (it ends by itself, and the next run logs out of it first). What to run next is $where" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 

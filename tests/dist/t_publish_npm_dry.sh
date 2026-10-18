@@ -47,8 +47,7 @@ mkout() { # dir tag [control] [commit]: the four packages, the manifest naming e
   printf '%s %s\n' "$2" "$(shasum -a 256 "$1/MANIFEST.json" | cut -d' ' -f1)" > "$1/NPM-CHECKED"
 }
 integrity() { python3 -c 'import base64,hashlib,sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "$1"; }
-# `config get userconfig` answers the userconfig npm loads (--userconfig, else the environment's, else
-# $HOME/.npmrc), or $FX/other.npmrc when $FX/ucother exists. $FX/whoamicode, $FX/viewcode.<package> (the views before its
+# $FX/whoamicode, $FX/viewcode.<package> (the views before its
 # upload) and $FX/viewcodeafter.<package> (the views after it): that call answers the file's npm error code.
 # `whoami` prints $FX/whoami (exit 1 with ENEEDAUTH if $FX/whoamifail exists); `owner ls NAME`
 # prints a `user <email>` line per line of $FX/owner.NAME (default: lukasco), or exits 1 with E404
@@ -89,17 +88,21 @@ case \$1 in
     if [ "\$k" -gt 0 ]; then echo \$((k - 1)) > "$FX/scan.\$p"; printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/view.\$p" ]; then printf '"%s"\\n' "\$(cat "$FX/view.\$p")"; exit 0; fi
     printf '{\\n  "error": {\\n    "code": "E404"\\n  }\\n}\\n'; echo "npm error code E404" >&2; exit 1 ;;
+  # (login: the token line into --userconfig's file, the root line replaced, as npm does; logout: the
+  # line out, ENEEDAUTH with no line, \$FX/logoutcode CODE: that code; each recorded in \$FX/tokops)
+  login) [ -f "$FX/loginfail" ] && exit 1; u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done; [ -n "\$u_" ] || exit 1
+    grep -v '^//registry.npmjs.org/:_authToken=' "\$u_" > "\$u_.n" 2>/dev/null; echo '//registry.npmjs.org/:_authToken=npm_pn' >> "\$u_.n"; mv "\$u_.n" "\$u_"; echo "LOGIN \$u_" >> "$FX/tokops"; exit 0 ;;
+  logout) u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done
+    [ -f "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
+    grep -q '^//registry.npmjs.org/:_authToken=' "\$u_" 2>/dev/null || { echo "npm error code ENEEDAUTH" >&2; exit 1; }
+    echo "DELETE \$(sed -n 's|^//registry.npmjs.org/:_authToken=||p' "\$u_" | tail -1) \$u_" >> "$FX/tokops"; grep -v '^//registry.npmjs.org/:_authToken=' "\$u_" > "\$u_.n"; mv "\$u_.n" "\$u_"; exit 0 ;;
   whoami) [ -f "$FX/onwhoami" ] && sh "$FX/onwhoami"; if [ -f "$FX/whoamifail" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi
     if [ -f "$FX/whoamicode" ]; then echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; fi; cat "$FX/whoami"; exit 0 ;;
-  config) [ "\$2 \$3" = "get userconfig" ] || exit 1
-    [ -e "$FX/ucother" ] && { echo "$FX/other.npmrc"; exit 0; }
-    u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done
-    echo "\${u_:-\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-\$HOME/.npmrc}}}"; exit 0 ;;
   owner) p=\$3
     if [ -f "$FX/ownerfail.\$p" ]; then echo "npm error owner ls Couldn't get owner data \$p" >&2; echo "npm error code E404" >&2; exit 1; fi
     if [ -f "$FX/ownerbad.\$p" ]; then echo "npm error code ETIMEDOUT" >&2; exit 1; fi
     if [ -f "$FX/owner.\$p" ]; then while read -r u; do echo "\$u <\$u@example.com>"; done < "$FX/owner.\$p"; else echo "lukasco <lukasco@example.com>"; fi; exit 0 ;;
-  publish) for a; do last=\$a; done; p=\$(basename "\$last" | sed 's/^\\(.*\\)-[0-9][0-9.a-z-]*\\.tgz\$/\\1/')
+  publish) for a; do case \$a in --userconfig=*) ;; *) last=\$a ;; esac; done; p=\$(basename "\$last" | sed 's/^\\(.*\\)-[0-9][0-9.a-z-]*\\.tgz\$/\\1/')
     echo "\$p \$(shasum -a 256 "\$last" | cut -d' ' -f1) \$last" >> "$FX/pubsha"
     python3 -c 'import base64, hashlib, sys; print("sha512-" + base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).decode())' "\$last" > "$FX/pub.\$p"
     if [ -f "$FX/pubexists.\$p" ]; then echo "npm error code E403" >&2; echo "npm error 403 403 Forbidden - PUT https://registry.npmjs.org/\$p - You cannot publish over the previously published versions: 0.1.0." >&2; exit 1; fi
@@ -113,7 +116,7 @@ chmod +x "$FX/npm"
 printf '#!/bin/sh\necho "notify $*" >> "%s/calls"\necho "${SR_NOTIFY_OSASCRIPT+set}" >> "%s/notifyenv"\n' "$FX" "$FX" > "$FX/notify"
 chmod +x "$FX/notify"
 # (it also records which of the entry's own variables reached it through the environment: names only)
-mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\nfor k in shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\n' "$FX" "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
+mkdir -p "$FX/bin"; printf '#!/bin/sh\necho "$1" >> "%s/sleeps"\nfor k in shipping npm_part pnin pnlock npm_endrc NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\n' "$FX" "$FX" > "$FX/bin/sleep"; chmod +x "$FX/bin/sleep"
 echo lukasco > "$FX/whoami"
 pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the notifier (default the
        # stand-in; "-": none); PUBX: one more assignment. Set them as plain assignments, clear after
@@ -138,24 +141,26 @@ pub v0.1.0; r=$?
 # each publish: the registry pinned, no --tag (a final), and a private copy of <out>/v0.1.0's file
 # whose bytes, when npm got it, were the manifest's
 REG="--registry=https://registry.npmjs.org/ --scope="   # the registry pinned, and no scope (REV 11 rule 2: npm's scope routes view, owner and publish)
+# REV 12: ship's own npm file P (D = <out>/.vTAG.npm), named last on every npm call
+PN=$FX/out/.v0.1.0.npm; PNU=" --userconfig=$PN/npmrc"
 bad=""; for p in $PK; do
-  l=$(grep "^npm publish .*/$p-0.1.0.tgz\$" "$FX/calls"); f=${l##* }
-  case $l in "npm publish --access public $REG /private/tmp/sr-npmpub."*"/$p-0.1.0.tgz") ;; *) bad="$bad [$l]" ;; esac
+  l=$(grep "^npm publish .*/$p-0.1.0.tgz$PNU\$" "$FX/calls")
+  case $l in "npm publish --access public $REG /private/tmp/sr-npmpub."*"/$p-0.1.0.tgz$PNU") ;; *) bad="$bad [$l]" ;; esac
   [ "$(awk -v p="$p" '$1 == p {print $2}' "$FX/pubsha")" = "$(shasum -a 256 "$D/$p-0.1.0.tgz" | cut -d' ' -f1)" ] || bad="$bad [$p: not the manifest's bytes]"
 done
-[ -z "$bad" ] && pass "each publish: the registry pinned, no --tag (a final), a private copy holding the manifest's bytes" || fail "publish lines:$bad"
-[ "$(grep -c "^npm view --json --prefer-online $REG sheepr[a-z0-9-]*@0.1.0 dist.integrity\$" "$FX/calls")" = 8 ] \
-  && pass "each view (4 before the uploads, 4 after them): --json, --prefer-online (not npm's cache), the registry pinned" || fail "view lines: $(grep '^npm view' "$FX/calls" | head -1)"
-[ "$(sed -n 1,6p "$FX/calls" | tr '\n' ',')" = "npm config get userconfig --scope=,npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
-  && pass "before any view or upload: npm's userconfig (REV 11a rule 7), npm whoami, then the owners of all four names, the registry pinned" || fail "the first calls: $(sed -n 1,6p "$FX/calls" | tr '\n' ',')"
+[ -z "$bad" ] && pass "each publish: the registry pinned, no --tag (a final), a private copy holding the manifest's bytes, P named last" || fail "publish lines:$bad"
+[ "$(grep -c "^npm view --json --prefer-online $REG sheepr[a-z0-9-]*@0.1.0 dist.integrity$PNU\$" "$FX/calls")" = 8 ] \
+  && pass "each view (4 before the uploads, 4 after them): --json, --prefer-online (not npm's cache), the registry pinned, P named last" || fail "view lines: $(grep '^npm view' "$FX/calls" | head -1)"
+[ "$(sed -n 1,7p "$FX/calls" | tr '\n' ',')" = "notify npm-login v0.1.0,npm login $REG$PNU,npm whoami $REG$PNU,npm owner ls sheepr-linux-arm64 $REG$PNU,npm owner ls sheepr-linux-x64 $REG$PNU,npm owner ls sheepr-darwin-universal $REG$PNU,npm owner ls sheepr $REG$PNU," ] \
+  && pass "before any view or upload: the login notification, publish-npm's own login to P (REV 12), npm whoami, then the owners of all four names, the registry pinned, P named" || fail "the first calls: $(sed -n 1,7p "$FX/calls" | tr '\n' ',')"
 grep -q 'unsigned' "$FX/calls" && fail "a call names the -unsigned sibling" || pass "the -unsigned sibling's packages are never named"
 # the notifications in today's order: one right before each upload that follows a wait (the operator
 # may have left during it), none before the first: npm-approve-next before a platform package's,
 # npm-approve-again before the main one's. befores: for each upload, the call line just before it
-befores() { awk '/^npm publish/ { split($NF, a, "/"); n = a[length(a)]; sub(/-[0-9][0-9.a-z-]*\.tgz$/, "", n); printf "%s<%s>,", n, prev } { prev = $0 }' "$FX/calls" 2>/dev/null; }
+befores() { awk '/^npm publish/ { f = ""; for (i = 1; i <= NF; i++) if ($i ~ /\.tgz$/) f = $i; split(f, a, "/"); n = a[length(a)]; sub(/-[0-9][0-9.a-z-]*\.tgz$/, "", n); printf "%s<%s>,", n, prev } { prev = $0 }' "$FX/calls" 2>/dev/null; }
 case "$(befores)" in "sheepr-linux-arm64<npm view"*">,sheepr-linux-x64<notify npm-approve-next v0.1.0>,sheepr-darwin-universal<notify npm-approve-next v0.1.0>,sheepr<notify npm-approve-again v0.1.0>,") ok_=yes ;; *) ok_=no ;; esac
-[ $ok_ = yes ] && [ "$(grep -c '^notify ' "$FX/calls")" = 3 ] \
-  && pass "today's order: npm-approve-next before uploads 2 and 3, npm-approve-again before the main one, none before the first" || fail "the notifications: $(befores)"
+[ $ok_ = yes ] && [ "$(grep -c '^notify ' "$FX/calls")" = 4 ] && [ "$(grep '^notify ' "$FX/calls" | head -1)" = "notify npm-login v0.1.0" ] \
+  && pass "today's order: npm-login before publish-npm's own login, npm-approve-next before uploads 2 and 3, npm-approve-again before the main one, none before the first" || fail "the notifications: $(befores) $(grep -c '^notify ' "$FX/calls")"
 [ "$(sort -u "$FX/notifyenv" 2>/dev/null)" = set ] && pass "the dry notifier runs with SR_NOTIFY_OSASCRIPT set (no dry run can show a real notification)" || fail "the dry notifier's SR_NOTIFY_OSASCRIPT: '$(cat "$FX/notifyenv" 2>/dev/null)'"
 pd=$(awk 'NR == 1 {print $3}' "$FX/pubsha"); pd=${pd%/*}
 case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private copy dir is gone" || fail "$pd is left" ;; *) fail "no private copy dir recorded: '$pd'" ;; esac
@@ -178,43 +183,63 @@ h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*)
 # who may publish: npm's own answer, for all four names before any view or upload; the main
 # package is asked last, so a refusal there proves no platform package went out first
 nopub() { ! grep -q -e '^npm publish' -e '^npm view' "$FX/calls"; }
-# REV 11b rule 12 (r15a F1): a whoami failure names the npm login only for a missing (ENEEDAUTH) or a dead
-# (E401) credential; any other code: npm's words and "run publish-npm again", and no login line
+# REV 12 rules 1 and 5 (r16a F1-F3): publish-npm on its own logs in to its own file P (D = <out>/.vTAG.npm,
+# 0700), names P on every npm call, and logs out as it ends (D removed); NPM_CONFIG_USERCONFIG's file and
+# the HOME's .npmrc, each with a live line, byte-identical
+printf '//registry.npmjs.org/:_authToken=npm_decoyENV\n' > "$FX/decoy-npmrc"; printf '//registry.npmjs.org/:_authToken=npm_decoyHOME\n' > "$FX/ghome/.npmrc"
+s0_=$(cat "$FX/decoy-npmrc" "$FX/ghome/.npmrc" | cksum)
+mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?
+[ $r = 0 ] && [ "$(cat "$FX/decoy-npmrc" "$FX/ghome/.npmrc" | cksum)" = "$s0_" ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v -- "$PNU\$")" ] \
+  && [ "$(grep '^npm ' "$FX/calls" | head -1)" = "npm login --registry=https://registry.npmjs.org/ --scope=$PNU" ] && [ "$(grep '^npm ' "$FX/calls" | tail -1)" = "npm logout --registry=https://registry.npmjs.org/ --scope=$PNU" ] \
+  && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] && [ ! -e "$PN" ] && grep -q "release: publish-npm's npm session is ended" "$FX/o" \
+  && pass "REV 12 rules 1 and 5: publish-npm alone: its own login (first), P on every npm call, 4 uploads, its logout (last), D removed; the decoys byte-identical" \
+  || fail "REV 12 publish-npm alone: rc=$r first '$(grep '^npm ' "$FX/calls" | head -1)' last '$(grep '^npm ' "$FX/calls" | tail -1)'; D $( [ -e "$PN" ] && echo left || echo gone); $(tail -1 "$FX/o" | cut -c1-160)"
+# rule 2: an earlier P is logged out of first (its token ended), then the login
+mkdir -p "$PN" && chmod 700 "$PN" && echo '//registry.npmjs.org/:_authToken=npm_earlier' > "$PN/npmrc"
+mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?
+[ $r = 0 ] && [ "$(head -1 "$FX/tokops")" = "DELETE npm_earlier $PN/npmrc" ] && [ "$(grep '^npm ' "$FX/calls" | head -1)" = "npm logout --registry=https://registry.npmjs.org/ --scope=$PNU" ] && [ ! -e "$PN" ] \
+  && pass "  REV 12 rule 2: an earlier P: logged out of first (its token ended), then publish-npm's own login" || fail "  rule 2 (publish-npm): rc=$r [$(head -1 "$FX/tokops")] '$(grep '^npm ' "$FX/calls" | head -1)'"
+# rule 3: the login names another account: its logout, P removed, a stop that says how to log in
+mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
+[ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \
+  && [ ! -e "$PN/npmrc" ] && grep -q '^DELETE npm_pn ' "$FX/tokops" \
+  && pass "  REV 12 rule 3: publish-npm's login names another account: its logout, P removed, the stop says to log in as lukasco when publish-npm asks" || fail "  rule 3 (publish-npm): rc=$r $(grep -m1 'login to npm' "$FX/o" | cut -c1-200)"
+# rule 4: its logout failing at the end: exit 1, P kept, the text names the end time and that the next
+# run logs out of it first (the uploads done)
+mkout "$D" v0.1.0; echo ETIMEDOUT > "$FX/logoutcode"; pub v0.1.0; r=$?; rm -f "$FX/logoutcode"
+[ $r = 1 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] && grep -q '_authToken=npm_pn' "$PN/npmrc" && grep -q "could not be ended (the logout's answer: npm error code ETIMEDOUT" "$FX/o" \
+  && grep -qE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o" && grep -q 'the next ship or publish-npm run logs out of it first' "$FX/o" \
+  && pass "  REV 12 rule 4: publish-npm's logout failing at the end: exit 1, P kept, the end time and the next run's logout named" || fail "  rule 4 (publish-npm): rc=$r $(tail -2 "$FX/o" | tr '\n' '|' | cut -c1-240)"
+rm -rf "${PN:?}"
+# the lock: publish-npm alone holds ship's lock while it uses D: a held lock refuses it before any npm call
+mkdir -p "$FX/out/.ship.lock" && echo 4242 > "$FX/out/.ship.lock/pid"; mkout "$D" v0.1.0; pub v0.1.0; r=$?
+[ $r = 1 ] && [ ! -s "$FX/calls" ] && grep -q "another ship or publish-npm holds $FX/out/.ship.lock (its pid: 4242)" "$FX/o" && [ -d "$FX/out/.ship.lock" ] \
+  && pass "REV 12: a held lock: publish-npm refuses before any npm call, and leaves the lock" || fail "the lock (publish-npm): rc=$r $(head -1 "$FX/calls" 2>/dev/null) $(tail -1 "$FX/o" | cut -c1-200)"
+rm -rf "${FX:?}/out/.ship.lock"; rm -f "${FX:?}/ghome/.npmrc"
+# REV 12 (it replaces REV 11b rule 12): whoami failing after publish-npm's own login, whatever npm's
+# code: refused before any upload, npm's code named, no npm command printed, and P logged out as it ends
+NPMCMD='npm (login|logout|config|token)'
 bw_=""
 for c_ in ENEEDAUTH E401 ETIMEDOUT E403; do
-  mkout "$D" v0.1.0; echo $c_ > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
-  case $c_ in ENEEDAUTH|E401) w_=1 ;; *) w_=0 ;; esac
-  g_=$(grep -c '^  cd / && npm login ' "$FX/o")
-  [ $r = 1 ] && nopub && [ "$g_" = "$w_" ] && grep -q "npm error code $c_" "$FX/o" && { [ $w_ = 1 ] || grep -q 'When npm answers, run publish-npm again' "$FX/o"; } || bw_="$bw_ [$c_: rc=$r, $g_ login lines]"
+  mkout "$D" v0.1.0; : > "$FX/tokops"; echo $c_ > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
+  [ $r = 1 ] && nopub && grep -q "npm whoami failed after the login (npm error code $c_" "$FX/o" && ! grep -Eq "$NPMCMD" "$FX/o" \
+    && grep -q '^DELETE npm_pn ' "$FX/tokops" && [ ! -e "$PN" ] || bw_="$bw_ [$c_: rc=$r, $(grep -Ec "$NPMCMD" "$FX/o") npm commands, $(grep -c '^DELETE' "$FX/tokops") logouts]"
 done
-[ -z "$bw_" ] && pass "REV 11b rule 12: whoami ENEEDAUTH and E401 name the login; ETIMEDOUT and E403 name none (npm's words, run publish-npm again)" || fail "rule 12, whoami:$bw_"
+[ -z "$bw_" ] && pass "REV 12: whoami failing after the login (ENEEDAUTH, E401, ETIMEDOUT, E403): refused, npm's code named, no npm command printed, P logged out (D removed)" || fail "REV 12, whoami:$bw_"
 mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail"
 [ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && pass "not logged in to npm: refused before any view or upload" || fail "whoami fails: rc=$r $(order) $(tail -1 "$FX/o")"
-# REV 11a rule 7 (r14a F3): publish-npm makes A1's check too: npm naming another userconfig than the
-# file it loads (F) is refused before whoami, both files named. (Control: every run above, npm naming F)
-mkout "$D" v0.1.0; : > "$FX/ucother"; pub v0.1.0; r=$?; rm -f "$FX/ucother"
-[ $r = 1 ] && grep -q '^npm config get userconfig' "$FX/calls" && ! grep -q -e '^npm whoami' -e '^npm view' -e '^npm publish' "$FX/calls" \
-  && grep -qF "npm names $FX/other.npmrc as its userconfig" "$FX/o" && grep -qF "but publish-npm reads and prints $FX/decoy-npmrc" "$FX/o" \
-  && pass "REV 11a rule 7: npm names another userconfig than F: publish-npm refuses before whoami, both files named" \
-  || fail "publish-npm, another userconfig: rc=$r, $(grep -c '^npm whoami' "$FX/calls") whoami; $(grep -m1 'userconfig' "$FX/o" | cut -c1-200)"
-# npm's E401, a counted login line in npm's userconfig, at each npm call of publish-npm that can answer
-# it (whoami, a view before an upload, the wait's last view after one): npm's words, then npm_tokens
-# (REV 10: the count picks no words, and no delete is named). Control: no counted line, the same
-echo "//registry.npmjs.org/:_authToken=npm_old" > "$FX/dryrc"
-mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
-[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "whoami answering E401, a counted token line: refused before any upload; npm's words, then npm_tokens, no delete" || fail "whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
-mkout "$D" v0.1.0; echo E401 > "$FX/viewcode.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcode.sheepr-linux-arm64"
-[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'cannot tell whether sheepr-linux-arm64@0.1.0 is on npm' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" && pass "a view before an upload answering E401, a counted token line: refused there; npm_tokens, no delete" || fail "view E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
-mkout "$D" v0.1.0; echo E401 > "$FX/viewcodeafter.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcodeafter.sheepr-linux-arm64"
-[ $r = 1 ] && grep -q 'sheepr-linux-arm64@0.1.0 is not visible on npm after' "$FX/o" && grep -q 'the last view: E401' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && ! grep -q 'config delete' "$FX/o" \
-  && pass "the views after an upload answering E401 to the wait's limit, a counted token line: npm_tokens, no delete" || fail "wait E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
-rm -f "$FX/dryrc"
-mkout "$D" v0.1.0; echo E401 > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
-[ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && ! grep -q 'config delete' "$FX/o" && grep -q "Deleting or editing a login line ends no token" "$FX/o" && pass "control: whoami E401 with no counted line: the same npm_tokens, no delete" || fail "control whoami E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+# npm's E401 at each npm call of publish-npm after its login that can answer it (a view before an upload,
+# the wait's last view after one): that stop, npm's E401, no npm command printed (REV 12), P logged out
+mkout "$D" v0.1.0; : > "$FX/tokops"; echo E401 > "$FX/viewcode.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcode.sheepr-linux-arm64"
+[ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'cannot tell whether sheepr-linux-arm64@0.1.0 is on npm' "$FX/o" && grep -q 'E401' "$FX/o" && ! grep -Eq "$NPMCMD" "$FX/o" && grep -q '^DELETE npm_pn ' "$FX/tokops" \
+  && pass "a view before an upload answering E401: refused there; npm's E401, no npm command printed, P logged out" || fail "view E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
+mkout "$D" v0.1.0; : > "$FX/tokops"; echo E401 > "$FX/viewcodeafter.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/viewcodeafter.sheepr-linux-arm64"
+[ $r = 1 ] && grep -q 'sheepr-linux-arm64@0.1.0 is not visible on npm after' "$FX/o" && grep -q 'the last view: E401' "$FX/o" && ! grep -Eq "$NPMCMD" "$FX/o" && grep -q '^DELETE npm_pn ' "$FX/tokops" \
+  && pass "the views after an upload answering E401 to the wait's limit: no npm command printed, P logged out" || fail "wait E401: rc=$r $(tail -1 "$FX/o" | cut -c1-240)"
 mkout "$D" v0.1.0; echo other > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
-[ $r = 1 ] && nopub && ! grep -q '^npm owner' "$FX/calls" && grep -q 'logged in to npm as other' "$FX/o" && pass "logged in to npm as another user than release.conf's: refused before any owner, view or upload call" || fail "other user: rc=$r $(order) $(tail -1 "$FX/o")"
+[ $r = 1 ] && nopub && ! grep -q '^npm owner' "$FX/calls" && grep -q 'the login to npm was as other, but the packages belong to lukasco' "$FX/o" && pass "the login names another user than release.conf's: refused before any owner, view or upload call" || fail "other user: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; printf 'lukasco\nnpm notice x\n' > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
-[ $r = 1 ] && nopub && grep -q 'logged in to npm as' "$FX/o" && ! grep -q 'belongs to' "$FX/o" && pass "a whoami of more than one line: refused, for that reason" || fail "two-line whoami: rc=$r $(order) $(tail -1 "$FX/o")"
+[ $r = 1 ] && nopub && ! grep -q '^npm owner' "$FX/calls" && grep -q 'the login to npm was as lukasco npm notice x' "$FX/o" && ! grep -q 'belongs to' "$FX/o" && pass "a whoami of more than one line: refused, for that reason" || fail "two-line whoami: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; : > "$FX/ownerfail.sheepr"; pub v0.1.0; r=$?; rm -f "$FX/ownerfail.sheepr"
 [ $r = 1 ] && nopub && grep -q 'sheepr is not on npm yet' "$FX/o" && pass "a name not on npm yet (the main one, asked last): refused before any upload" || fail "not on npm: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; echo stranger > "$FX/owner.sheepr-linux-x64"; pub v0.1.0; r=$?; rm -f "$FX/owner.sheepr-linux-x64"
@@ -238,8 +263,8 @@ mkout "$D" v0.1.0; printf 'sed -i.bak "s/^SR_NPM_PKGS=.*/SR_NPM_PKGS=\x27sheepr 
 pub v0.1.0; r=$?; rm -f "$FX/onwhoami"; changed=$(grep -c '^SR_NPM_PKGS=.sheepr sheepr-linux' "$REPO/scripts/release.conf"); g checkout -q scripts/release.conf
 [ "$changed" = 1 ] || fail "the whoami hook did not change the list (the row would prove nothing)"
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
-  && [ "$(sed -n 1,6p "$FX/calls" | tr '\n' ',')" = "npm config get userconfig --scope=,npm whoami $REG,npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
-  && pass "a list changed after its check: the checked list is the one the owner check and the uploads use" || fail "list changed mid-run: rc=$r $(order) | $(sed -n 1,6p "$FX/calls" | tr '\n' ',')"
+  && [ "$(sed -n 1,7p "$FX/calls" | tr '\n' ',')" = "notify npm-login v0.1.0,npm login $REG$PNU,npm whoami $REG$PNU,npm owner ls sheepr-linux-arm64 $REG$PNU,npm owner ls sheepr-linux-x64 $REG$PNU,npm owner ls sheepr-darwin-universal $REG$PNU,npm owner ls sheepr $REG$PNU," ] \
+  && pass "a list changed after its check: the checked list is the one the owner check and the uploads use" || fail "list changed mid-run: rc=$r $(order) | $(sed -n 1,7p "$FX/calls" | tr '\n' ',')"
 # after each upload, publishing waits until npm shows that file (npm may process a new package for
 # minutes before it shows: measured 2026-10-04), so the main package goes up only when the platform
 # packages its optional dependencies name are there
@@ -247,7 +272,7 @@ mkout "$D" v0.1.0; echo 2 > "$FX/processing.sheepr-linux-x64"; pub v0.1.0; r=$?;
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
   && pass "a package npm is still processing: waited for (three views), then the next" || fail "processing: rc=$r $(order)"
 mkout "$D" v0.1.0; echo 100000 > "$FX/processing.sheepr-darwin-universal"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-darwin-universal"
-[ $r = 1 ] && ! grep -q '^npm publish .*/sheepr-0.1.0.tgz$' "$FX/calls" && grep -q 'not visible on npm' "$FX/o" \
+[ $r = 1 ] && ! grep -q '^npm publish .*/sheepr-0.1.0.tgz ' "$FX/calls" && grep -q 'not visible on npm' "$FX/o" \
   && pass "a package that never shows: refused, the main package not published" || fail "never visible: rc=$r $(order) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; : > "$FX/pubwrong.sheepr-linux-arm64"; pub v0.1.0; r=$?; rm -f "$FX/pubwrong.sheepr-linux-arm64"
 [ $r = 1 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64," ] && grep -q 'than the one just published' "$FX/o" \
@@ -260,7 +285,7 @@ if [ -n "$wm" ] && [ -n "$ws" ] && [ "$ws" -gt 0 ] && [ "$wm" -ge 1800 ]; then p
 else fail "the wait's limit: max '$wm' step '$ws'"; wm=1800 ws=10; fi   # the rows below still run, against the planned limit
 mkout "$D" v0.1.0; echo 100000 > "$FX/processing.sheepr-darwin-universal"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-darwin-universal"
 nv=$(grep -c '^npm view .* sheepr-darwin-universal@0.1.0 ' "$FX/calls"); sl=$(awk '{s += $1} END {print s + 0}' "$FX/sleeps" 2>/dev/null)
-[ $r = 1 ] && [ "$nv" = $((wm / ws + 2)) ] && [ "$sl" = "$wm" ] && grep -q 'held the version for review or blocked it' "$FX/o" && grep -q 'E404' "$FX/o" && ! grep -q '^npm publish .*/sheepr-0.1.0.tgz$' "$FX/calls" \
+[ $r = 1 ] && [ "$nv" = $((wm / ws + 2)) ] && [ "$sl" = "$wm" ] && grep -q 'held the version for review or blocked it' "$FX/o" && grep -q 'E404' "$FX/o" && ! grep -q '^npm publish .*/sheepr-0.1.0.tgz ' "$FX/calls" \
   && pass "a package that never shows: $((wm / ws + 1)) views after its upload, $sl s of waits, refused naming review, blocking and the last error" || fail "the limit: rc=$r views=$nv (want $((wm / ws + 2)), with the one before the upload) sleeps=$sl (want $wm) $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; echo $((wm / ws)) > "$FX/processing.sheepr-darwin-universal"; pub v0.1.0; r=$?; rm -f "$FX/processing.sheepr-darwin-universal"
 [ $r = 0 ] && pass "a package that shows at the last view: published" || fail "the last view: rc=$r $(tail -1 "$FX/o")"
@@ -293,38 +318,32 @@ mkout "$D" v0.1.0; : > "$FX/viewfail.sheepr-darwin-universal"; pub v0.1.0; rm -f
 pd=$(awk 'NR == 1 {print $3}' "$FX/pubsha"); pd=${pd%/*}
 case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "a refused run's private copy dir is gone" || fail "$pd is left after a refusal" ;; *) fail "no private copy dir recorded after the refusal: '$pd'" ;; esac
 
-# the real run's npm environment (the npm class; __npm-env prints it): the operator's npmrc
-# location passes, upper or lower case, and so does a proxy; no token ever does
+# the real run's npm environment (the npm class; __npm-env prints it, then npm's arguments, one arg=
+# line each): ship's own file P in the environment and last on the command line, whatever the
+# operator's userconfig variables say (REV 12 rule 1: npm never reads them, so no spelling of theirs
+# matters: the relative, ~ and $ refusals are gone); HOME and a proxy pass; no token ever does
 ne() { (cd "$REPO" && env -i PATH="$PATH" HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
   SSH_AUTH_SOCK="$FX/sock" HTTPS_PROXY=http://127.0.0.1:9 "$@" sh scripts/release.sh __npm-env v0.1.0) 2>&1; }
-e1=$(ne NPM_CONFIG_USERCONFIG="$FX/u1/npmrc"); e2=$(ne npm_config_userconfig="$FX/u2/npmrc")
-printf '%s\n' "$e1" | grep -qx "NPM_CONFIG_USERCONFIG=$FX/u1/npmrc" && printf '%s\n' "$e2" | grep -qx "NPM_CONFIG_USERCONFIG=$FX/u2/npmrc" \
-  && printf '%s\n' "$e1" | grep -qx 'HTTPS_PROXY=http://127.0.0.1:9' && printf '%s\n' "$e1" | grep -qx "HOME=$FX/ghome" \
-  && pass "the real npm class: the operator's npmrc (either spelling), HOME and a proxy pass" || fail "the npm class: $(printf '%s' "$e1" | tr '\n' ' ')"
-printf '%s\n%s\n' "$e1" "$e2" | grep -q -e "$DECOY" -e '^SSH_AUTH_SOCK=' -e '^GH_' && fail "the npm class let a token or a transport through" || pass "the real npm class: no token, no git/gh transport"
-# npm's userconfig variable, either spelling, must be an absolute path: npm expands ~ and ${VAR} in
-# it itself, and ship runs npm from /, so any other spelling names another file than the one the
-# operator means. The npm class refuses it (npm never runs), naming the variable and its value; it
-# never makes it <cwd>/~/npmrc. (An absolute one goes through unchanged: the rows above.)
-for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'NPM_CONFIG_USERCONFIG=${HOME}/npmrc' 'npm_config_userconfig=rel/npmrc'; do
-  eu=$(ne "$uv"); r=$?
-  [ $r != 0 ] && printf '%s\n' "$eu" | grep -qF "${uv%%=*} is '${uv#*=}', not an absolute path" && ! printf '%s\n' "$eu" | grep -q -e '^HOME=' -e '^NPM_CONFIG_USERCONFIG=' \
-    && pass "the npm class refuses $uv: not an absolute path; npm never ran" || fail "$uv: rc=$r $(printf '%s\n' "$eu" | grep -e USERCONFIG -e '^release:' | head -2 | tr '\n' ' ')"
+NP=$FX/ghome/sheepr-release/.v0.1.0.npm/npmrc   # (the default out dir, ~/sheepr-release, under that HOME)
+e1=$(ne); e2=$(ne NPM_CONFIG_USERCONFIG="$FX/u1/npmrc"); e3u=$(ne npm_config_userconfig="$FX/u2/npmrc")
+bu_=""; for e_ in "$e1" "$e2" "$e3u"; do
+  [ "$(printf '%s\n' "$e_" | grep -ic '^npm_config_userconfig=')" = 1 ] && printf '%s\n' "$e_" | grep -qx "NPM_CONFIG_USERCONFIG=$NP" \
+    && [ "$(printf '%s\n' "$e_" | grep '^arg=' | tail -1)" = "arg=--userconfig=$NP" ] && ! printf '%s\n' "$e_" | grep -q -e "$FX/u1" -e "$FX/u2" || bu_="$bu_ [$(printf '%s\n' "$e_" | grep -i -e '^npm_config_userconfig=' -e '^arg=' | tr '\n' ' ')]"
 done
-# REV 11a rule 8 (r14a F1): an absolute one holding a $ (npm expands ${VAR} in it from the environment
-# it runs in) is refused too, the variable named: the npm class, and publish-npm before any npm call
-for uv in "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/\$SRFOO/npmrc"; do
+[ -z "$bu_" ] && printf '%s\n' "$e1" | grep -qx 'HTTPS_PROXY=http://127.0.0.1:9' && printf '%s\n' "$e1" | grep -qx "HOME=$FX/ghome" \
+  && pass "REV 12 rule 1, the real npm class: P in npm's environment and last on its command line, whatever NPM_CONFIG_USERCONFIG or npm_config_userconfig says; HOME and a proxy pass" || fail "the npm class:$bu_ $(printf '%s' "$e1" | grep -e '^HOME=' -e PROXY -e '^release:' | tr '\n' ' ')"
+printf '%s\n%s\n%s\n' "$e1" "$e2" "$e3u" | grep -q -e "$DECOY" -e '^SSH_AUTH_SOCK=' -e '^GH_' && fail "the npm class let a token or a transport through" || pass "the real npm class: no token, no git/gh transport"
+# the spellings the npm class refused before REV 12 (~, ${VAR}, relative, a $): npm never sees them now;
+# P is named, and publish-npm runs to its end with P on every npm call
+bu_=""; for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'NPM_CONFIG_USERCONFIG=${HOME}/npmrc' 'npm_config_userconfig=rel/npmrc' "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/\$SRFOO/npmrc"; do
   eu=$(ne "$uv"); r=$?
-  [ $r != 0 ] && printf '%s\n' "$eu" | grep -qF "${uv%%=*} is '${uv#*=}': it holds a \$" && ! printf '%s\n' "$eu" | grep -q -e '^HOME=' -e '^NPM_CONFIG_USERCONFIG=' \
-    && pass "REV 11a rule 8: the npm class refuses ${uv%%=*} holding a \$; npm never ran" || fail "\$ in ${uv%%=*}: rc=$r $(printf '%s\n' "$eu" | grep -e USERCONFIG -e '^release:' | head -2 | tr '\n' ' ')"
+  [ $r = 0 ] && printf '%s\n' "$eu" | grep -qx "NPM_CONFIG_USERCONFIG=$NP" && [ "$(printf '%s\n' "$eu" | grep -ic '^npm_config_userconfig=')" = 1 ] \
+    && [ "$(printf '%s\n' "$eu" | grep '^arg=' | tail -1)" = "arg=--userconfig=$NP" ] || bu_="$bu_ [$uv: rc=$r]"
 done
-mkout "$D" v0.1.0; PUBX="NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc"; pub v0.1.0; r=$?; PUBX=
-[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -qF "NPM_CONFIG_USERCONFIG is '$FX/v/\${SRFOO}rc': it holds a \$" "$FX/o" \
-  && pass "  publish-npm with NPM_CONFIG_USERCONFIG holding a \$: refused before any npm call" || fail "  publish-npm, \$: rc=$r $(tail -1 "$FX/o" | cut -c1-200)"
-# publish-npm refuses it too, before any npm call
+[ -z "$bu_" ] && pass "REV 12 rule 1: an operator's userconfig of ~, \${VAR}, relative or \$ spelling never reaches npm: P does" || fail "the odd spellings:$bu_"
 mkout "$D" v0.1.0; PUBX='NPM_CONFIG_USERCONFIG=~/npmrc'; pub v0.1.0; r=$?; PUBX=
-[ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -qF "NPM_CONFIG_USERCONFIG is '~/npmrc', not an absolute path" "$FX/o" \
-  && pass "publish-npm with NPM_CONFIG_USERCONFIG='~/npmrc': refused before any npm call" || fail "publish-npm, ~/npmrc: rc=$r $(tail -1 "$FX/o" | cut -c1-200)"
+[ $r = 0 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v -- "$PNU\$")" ] \
+  && pass "  publish-npm with NPM_CONFIG_USERCONFIG='~/npmrc': runs, P on every npm call" || fail "  publish-npm, ~/npmrc: rc=$r $(tail -1 "$FX/o" | cut -c1-200)"
 # a relative NODE_EXTRA_CA_CERTS is made absolute from the current directory; when that cannot be read
 # (here: it was removed), the npm class refuses (npm never runs), and never makes it /rel/ca.pem.
 # Control: the same from a directory that is there
@@ -428,7 +447,7 @@ case "$(befores)" in "sheepr-linux-x64<npm view"*">,sheepr-darwin-universal<noti
   pass "  its first upload (x64) has no notification, the next two do" ;; *) fail "  the notifications: $(befores)" ;; esac
 mkout "$D" v0.1.0; for p_ in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p_-0.1.0.tgz" > "$FX/view.$p_"; done
 pub v0.1.0; r=$?; rm -f "$FX/view.sheepr-linux-x64" "$FX/view.sheepr-darwin-universal"   # (arm64's view stays, as the next row expects)
-[ $r = 0 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 1 ] && ! grep -q '^notify ' "$FX/calls" \
+[ $r = 0 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 1 ] && ! grep -q '^notify npm-approve' "$FX/calls" \
   && pass "the three platform packages already on npm: the main upload is the first, no notification (0)" || fail "main first: rc=$r $(befores)"
 echo "sha512-AAAA" > "$FX/view.sheepr-linux-x64"
 pub v0.1.0; r=$?; rm -f "$FX"/view.*
@@ -461,8 +480,8 @@ mkout "$D" v0.1.0; PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX"/processin
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal," ] \
   && pass "platform: the three platform packages back to back, the main one untouched (0)" || fail "platform: rc=$r $(order) $(tail -1 "$FX/o")"
 [ ! -e "$FX/sleeps" ] && pass "platform: no wait (no sleep, no view after an upload)" || fail "platform waited: $(cat "$FX/sleeps" | tr '\n' ' ')"
-nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
-[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+nl=$(grep -n '^notify npm-approve' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+[ "$(grep -c '^notify npm-approve' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
   && pass "platform: notify npm-approve once, right before the first upload" || fail "platform's notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
 grep -q 'four npm packages' "$FX/o" && fail "platform says the four packages are on npm" || pass "platform: no 'four packages' line"
 mkout "$D" v0.1.0; : > "$FX/pubfail.sheepr-linux-x64"; PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX/pubfail.sheepr-linux-x64"
@@ -470,20 +489,20 @@ mkout "$D" v0.1.0; : > "$FX/pubfail.sheepr-linux-x64"; PART=platform; pub v0.1.0
   && pass "platform: a refused second upload stops it, nothing after it (1)" || fail "platform, refused upload: rc=$r $(order)"
 grep -q 'may also refuse an upload while it still scans an earlier package of the batch' "$FX/o" && pass "  and its message names npm's possible refusal while it scans an earlier package of the batch" || fail "  the refusal: $(tail -1 "$FX/o")"
 mkout "$D" v0.1.0; integrity "$D/sheepr-linux-arm64-0.1.0.tgz" > "$FX/view.sheepr-linux-arm64"; PART=platform; pub v0.1.0; r=$?; PART=
-nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+nl=$(grep -n '^notify npm-approve' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal," ] && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
   && pass "platform, one already on npm (this file): skipped; the notification before the first real upload (0)" || fail "platform, one there: rc=$r $(order) notify at $nl, first publish at $np"
 for p in sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p-0.1.0.tgz" > "$FX/view.$p"; done
 PART=platform; pub v0.1.0; r=$?; PART=; rm -f "$FX"/view.*
-[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && pass "platform, all three already on npm: no upload, no notification (0)" || fail "platform, all there: rc=$r $(grep -e '^npm publish' -e '^notify' "$FX/calls" | tr '\n' ' ')"
+[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify npm-approve' "$FX/calls" && pass "platform, all three already on npm: no upload, no notification (0)" || fail "platform, all there: rc=$r $(grep -e '^npm publish' -e '^notify' "$FX/calls" | tr '\n' ' ')"
 # main: waits until npm shows each platform package (uploaded earlier; never uploaded here), then
 # uploads the main package, npm-approve-again right before, and waits for it
 mkout "$D" v0.1.0; for p in sheepr-linux-arm64 sheepr-linux-x64 sheepr-darwin-universal; do integrity "$D/$p-0.1.0.tgz" > "$FX/view.$p"; done
 PART=main; pub v0.1.0; r=$?; PART=
-nl=$(grep -n '^notify ' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
+nl=$(grep -n '^notify npm-approve' "$FX/calls" | cut -d: -f1); np=$(grep -n '^npm publish' "$FX/calls" | head -1 | cut -d: -f1)
 [ $r = 0 ] && [ "$(order)" = "view sheepr-linux-arm64,view sheepr-linux-x64,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
   && pass "main: the platform packages seen, no upload of one, then the main one uploaded and waited for (0)" || fail "main: rc=$r $(order) $(tail -1 "$FX/o")"
-[ "$(grep -c '^notify ' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve-again v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
+[ "$(grep -c '^notify npm-approve' "$FX/calls")" = 1 ] && grep -qx 'notify npm-approve-again v0.1.0' "$FX/calls" && [ -n "$np" ] && [ "$nl" = $((np - 1)) ] \
   && pass "main: notify npm-approve-again once, right before the main upload" || fail "main's notification: $(grep -n -e '^notify' -e '^npm publish' "$FX/calls" | tr '\n' ' ')"
 echo 2 > "$FX/scan.sheepr-linux-x64"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX/scan.sheepr-linux-x64"
 [ $r = 0 ] && [ "$(grep -c '^npm view .* sheepr-linux-x64@0.1.0 ' "$FX/calls")" = 3 ] && [ "$(grep -c . "$FX/sleeps" 2>/dev/null)" = 2 ] && ! grep -q '^npm publish .*/sheepr-linux' "$FX/calls" \
@@ -495,10 +514,10 @@ echo 100000 > "$FX/scan.sheepr-darwin-universal"; PART=main; pub v0.1.0; r=$?; P
 [ $r = 1 ] && ! grep -q '^npm publish' "$FX/calls" && grep -q 'held the version for review or blocked it' "$FX/o" \
   && pass "main: a platform package that never shows: refused naming review and blocking, nothing uploaded (1)" || fail "main, never shows: rc=$r $(order) $(tail -1 "$FX/o")"
 integrity "$D/sheepr-0.1.0.tgz" > "$FX/view.sheepr"; PART=main; pub v0.1.0; r=$?; PART=; rm -f "$FX"/view.*
-[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify ' "$FX/calls" && grep -q 'already on npm (the same file)' "$FX/o" \
+[ $r = 0 ] && ! grep -q -e '^npm publish' -e '^notify npm-approve' "$FX/calls" && grep -q 'already on npm (the same file)' "$FX/o" \
   && pass "main: the main package already on npm (this file): skipped, no notification (0)" || fail "main, main there: rc=$r $(order)"
 # the real entry, which no dry run reaches: its body exactly, defined once, and its dispatch arm
-# (NPMC too: the class npmhint's token count reads npm's userconfig with; unset, it read none)
+# (NPMC too: the class of publish-npm's own login, whoami and logout)
 want='publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'
 [ "$(grep -c '^publish_npm() ' "$SR_ROOT/scripts/release.sh")" = 1 ] && grep -qxF "$want" "$SR_ROOT/scripts/release.sh" \
   && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
@@ -537,7 +556,7 @@ mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x
 # and when the caller exports every one of them, release.sh unsets each before it sets it, so none
 # stays exported (an assignment alone keeps a variable from the environment exported)
 mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x64"
-( export shipping=yes npm_part=platform NOTIFY=/nonexistent SHIP_BUILD=/x SHIP_NPMCHECK=/x SHIP_VERIFY=x CAFFEINATE=/x SHIP_IDENTITY=/x SHIP_DOCKER=/x \
+( export shipping=yes npm_part=platform pnin=yes pnlock=yes npm_endrc=1 NOTIFY=/nonexistent SHIP_BUILD=/x SHIP_NPMCHECK=/x SHIP_VERIFY=x CAFFEINATE=/x SHIP_IDENTITY=/x SHIP_DOCKER=/x \
     GH=/x GITCMD=/x NPM=/x NPMC=x CURL=/x CURLC=x NETC=x DRY=x dryentry=no shipprog=/x shipcause=/x shipcls=/x ship_mh=x; pub v0.1.0 ); r=$?
 rm -f "$FX/processing.sheepr-linux-x64"
 [ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] \
