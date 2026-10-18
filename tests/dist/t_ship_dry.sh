@@ -327,6 +327,8 @@ case \$1 in
     [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "\$UC"; exit 0; }
     [ -e "$FX/logoutlies" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; exit 1; }
     # (\$FX/logoutleaves: a line it leaves in the userconfig, as npm logout leaves any but the root line)
+    # (no token line: npm logout answers ENEEDAUTH, exit 1, as real npm does: notes/r16a/np/t4)
+    grep -q "^\$TOK" "\$UC" 2>/dev/null || { echo "npm error code ENEEDAUTH" >&2; exit 1; }
     t_=\$(sed -n "s|^\$TOK||p" "\$UC" 2>/dev/null | tail -1); [ -z "\$t_" ] || echo "DELETE token=\$t_" >> "$FX/tokops"   # (the token it ends)
     grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; [ ! -e "$FX/logoutleaves" ] || cat "$FX/logoutleaves" >> "\$UC"; exit 0 ;;
   publish) p=\$(basename "\$last" | sed 's/^\(.*\)-[0-9][0-9.a-z-]*\.tgz\$/\1/')
@@ -521,6 +523,23 @@ nopath() { [ ! -s "$FX/pathcalls" ]; }
 # the archive hash verify (dry) judges: the build stand-in's archive for $OUTR/v0.1.0
 AH=$(printf 'sheepr-macos-universal.tar.gz %s\n' "$OUTR/v0.1.0" | shasum -a 256 | cut -d' ' -f1)
 
+# the npm stand-in, as real npm 9 to 11 answer (notes/r16a/np/t3, t4; notes/builder/np16/t16m1-*): its
+# login replaces the root _authToken line and keeps another registry's (r16a R1); its logout of a
+# userconfig with no token line answers ENEEDAUTH, exit 1 (r16a F8). Controls: an empty userconfig gets
+# one root line; the logout of a live line ends it, exit 0
+printf '//registry.npmjs.org/:_authToken=npm_other\n//other.example/:_authToken=x\n' > "$FX/st1.rc"; : > "$FX/st2.rc"; : > "$FX/st3.rc"
+printf '//registry.npmjs.org/:_authToken=npm_x\n' > "$FX/st4.rc"
+for f_ in st1 st2; do (cd / && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" login --registry=https://registry.npmjs.org/ --scope= --userconfig="$FX/$f_.rc") > /dev/null 2>&1; done
+(cd / && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" logout --registry=https://registry.npmjs.org/ --scope= --userconfig="$FX/st3.rc") > /dev/null 2> "$FX/st3.err"; r3_=$?
+(cd / && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" "$S/npm" logout --registry=https://registry.npmjs.org/ --scope= --userconfig="$FX/st4.rc") > /dev/null 2>&1; r4_=$?
+r1a_=$(grep -c '^//registry.npmjs.org/:_authToken=' "$FX/st1.rc"); r1b_=$(grep -c '^//registry.npmjs.org/:_authToken=' "$FX/st2.rc")
+[ "$r1a_" = 1 ] && grep -qx '//registry.npmjs.org/:_authToken=npm_dry' "$FX/st1.rc" && ! grep -q npm_other "$FX/st1.rc" && grep -qx '//other.example/:_authToken=x' "$FX/st1.rc" && [ "$r1b_" = 1 ] \
+  && pass "r16a R1: the npm stand-in's login replaces the root token line (another registry's kept), as real npm does; control: an empty userconfig gets one" \
+  || fail "r16a R1: the stand-in's login: [$(tr '\n' ' ' < "$FX/st1.rc")] ($r1a_ root lines); empty: $r1b_"
+[ $r3_ = 1 ] && grep -qx 'npm error code ENEEDAUTH' "$FX/st3.err" && [ $r4_ = 0 ] && ! grep -q '_authToken' "$FX/st4.rc" \
+  && pass "r16a F8: the npm stand-in's logout with no token line answers ENEEDAUTH, exit 1, as real npm does; control: a live line, exit 0, the line gone" \
+  || fail "r16a F8: the stand-in's logout, no line: exit $r3_ '$(tr '\n' ' ' < "$FX/st3.err")'; a live line: exit $r4_ [$(tr '\n' ' ' < "$FX/st4.rc")]"
+rm -f "$FX/st1.rc" "$FX/st2.rc" "$FX/st3.rc" "$FX/st4.rc" "$FX/st3.err" "$FX/calls" "$FX/tokops" "$FX/npmucs" "$FX/npmenvs"
 # --- the walls: each stand-in is checked as release.sh's standins checks one; a real tool, or none,
 # is refused before any call
 for v in SR_SHIP_DRY_BUILD SR_SHIP_DRY_NPMCHECK SR_SHIP_DRY_NOTIFY SR_SHIP_DRY_CAFFEINATE SR_SHIP_DRY_IDENTITY SR_SHIP_DRY_DOCKER \
