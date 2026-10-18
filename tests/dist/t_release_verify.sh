@@ -143,6 +143,15 @@ source=no usable signature"; rtset; vc; rc=$?
 [ $rc = 1 ] && [ "$(cls)" = content ] && grep -q 'failed to satisfy' "$FX/o" && ! grep -q 'source=' "$FX/o" && [ ! -e "$FX/a_sp" ] \
   && pass "  control: codesign refuses first (spctl would say 'source=no usable signature'): content, codesign's verdict, spctl not run" \
   || fail "  rule 11 control: rc=$rc '$(cls)' $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
+# r15b P4-1: the order of the checks decides the class: stapler (it refuses, exit 65) runs before spctl,
+# so its verdict is content, with its words, and spctl does not run (it would refuse too, exit 3).
+# Control: rule 11's row above (stapler accepts: spctl runs, fix)
+mkt cs 0 ''; mkt xc 65 "Processing: $AP
+Sheepr.app does not have a ticket stapled to it."; mkt sp 3 "$AP: rejected
+source=Notarized Developer ID"; rtset; vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = content ] && grep -q 'does not have a ticket stapled' "$FX/o" && [ ! -e "$FX/a_sp" ] && ! grep -q 'Gatekeeper rejects' "$FX/o" \
+  && pass "r15b P4-1: stapler refuses (65), spctl would too (3): content, stapler's words, spctl not run (the order of the checks decides)" \
+  || fail "r15b P4-1 order: rc=$rc '$(cls)' spctl ran: $( [ -e "$FX/a_sp" ] && echo yes || echo no); $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-200)"
 cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
 n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple_ok|spctl_ok) "')

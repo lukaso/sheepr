@@ -180,6 +180,21 @@ grep -q "$FX/cs127" "$REPO/scripts/lib/realtools.sh" || fail "premise: codesign'
 mk signed false; ncc; r=$?
 [ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'codesign' "$FX/o" && pass "r12b F1: an Apple tool that cannot run (exit 127): class fix" || fail "codesign 127 class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
 cp "$FX/rt.keep" "$REPO/scripts/lib/realtools.sh" || exit 3
+# r15b P4-1: npm-check's order of the checks: stapler refusing (65) runs before spctl, so its verdict is
+# content, with its words, and spctl does not run (it would refuse too). Stand-in real tools (functions)
+# and archive check, in the fixture repo only. Control: the stand-ins accepting (the stamp rows above)
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep3" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep3" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { echo "x.app does not have a ticket stapled to it." > "\${RT_OUT:-/dev/null}"; rt_rc=65; return 1; }
+rt_spctl_ok() { : > "$FX/spctl.ran"; echo "x.app: rejected" > "\${RT_OUT:-/dev/null}"; rt_rc=3; return 1; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+rm -f "$FX/spctl.ran"; mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'does not have a ticket stapled' "$FX/o" && [ ! -e "$FX/spctl.ran" ] \
+  && pass "r15b P4-1: npm-check, stapler refuses and spctl would too: content, stapler's words, spctl not run" \
+  || fail "r15b P4-1 (npm-check): rc=$r '$(cls)' spctl ran: $( [ -e "$FX/spctl.ran" ] && echo yes || echo no); $(tail -1 "$FX/o" | cut -c1-200)"
+cp "$FX/rt.keep3" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep3" "$REPO/scripts/lib/archive.sh" || exit 3
 # r13b F3, F4: judged takes a checking tool's failure for a finding only for its own refusal (exit 1,
 # its "npm-same: " or "archive: " line). npm-same.py stand-ins (the fixture's): "npm-same: x", then a
 # KILL (137); a traceback (exit 1, no "npm-same: " line); exit 2 (usage): fix. Control: the real
