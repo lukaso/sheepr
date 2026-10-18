@@ -1400,12 +1400,15 @@ pnstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s publish-npm --out %s %s\n' "
 # 3): from / (no project config), npmjs's registry, no scope (npm's scope routes login and logout to
 # the scope's registry), and F by name, through dq (the operator's shell may name another userconfig).
 # Each is printed as a line of its own, two spaces in, with nothing after it (REV 11a rule 6: a
-# sentence's period copied with it made --userconfig=F.); the text around it is on lines of its own
+# sentence's period copied with it made --userconfig=F.); the text around it is on lines of its own.
+# --logs-max=0 (REV 11b rule 14): the operator's shell has no pin, and a failed logout's debug log
+# holds the token it sent (npm 10.9.2, 11.1.0, 11.4.2: notes/r15a/np/t3; the flag honoured on npm 9.6.7,
+# 10.5.2, 10.9.2 and 11.6.0 for login, logout and config delete: notes/builder/np15/t15m2-*)
 npmcmd() {
   f_=$(dq "$(npm_file)")
   case $1 in
-    login|logout) printf '%s' "cd / && npm $1 --registry=https://registry.npmjs.org/ --scope= --userconfig=$f_" ;;
-    delete) printf '%s' "cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --userconfig=$f_" ;;
+    login|logout) printf '%s' "cd / && npm $1 --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig=$f_" ;;
+    delete) printf '%s' "cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --logs-max=0 --userconfig=$f_" ;;
   esac
 }
 # npm_delstep: the delete of ship's own line, with when it may run (REV 11 rule 3): only after the

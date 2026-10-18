@@ -819,11 +819,11 @@ pre_row "an npm session from before ship" "npm logout"; ! grep -q '^npm logout' 
 # any other whoami failure cannot tell whether that session is live (deleting the line would leave a
 # live token on npm's server); and a count that cannot be read names no delete either
 # REV 11 rule 3: the npm credential commands ship prints, for its F ($FX/npmrc here), and rule 4's words
-LGF="cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --userconfig='$FX/npmrc'"
-DLF="cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --userconfig='$FX/npmrc'"
+LGF="cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$FX/npmrc'"
+DLF="cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --logs-max=0 --userconfig='$FX/npmrc'"
 A6R4="For a token, npm logout asks npm's server to end it, and npm's docs say that invalidates it everywhere it is used; an _auth line (a user name and password) is not ended by npm logout."
-lgline() { grep -oE "cd / && npm logout --registry=https://registry.npmjs.org/( --scope=)?( --userconfig='[^']*')?" "$1" | head -1; }   # FILE: its printed logout step
-dlline() { grep -oE "cd / && npm config delete //registry.npmjs.org/:_authToken( --location=user)?( --userconfig='[^']*')?" "$1" | head -1; }   # FILE: its printed delete
+lgline() { grep -oE "cd / && npm logout --registry=https://registry.npmjs.org/( --scope=)?( --logs-max=0)?( --userconfig='[^']*')?" "$1" | head -1; }   # FILE: its printed logout step
+dlline() { grep -oE "cd / && npm config delete //registry.npmjs.org/:_authToken( --location=user)?( --logs-max=0)?( --userconfig='[^']*')?" "$1" | head -1; }   # FILE: its printed delete
 # a6ok FILE: A6's printed logout step is a line of its own (REV 11a rule 6), after a line that ends
 # "Run this logout:", and the line after it starts with rule 4's words
 a6ok() {
@@ -844,7 +844,7 @@ rvfirst() {
   case $a_ in *'Access Tokens'*) ;; *) return 1 ;; esac
   case $b_ in *'config delete'*|*'remove it'*|*'remove its'*|*'remove that'*|*'remove those'*|*'remove the '*|*'remove them'*) return 1 ;; esac
 }
-# the class (PLAN-ship.md REV 11 rule 3; REV 10 rule 2): every npm command release.sh and notify.sh
+# the class (PLAN-ship.md REV 11 rule 3, REV 11b rule 14: --logs-max=0; REV 10 rule 2): every npm command release.sh and notify.sh
 # print comes from the one helper, npmcmd: no step word (run, Run, Next:, try, with, then) and no step
 # line ("  ...") is followed by a literal npm command, with or without an argument, and `cd / && npm`
 # appears nowhere else; the helper's three lines are exactly rule 3's, the file through dq (a path
@@ -856,9 +856,9 @@ cdn_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | sed '/^npmcmd() {/,/^}/d' 
 fnx() { awk -v n="$1" 'index($0, n "() {") == 1 { f = 1; print; if ($0 ~ /\}[[:space:]]*(#.*)?$/) exit; next } f { print } f && /^\}/ { exit }' "$SR_ROOT/scripts/release.sh"; }
 { fnx dq; fnx npm_file; fnx npmcmd; } > "$FX/npmcmd.sh"
 hf_=$(sh -c '. "$1"; NPM_CONFIG_USERCONFIG="/a b/c'"'"'d"; export NPM_CONFIG_USERCONFIG; npmcmd login; echo; npmcmd logout; echo; npmcmd delete' sh "$FX/npmcmd.sh" 2>&1)
-hw_="cd / && npm login --registry=https://registry.npmjs.org/ --scope= --userconfig='/a b/c'\''d'
-cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --userconfig='/a b/c'\''d'
-cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --userconfig='/a b/c'\''d'"
+hw_="cd / && npm login --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='/a b/c'\''d'
+cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='/a b/c'\''d'
+cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --logs-max=0 --userconfig='/a b/c'\''d'"
 fx_=$(tok_ | grep -iE 'config fix|config set|rename|edit (it|that|the line|those)' | grep -cv 'do not rename a line to that key')
 rm_=$(tok_ | grep -E '(remove|delete) (it|its|that|those|them|the line|a line|a login line)' | grep -cv "only once that line's token has ended")
 cl_=$(src_ | grep -ciE "npm logout (ends|ended|has ended|did not end|can end|will end)|logout[^.]* (has ended|ended it)|did not end")
@@ -1841,7 +1841,7 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
       "sh '"*|"NPM_CONFIG_USERCONFIG='"*) e_=$(printf '%s\n' "$t_" | sed -n "s|^\(NPM_CONFIG_USERCONFIG='[^']*' \)\{0,1\}sh '[^']*' \([a-z-]*\) .*|\2|p"); w_="rs [$SW/st ate/repo/scripts/release.sh] [$e_] [--out] [$SW/o ut] [v0.1.0]"
         [ "$e_" != publish-npm ] || { w_="$w_ uc=[$SW/u rc/npmrc]"; np_=$((np_ + 1)); } ;;   # (REV 11a rule 7: publish-npm gets F from its line)
       "git "*) w_="git [-C] [$SW/st ate/repo] [ls-remote] [origin] [refs/tags/v0.1.0]" ;;
-      "cd / && npm "*) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$SW/u rc/npmrc] cwd=[/]" ;;
+      "cd / && npm "*) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$SW/u rc/npmrc] cwd=[/]" ;;
       *) continue ;;
     esac
     nl_=$((nl_ + 1))
@@ -1860,9 +1860,9 @@ ownrun() { # LABEL FILE: each line of FILE holding `cd / && npm `: that command 
     case $l_ in *'cd / && npm '*) ;; *) continue ;; esac
     t_=${l_#"${l_%%[! ]*}"}
     case $t_ in
-      'cd / && npm login '*) k_=login w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$FX/npmrc] cwd=[/]" ;;
-      'cd / && npm logout '*) k_=logout w_="npm [logout] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$FX/npmrc] cwd=[/]" ;;
-      'cd / && npm config delete '*) k_=delete w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--userconfig=$FX/npmrc] cwd=[/]" ;;
+      'cd / && npm login '*) k_=login w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
+      'cd / && npm logout '*) k_=logout w_="npm [logout] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
+      'cd / && npm config delete '*) k_=delete w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
       *) bad_="$bad_ [$1: not a line of its own: '$(printf '%s' "$t_" | cut -c1-90)']"; continue ;;
     esac
     on_="$on_ $1:$k_"
@@ -1897,11 +1897,11 @@ ow_=$(printf '%s\n' s1.o:logout s1.o:delete s1.o:login s1.o:logout s1.o:delete s
   && pass "REV 11a rule 6: each npm credential command ship prints (pl, lo, A6's stop, publish-npm's two whoami stops and its last line; stdout and the next file) is a line of its own and runs as printed, from sh and an interactive zsh" \
   || fail "rule 6: kinds [$on_], want [$ow_]; publish-npm rc ${r3_:-?};$(printf '%s' "$bad_" | cut -c1-700)"
 cc_=0
-for l_ in "cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --userconfig='$FX/npmrc'." \
-          "cd / && npm login --registry=https://registry.npmjs.org/ --scope= --userconfig='$FX/npmrc', then publish-npm again"; do
+for l_ in "cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --logs-max=0 --userconfig='$FX/npmrc'." \
+          "cd / && npm login --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$FX/npmrc', then publish-npm again"; do
   case $l_ in
-    *delete*) w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--userconfig=$FX/npmrc] cwd=[/]" g_="[--userconfig=$FX/npmrc.]" ;;
-    *) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--userconfig=$FX/npmrc] cwd=[/]" g_="[--userconfig=$FX/npmrc,]" ;;
+    *delete*) w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" g_="[--userconfig=$FX/npmrc.]" ;;
+    *) w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" g_="[--userconfig=$FX/npmrc,]" ;;
   esac
   for how_ in sh zsh; do srun $how_ "$l_" "$w_" || { grep -qF "$g_" "$SW/rec" && cc_=$((cc_ + 1)); }; done
 done
@@ -1925,7 +1925,7 @@ for k_ in bare control; do
   (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/h3" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
      SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_NOTIFY="$S/notify" $ev_ SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh -c "$pd_") > "$FX/co" 2>&1; rc_=$?
   dryhomes "$FX/co"; np_=$(ls "$FX"/pub.* 2>/dev/null | grep -c .)
-  if [ -n "$lgi_" ] && [ -n "$pnl_" ] && [ $rc_ = 0 ] && [ "$np_" = 4 ] && [ "$(tail -1 "$FX/co")" = "  cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --userconfig='$FX/ship.npmrc'" ]; then
+  if [ -n "$lgi_" ] && [ -n "$pnl_" ] && [ $rc_ = 0 ] && [ "$np_" = 4 ] && [ "$(tail -1 "$FX/co")" = "  cd / && npm logout --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$FX/ship.npmrc'" ]; then
     pass "$( [ $k_ = control ] && echo '  control (the variable set in that shell): ' || echo 'REV 11a rule 7 (r14a R3): ')the printed npm login, then the printed publish-npm line, in a shell $( [ $k_ = bare ] && echo 'without NPM_CONFIG_USERCONFIG' || echo 'with it'): publish-npm read the login's file, 4 uploads, its last line the logout of that file"
   else fail "rule 7 R3 ($k_): rc=$rc_, $np_ uploads, the line '$(printf '%s' "$pnl_" | cut -c1-120)'; publish-npm said: $(grep -m1 -e 'whoami failed' -e 'userconfig' "$FX/co" | cut -c1-200) | last: $(tail -1 "$FX/co" | cut -c1-160)"; fi
 done
@@ -2077,7 +2077,7 @@ cont() { # run each step the next file names, in order: npm login (the operator'
   RC=0; : > "$FX/cont"; rm -f "$FX/cont.one"
   while IFS= read -r l; do
     case $l in
-      *"cd / && npm login --registry=https://registry.npmjs.org/ --scope= --userconfig='$FX/npmrc'") echo "//registry.npmjs.org/:_authToken=npm_dry" >> "$FX/npmrc"; echo login >> "$FX/cont" ;;
+      *"cd / && npm login --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$FX/npmrc'") echo "//registry.npmjs.org/:_authToken=npm_dry" >> "$FX/npmrc"; echo login >> "$FX/cont" ;;
       *"/scripts/release.sh' "*" --out '$OUTR' v0.1.0"*)
         e=$(printf '%s\n' "$l" | sed "s/.*\/scripts\/release\.sh' \([a-z-]*\) --out.*/\1/")
         [ "$e" = "${2:-$e}" ] || continue
