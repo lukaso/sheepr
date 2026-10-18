@@ -1620,6 +1620,37 @@ for k_ in N1 N2 N3 N4 N5 N0; do
   world_reset; rm -f "${FX:?}/npmrc"
 done
 rm -rf "${OUTR:?}"
+# r16b F4: nfput's temp name: what is there goes first, so no write goes through it. A symlink there to
+# a file outside the out dir (made at C4's login, before the first write): that file unchanged, the next
+# file a regular file with the stop text, stdout claims no earlier file. Control: no link
+TMPN=$OUTR/.v0.1.0.ship-next.tmp
+for k_ in link nolink; do
+  # (each pass makes the outside file again: the control measures on its own, not after the link pass)
+  rm -rf "${OUTR:?}"; printf 'outside, unchanged\n' > "$FX/outside"; s5_=$(cksum < "$FX/outside"); : > "$FX/pubfail.sheepr"
+  [ $k_ = link ] && printf 'ln -s "%s" "%s"\n' "$FX/outside" "$TMPN" > "$FX/onlogin"
+  ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/onlogin"
+  [ $r = 1 ] && [ -f "$NF" ] && [ ! -L "$NF" ] && grep -q '^release: ship v0.1.0 stopped at npm-main' "$NF" && [ "$(cksum < "$FX/outside")" = "$s5_" ] \
+    && grep -qF "release: (these steps are also in $NF)" "$FX/o" && ! grep -q 'earlier next file' "$FX/o" && [ ! -e "$TMPN" ] && [ ! -L "$TMPN" ] \
+    && pass "$( [ $k_ = nolink ] && echo '  control (no link): ' || echo 'r16b F4: a symlink at the temp name to a file outside: ')the outside file unchanged; the next file a regular file with the stop text; no earlier file claimed" \
+    || fail "r16b F4 ($k_): rc=$r outside $( [ "$(cksum < "$FX/outside")" = "$s5_" ] && echo same || echo CHANGED); at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-80); stdout: $(grep -e 'these steps' -e 'could not be' "$FX/o" | tr '\n' '|' | cut -c1-200)"
+  world_reset
+done
+rm -f "${FX:?}/outside"
+# r16b MNFL: nfput's own check that the rename left a regular file, not a link: a mv stand-in that, after
+# it renames onto the next file, puts a link there (to the moved file) stands in for any other way the
+# name ends up a link: not written, stdout says so (no 'also in', no earlier file claimed), the link gone
+cat > "$B/mv" <<EOS
+#!/bin/sh
+for a_; do l_=\$a_; done
+/bin/mv "\$@" || exit \$?
+[ "\$l_" = "$NF" ] && [ -e "$FX/mvlink" ] && { /bin/mv "$NF" "$FX/mvlink.real"; ln -s "$FX/mvlink.real" "$NF"; }
+exit 0
+EOS
+chmod +x "$B/mv"; : > "$FX/mvlink"; : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/mvlink" "${B:?}/mv"
+[ $r = 1 ] && [ ! -e "$NF" ] && [ ! -L "$NF" ] && grep -qF "release: (the next file, $NF, could not be written: these steps are only here)" "$FX/o" && ! grep -q -e 'these steps are also in' -e 'earlier next file' "$FX/o" \
+  && pass "r16b MNFL: the rename leaves a link at the next file's name: nfput refuses it (not written, the link removed); stdout says so and claims no earlier file" \
+  || fail "r16b MNFL: rc=$r at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-80); stdout: $(grep -e 'these steps' -e 'could not be' "$FX/o" | tr '\n' '|' | cut -c1-200)"
+rm -f "${FX:?}/mvlink.real"; world_reset; rm -rf "${OUTR:?}"
 # --- REV 12 (r16a F1-F3): ship's own npm file. D = $OUTR/.v0.1.0.npm (0700), P = D/npmrc: every npm
 # call ship makes loads P and names it (--userconfig=P); ship never reads or writes
 # NPM_CONFIG_USERCONFIG's file, npm_config_userconfig's or the HOME's .npmrc; it logs out of an earlier

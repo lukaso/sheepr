@@ -1656,8 +1656,13 @@ line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1"
 # 15): mv -f onto a directory puts the text inside it and says it worked (r15b N5)
 nfput() {
   [ ! -d "$nf" ] || return 1
-  { /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp"; } 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
-  rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1
+  # (r16b F4: what is at the temp name goes first, a link among them, and the write makes a new file,
+  # noclobber: no write goes through a link)
+  rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null
+  ( set -C; /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" ) 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null \
+    || { rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1; }
+  [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
+  rm -f "$nf" 2>/dev/null; return 1   # (the rename left no regular file at the name: what is there is this run's own)
 }
 # nfgone: after a write of the next file failed, no other text stays at its name (REV 11b rule 15: an
 # earlier run's, or this run's from before its logout, names steps that are not these): ship removes
