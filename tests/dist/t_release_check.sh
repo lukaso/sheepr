@@ -28,6 +28,20 @@ fx_release 0.1.0 5 v0.2.0-rc.1; chk no "a tag whose version is not Cargo.toml's"
 g tag -d v0.2.0-rc.1 >/dev/null
 # (in a subshell: a variable set before a function call stays set after it in bash's POSIX mode)
 (FX_STALE_LOCK=1; fx_release 0.3.0 9 v0.3.0-rc.1); chk no "a Cargo.lock that still records the old version" v0.3.0-rc.1
+# round 16 item 7: its fix is a line of its own that runs as printed (sh, an interactive zsh -f, from /):
+# a stub cargo first on PATH records its arguments and its directory
+RR_=$(cd "$REPO" && pwd -P); mkdir -p "$FX/cb" || exit 3
+printf '#!/bin/sh\n{ printf "cargo"; for a; do printf " [%%s]" "$a"; done; printf " cwd=[%%s]\\n" "$(pwd -P)"; } >> "$REC"\n' > "$FX/cb/cargo"; chmod +x "$FX/cb/cargo"
+cl_=$(grep -x "  cd '$RR_' && cargo build" "$FX/o"); cb_=0
+  for how_ in sh zsh; do
+    REC=$FX/cb/rec; : > "$REC"
+    if [ $how_ = sh ]; then (cd / && env -i PATH="$FX/cb:/usr/bin:/bin" REC="$REC" /bin/sh -c "$cl_") > /dev/null 2>&1
+    else (cd / && printf '%s\n' "$cl_" | env -i PATH="$FX/cb:/usr/bin:/bin" HOME="$FX" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+    [ "$(cat "$REC")" = "cargo [build] cwd=[$RR_]" ] || cb_=1
+  done
+[ -n "$cl_" ] && [ $cb_ = 0 ] && grep -q '^release: Cargo.lock records sheepr .*Update it with this, then commit it:$' "$FX/o" \
+  && pass "  its fix (cd to the checkout, cargo build) is a line of its own that runs as printed (sh, an interactive zsh)" || fail "  the Cargo.lock fix line: '$cl_' $(cat "$FX/cb/rec" 2>/dev/null)"
+rm -rf "${FX:?}/cb"
 g tag -d v0.3.0-rc.1 >/dev/null; fx_release 0.1.0 5 v0.1.0-x; g tag -d v0.1.0-x >/dev/null
 fx_release 0.1.0 1 v0.1.0-rc.2; chk no "a counter not above the previous tag's" v0.1.0-rc.2
 fx_release 0.1.0 2 v0.1.0-rc.3; chk ok "a counter above the previous tag's" v0.1.0-rc.3

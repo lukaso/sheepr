@@ -310,6 +310,21 @@ touch "$FX/corruptafter"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/corruptafter"; pos
 touch "$FX/curlcorrupt"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/curlcorrupt"; post "the archive brew would fetch is not the build's"; nowrite && pass "  and no PUT" || fail "  a PUT ran"
 echo true > "$FX/draftafter"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/draftafter"; post "the release reads as a draft after the PATCH"; nowrite && pass "  and no PUT" || fail "  a PUT ran"
 touch "$FX/put409"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/put409"; post "the PUT is refused (the tap changed)"
+# round 16 item 7 (r15b's census): the exit-5 step, publish-cask, is a line of its own that runs as printed
+# (sh, an interactive zsh, from /): a stub release.sh at the checkout's path (put there after the run,
+# then taken back) records its arguments
+RR_=$(cd "$REPO" && pwd -P); pl_=$(grep -x "  sh '$RR_/scripts/release.sh' publish-cask --out '$FX/out' v0.1.0" "$FX/o"); pb_=0
+cp "$REPO/scripts/release.sh" "$FX/rs.keep" || exit 3
+printf '#!/bin/sh\n{ printf "rs"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$REPO/scripts/release.sh"
+  for how_ in sh zsh; do
+    REC=$FX/rs.rec; : > "$REC"
+    if [ $how_ = sh ]; then (cd / && env -i PATH=/usr/bin:/bin REC="$REC" /bin/sh -c "$pl_") > /dev/null 2>&1
+    else (cd / && printf '%s\n' "$pl_" | env -i PATH=/usr/bin:/bin HOME="$FX" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+    [ "$(cat "$REC")" = "rs [publish-cask] [--out] [$FX/out] [v0.1.0]" ] || pb_=1
+  done
+cp "$FX/rs.keep" "$REPO/scripts/release.sh"; rm -f "$FX/rs.keep" "$FX/rs.rec"
+[ -n "$pl_" ] && [ $pb_ = 0 ] && grep -q ' Run this:$' "$FX/o" \
+  && pass "  item 7: the exit-5 step, publish-cask, is a line of its own that runs as printed (sh, an interactive zsh)" || fail "  the publish-cask line: '$pl_' $(cat "$FX/rs.rec" 2>/dev/null)"
 touch "$FX/readbackdiff"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/readbackdiff"; post "the cask read back is not the one put"
 # publish-cask alone resumes it: the release is public, the tap is updated
 touch "$FX/put409"; pub v0.1.0 v0.1.0 >/dev/null; rm -f "$FX/put409"; cask v0.1.0; r=$?

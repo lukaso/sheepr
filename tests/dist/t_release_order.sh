@@ -136,6 +136,25 @@ fresh; : > "$S/fail.inspect"; b; r=$?
 [ $r = 1 ] && grep -q 'step: the Linux images' "$FX/o" && [ "$(phases)" = "compiler images " ] \
   && pass "no Linux image: refused before the Linux fetch and the macOS compile" || fail "no image: rc=$r phases='$(phases)' $(tail -1 "$FX/o")"
 [ -z "$(ls -A "$OUTR" 2>/dev/null)" ] && pass "a failed precondition (the images) leaves nothing in the output root" || fail "the output root holds: $(ls -A "$OUTR" | tr '\n' ' ')"
+# round 16 item 7: that refusal's steps name the checkout's test-all, a line each (pull, amd64), and each
+# runs as printed from / (sh, an interactive zsh): a stub test-all at the checkout's path (put there after
+# the run, then taken back) records its arguments
+RR_=$(cd "$REPO" && pwd -P); ta_=$(grep -c "^  '$RR_/test-all' [a-z0-9]*$" "$FX/o"); tb_=0
+cp "$REPO/test-all" "$FX/ta.keep" || exit 3
+printf '#!/bin/sh\n{ printf "ta"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$REPO/test-all"
+for w_ in pull amd64; do
+  l_=$(grep -x "  '$RR_/test-all' $w_" "$FX/o")
+  for how_ in sh zsh; do
+    REC=$FX/ta.rec; : > "$REC"
+    if [ $how_ = sh ]; then (cd / && env -i PATH=/usr/bin:/bin REC="$REC" /bin/sh -c "$l_") > /dev/null 2>&1
+    else (cd / && printf '%s\n' "$l_" | env -i PATH=/usr/bin:/bin HOME="$FX" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+    [ "$(cat "$REC")" = "ta [$w_]" ] || tb_=1
+  done
+done
+cp "$FX/ta.keep" "$REPO/test-all"; rm -f "$FX/ta.keep" "$FX/ta.rec"
+[ -z "$(g status --porcelain)" ] || fail "the checkout's test-all was not put back"
+[ "$ta_" = 2 ] && [ $tb_ = 0 ] && grep -q 'no local amd64 image of the pinned base. Get it with one of these, then run the build again:$' "$FX/o" \
+  && pass "  its steps: the checkout's test-all pull and amd64, each a line of its own that runs as printed (sh, an interactive zsh)" || fail "  the test-all steps: $ta_ lines: $(grep 'test-all' "$FX/o" | tr '\n' '|' | cut -c1-200)"
 
 # 3. the build in full: the order, the staging dir, the one rename
 fresh; b; r=$?

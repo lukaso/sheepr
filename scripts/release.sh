@@ -191,7 +191,8 @@ checks() {
   v=$(git -C "$root" show "refs/tags/$tag:Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)
   [ "$v" = "$xyz" ] || die "Cargo.toml says $v, the tag $xyz"
   lv=$(git -C "$root" show "refs/tags/$tag:Cargo.lock" | awk 'p && /^version = /{gsub(/"/,"",$3); print $3; exit} /^name = "sheepr"$/{p=1}')
-  [ "$lv" = "$xyz" ] || die "Cargo.lock records sheepr $lv, not $xyz (run cargo build to update it, and commit it)"
+  [ "$lv" = "$xyz" ] || die "Cargo.lock records sheepr $lv, not $xyz. Update it with this, then commit it:
+  cd $(dq "$root") && cargo build"
   # a final release's CHANGELOG entry carries its date (an rc's may still say "not yet released")
   case $tag in *-rc.*) ;; *)
     xre=$(printf %s "$xyz" | sed 's/\./\\./g')
@@ -366,7 +367,12 @@ build_release() { # mode: unsigned | signed | control
   step "the Linux images"
   amd64=sr-amd64-base:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
   docker_env image inspect "$amd64" >/dev/null 2>&1 || amd64=sr-amd64-alpine:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
-  docker_env image inspect "$amd64" >/dev/null 2>&1 || die "no local amd64 image of the pinned base (run ./test-all pull, or ./test-all amd64)"
+  # (the steps name the operator's checkout's test-all, a line each: under ship this build's root is its
+  # frozen tree, a worktree of that checkout, gone when ship ends; git's common dir is the checkout's)
+  ck_=$(cd "$root" && cd "$(git rev-parse --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd -P) || ck_=$root
+  docker_env image inspect "$amd64" >/dev/null 2>&1 || die "no local amd64 image of the pinned base. Get it with one of these, then run the build again:
+  $(dq "$ck_/test-all") pull
+  $(dq "$ck_/test-all") amd64"
   for i in arm64 amd64; do
     docker_env image inspect "sr-scratch:empty-$i" >/dev/null 2>&1 && continue
     tar -cf "$scratch/empty.tar" -T /dev/null && docker_env import --platform "linux/$i" "$scratch/empty.tar" "sr-scratch:empty-$i" >/dev/null \
@@ -726,7 +732,8 @@ publish_dry() { # the cells' entry: stand-ins by path only, never the real gh; v
 # file is read back at the commit the write made.
 TAP=lukaso/homebrew-tap CASK=Casks/sheepr.rb ARCHIVE=sheepr-macos-universal.tar.gz
 cask_fail() { # publish's failure after the PATCH: the release is public, its cask is not done (5)
-  echo "release: $tag is public, but its Homebrew cask is not updated: $(redact "$*").$(next_hint " Run: sh $(dq "$root/scripts/release.sh") publish-cask --out $(dq "$out") $tag")" >&2; exit 5
+  echo "release: $tag is public, but its Homebrew cask is not updated: $(redact "$*").$(next_hint " Run this:
+  sh $(dq "$root/scripts/release.sh") publish-cask --out $(dq "$out") $tag")" >&2; exit 5
 }
 blob_id() { { printf 'blob %d\0' "$(wc -c < "$1" | tr -d ' ')"; cat "$1"; } | shasum -a 1 | cut -d' ' -f1; }   # git's id of a file's bytes
 cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and cask_blob, or refuses (1)
