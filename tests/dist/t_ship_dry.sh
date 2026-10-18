@@ -1401,6 +1401,79 @@ rm -rf "${OUTR:?}"; : > "$FX/build.nomanifest"; ship; r=$?; rm -f "$FX/build.nom
 [ $r = 1 ] && ! grep -qF "$PLS" "$NF" "$FX/o" && pass "  control: a stop before the login: no pl, in the file or on stdout" || fail "  no login: pl"
 nfr_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE '>>? *"?\$nf"?([^.A-Za-z_]|$)'); nfm_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'mv -f "\$out/\.\$tag\.ship-next\.tmp" "\$nf"')
 [ "$nfr_" = 0 ] && [ "$nfm_" = 1 ] && pass "the next file: no redirection opens it ($nfr_); one rename onto it, from the temp file beside it ($nfm_)" || fail "the next file: $nfr_ redirections open it; $nfm_ renames"
+# r16b F2: bash 3.2's builtin printf keeps the bytes of a write to a file that failed (a full disk) and
+# hands them to the next write (the stop line twice on stdout: r16b walk-nffull): no builtin printf or
+# echo in release.sh or scripts/lib/*.sh writes to a file; each goes through /usr/bin/printf (a cell's
+# record, SR_ASK_RECORD or SR_EXEC_RECORD, /dev/null in a real run, aside). Control: a planted one is
+# caught. (The scanner: notes/builder/i3/census.py)
+cat > "$FX/wcensus.py" <<'SR_CENSUS_EOF'
+import sys, re
+# census.py FILE...: each simple command whose program is the shell's builtin printf or echo (not
+# /usr/bin/printf) with a redirection (> or >>) to a file: not /dev/null, not an fd (>&N), not /dev/tty.
+# A small scanner: quotes ('', "") and $( ) / $(( )) / ${ } are skipped as one word; commands split at
+# top-level ; & | && || { } ( ) and the words then, else, do, elif. Comment lines skipped; one line at a
+# time (release.sh's writes are one-line commands). Prints FILE:LINE: text, then N
+def commands(l):
+    out, cur, i, n = [], '', 0, len(l)
+    while i < n:
+        ch = l[i]
+        if ch == '#' and (i == 0 or l[i-1] in ' \t;'): break
+        keep = cur.rstrip().endswith('>')   # a quoted word right after > is a target: kept; any other is blanked
+        if ch == "'":
+            j = l.find("'", i + 1); j = n - 1 if j < 0 else j; cur += l[i:j+1] if keep else 'Q'; i = j + 1; continue
+        if ch == '"':
+            j = i + 1; d = 0
+            while j < n:
+                if l[j] == '\\': j += 2; continue
+                if l[j:j+2] == '$(': d += 1; j += 2; continue
+                if l[j] == ')' and d: d -= 1; j += 1; continue
+                if l[j] == '"' and not d: break
+                j += 1
+            cur += l[i:j+1] if keep else 'Q'; i = j + 1; continue
+        if l[i:i+2] in ('$(', '${'):
+            close = ')' if l[i+1] == '(' else '}'; opn = l[i+1]; d = 0; j = i + 1
+            while j < n:
+                if l[j] == opn: d += 1
+                elif l[j] == close:
+                    d -= 1
+                    if d == 0: break
+                j += 1
+            cur += l[i:j+1]; i = j + 1; continue
+        if ch == '\\': cur += l[i:i+2]; i += 2; continue
+        if ch in ';&|{}()' and not (ch == '&' and cur.rstrip().endswith('>')):
+            out.append(cur); cur = ''; i += 1; continue
+        cur += ch; i += 1
+    out.append(cur)
+    res = []
+    for c in out:
+        w = c.strip()
+        w = re.sub(r'^(then|else|do|elif)\s+', '', w)
+        res.append(w)
+    return res
+n = 0
+for f in sys.argv[1:]:
+    for i, l in enumerate(open(f), 1):
+        if l.strip().startswith('#'): continue
+        for c in commands(l.rstrip('\n')):
+            m = re.match(r'(?:[A-Za-z_][A-Za-z_0-9]*=\S*\s+)*(printf|echo)(\s|$)', c)
+            if not m: continue
+            hit = False
+            for r in re.finditer(r'(?<![0-9<])(>>?)\s*(&?)("?)([^ "]*)', c):
+                if r.group(2) == '&': continue
+                tgt = r.group(4)
+                if tgt in ('/dev/null', '/dev/tty') or tgt.startswith('&'): continue
+                if 'SR_ASK_RECORD' in tgt or 'SR_EXEC_RECORD' in tgt: continue   # (a cell's record: /dev/null in a real run)
+                hit = True
+            if hit: print('%s:%d: %s' % (f, i, l.strip()[:170])); n += 1
+print('N=%d' % n)
+SR_CENSUS_EOF
+wc_=$(python3 -I "$FX/wcensus.py" "$SR_ROOT/scripts/release.sh" "$SR_ROOT"/scripts/lib/*.sh)
+awk '{ print } /^stopclass\(\) \{/ && !d { print "  printf %s x > \"$shipcls.planted\""; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rs-planted.sh"
+wp_=$(python3 -I "$FX/wcensus.py" "$FX/rs-planted.sh")
+[ "$(printf '%s\n' "$wc_" | tail -1)" = N=0 ] && [ "$(printf '%s\n' "$wp_" | tail -1)" = N=1 ] \
+  && pass "r16b F2: no builtin printf or echo in release.sh or scripts/lib/*.sh writes to a file (all through /usr/bin/printf); control: a planted one is caught" \
+  || fail "r16b F2, the builtin writes: $(printf '%s' "$wc_" | tr '\n' '|' | cut -c1-400); planted: $(printf '%s' "$wp_" | tail -1)"
+rm -f "${FX:?}/wcensus.py" "${FX:?}/rs-planted.sh"
 # the rewrite is a rename: a KILL at the mv onto the next file, after the logout ran, leaves the
 # earlier text whole (the stop text with the logout step); the temp file beside it holds the new one
 cat > "$B/mv" <<EOS

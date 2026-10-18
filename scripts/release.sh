@@ -103,7 +103,7 @@ errcut() {
   ec_=$(sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null); [ -n "$ec_" ] || return 0
   { printf '%s\n' "$ec_" | grep -E "$ep_"; printf '%s\n' "$ec_" | grep -vE "$ep_"; } | head -c "$2" | tr '\n' ' '
 }
-die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || printf '%s\n' "$m_" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
+die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || /usr/bin/printf '%s\n' "$m_" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
 # the remedy around it
@@ -122,7 +122,7 @@ dq() {
   done
   printf "'%s%s'" "$o_" "$r_"
 }
-stopclass() { [ -z "$shipcls" ] || printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
+stopclass() { [ -z "$shipcls" ] || /usr/bin/printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
 
 [ $# -ge 1 ] || usage
 sub=$1; shift
@@ -1075,7 +1075,7 @@ npm_check() { # dir
   npy same "$dt" "$d/sheepr-macos-universal.tar.gz" 2> "$nt/npy.err"; r_=$?; cat "$nt/npy.err" >&2
   [ $r_ = 0 ] || { judged $r_ "$nt/npy.err" 'npm-same: ' && stopclass content; die "the darwin package's bundle is not the release archive's bundle (above)"; }
   sl_=$(stamp_line "$d") || exit 1
-  printf '%s' "$sl_" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
+  /usr/bin/printf '%s' "$sl_" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
   rm -rf "$nt"; trap - EXIT
   echo "release: the npm tarballs of $tag check out (NPM-CHECKED written)$(next_hint "; publish comes next, then publish-npm")"
 }
@@ -1181,11 +1181,11 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   trap 'exit 1' $SIGS PIPE
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship or publish-npm holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when none runs, remove that directory, then run ship again"
-  echo $$ > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
+  /usr/bin/printf '%s\n' "$$" > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
   locked=yes
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
-  printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
+  /usr/bin/printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
   # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
   shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
@@ -1324,7 +1324,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   exit 0       # ship does not trap can reach the handler with status 0)
 }
 progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names
-  [ -z "$shipprog" ] || printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
+  [ -z "$shipprog" ] || /usr/bin/printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
 }
 drydir() { # dir: a dry run names each temp dir it makes on stderr (a closed stdout cannot hide it),
            # so its cells can hold every one to being gone; a real run (no temp HOME) says nothing
@@ -1421,7 +1421,7 @@ npm_login() {
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
   # a time ship cannot compute is left out
   e_=$(date +%s 2>/dev/null); ship_end=""
-  case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))); { printf '%s\n' $(( e_ + 7200 )) > "$d_/end"; } 2>/dev/null ;; esac
+  case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))); { /usr/bin/printf '%s\n' $(( e_ + 7200 )) > "$d_/end"; } 2>/dev/null ;; esac
   who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$1/who.err") || die "npm whoami failed after the login ($(errcut "$1/who.err" 200)); $3"
   [ "$who" = "${SR_NPM_USER:-}" ] && return 0
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"
@@ -1446,7 +1446,7 @@ npm_left() {
 # or publish-npm per out dir at a time); npm_end releases it. Never taken over
 npm_lock() {
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship or publish-npm holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when none runs, remove that directory, then run $1 again; this step uploaded nothing"
-  pnlock=yes; echo $$ > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid; this step uploaded nothing"
+  pnlock=yes; /usr/bin/printf '%s\n' "$$" > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid; this step uploaded nothing"
 }
 # npm_end DIR: publish-npm on its own, as it exits (its EXIT trap): the logout of its own session, then
 # its lock (REV 12 rule 5); nothing under ship
@@ -1650,12 +1650,13 @@ ship_clock() {
 # line2 TEXT LINE: TEXT with LINE as its second line
 line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1" | sed 1d; }
 # nfput TEXT: the next file holds TEXT, whole or not at all (REV 10 rule 6): written to a temp file
-# beside it (the lock is held: one writer), then renamed onto it; a failed write leaves it as it was
+# beside it (the lock is held: one writer) by /usr/bin/printf (r16b F2: bash 3.2's builtin keeps a failed
+# write's bytes, a full disk's, and the next write hands them on: the stop line twice), then renamed onto it; a failed write leaves it as it was
 # (ship_exit then calls nfgone). It succeeds only when the name then holds a regular file (REV 11b rule
 # 15): mv -f onto a directory puts the text inside it and says it worked (r15b N5)
 nfput() {
   [ ! -d "$nf" ] || return 1
-  { printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp"; } 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
+  { /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp"; } 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null && [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
   rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1
 }
 # nfgone: after a write of the next file failed, no other text stays at its name (REV 11b rule 15: an
@@ -1783,7 +1784,7 @@ case $sub in
   # the cells' view of a check's stop class: the check in a subshell, as ship's C2 and C3 run it, with
   # a class file of its own (fix first, as ship sets it); then the class it left
   __class-verify|__class-npm-check)
-    shipcls=$(mktemp /private/tmp/sr-class.XXXXXX) || die "no temp file"; echo fix > "$shipcls"
+    shipcls=$(mktemp /private/tmp/sr-class.XXXXXX) || die "no temp file"; /usr/bin/printf 'fix\n' > "$shipcls"
     if [ "$sub" = __class-verify ]; then ( verify "$out/$tag" ); else ( npm_check "$out/$tag" ); fi; r_=$?
     echo "release: (class) $(cat "$shipcls")"; rm -f "$shipcls"; exit "$r_" ;;
 esac

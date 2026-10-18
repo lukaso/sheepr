@@ -149,7 +149,7 @@ if [ $notarize = yes ]; then
   fi
   # the reply is kept even when notarytool fails (it may exit non-zero on a rejection)
   res=$(tool xcrun notarytool submit "$tmp/submit.zip" --keychain-profile sheepr-notary --keychain "$kc" --wait --output-format json 2>&1)
-  printf '%s\n' "$res" > "$dest/notary-submit.json"
+  /usr/bin/printf '%s\n' "$res" > "$dest/notary-submit.json"
   case $res in
     *'"status":"Accepted"'*|*'"status": "Accepted"'*) ;;
     *) id=$(printf '%s' "$res" | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p')
