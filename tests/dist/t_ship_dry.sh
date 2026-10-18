@@ -1721,7 +1721,8 @@ done
 # rule 1 (r13a F2; REV 11a, r14a F5): npm's config get userconfig must name F. Real npm answers the file
 # the environment or --userconfig names, even when it holds a userconfig= key (notes/r14a/np/t1 a, b):
 # the key counts only in the HOME's .npmrc, with no variable; and it answers the path normalized (t1 d).
-# A1 refuses before anything is made, naming both and both causes: no variable and a key in the dry
+# A1 refuses before anything is made, naming both and both causes (REV 11b, r15a P4-a: the key also in
+# npm's global or builtin config, np/t1 b): no variable and a key in the dry
 # HOME's .npmrc; F with a trailing space; F with a .. in it. Control: the variable set and F holding the
 # key: the run completes
 for k_ in homekey space dotdot; do
@@ -1732,6 +1733,7 @@ for k_ in homekey space dotdot; do
   esac
   rm -rf "${OUTR:?}"; ship; r=$?; SETX=; NO=; rm -f "${FX:?}/homekey" "${FX:?}/npmrc"; rm -rf "${FX:?}/x"
   [ $r = 1 ] && grep -qF "npm names $w_ as its userconfig" "$FX/o" && grep -q 'a userconfig= key in' "$FX/o" && grep -q 'spelt in a way npm rewrites' "$FX/o" && grep -q 'stopped at preflight' "$NF" \
+    && grep -q "in npm's global config or its builtin config" "$FX/o" \
     && grep -q '^npm config get userconfig' "$FX/calls" && ! grep -q -e '^build ' -e '^npm login' -e '^npm logout' -e '^notify' "$FX/calls" && gone \
     && pass "REV 11 rule 1 (r14a F5): npm names another userconfig than F ($k_): A1 refuses, both named and both causes; nothing made" \
     || fail "A1 ($k_): rc=$r $(grep -m1 -e 'userconfig' "$FX/o" | cut -c1-240)"
