@@ -52,11 +52,16 @@ Sheepr.app/Contents/CodeResources"
     # written (a full temp dir: an empty or a cut listing, read as a defect of the archive;
     # notes/r14b/arc/list2.out, notes/builder/arc14/x.out): a line written after it must land, or there
     # is no listing to judge (a write failure that clears before that line is not seen). tar stays
-    # this script's own child (the signal rows send to it there)
+    # this script's own child (the signal rows send to it there). The file is made first: a listing file
+    # that cannot be made is the temp dir's, not the archive's (REV 11b rule 18: the shell refused the
+    # redirection, and tar never ran, which read as "cannot list"); and the line after the listing is
+    # written by /usr/bin/printf: a builtin's failed write left its bytes in the shell's buffer, for the
+    # next write to stderr (r15b dmg/fd.out)
+    { : > "$t/list"; } 2>/dev/null || nocheck "cannot make the listing file in $t (a full or unwritable temp dir)"
     tar -tvzf "$arc" > "$t/list" 2>/dev/null; r_=$?
     [ $r_ -le 125 ] || nocheck "tar stopped by a signal while it listed $arc (exit $r_)"
     [ $r_ = 0 ] || bad "cannot list $arc"
-    { printf 'end\n' >> "$t/list"; } 2>/dev/null && [ "$(tail -n 1 "$t/list")" = end ] \
+    { /usr/bin/printf 'end\n' >> "$t/list"; } 2>/dev/null && [ "$(tail -n 1 "$t/list")" = end ] \
       || nocheck "the listing of $arc could not be written into $t (a full or unwritable temp dir)"
     list=$(sed '$d' "$t/list")
     files=$(printf '%s\n' "$list" | awk '$1 ~ /^-/ {print $NF}' | sort)

@@ -59,6 +59,21 @@ lim=$(( $(wc -c < "$FX/good.tar.gz") / 512 + 4 ))
 rc=$(sed -n 's/^rc=//p' "$FX/list.o")
 [ "$rc" = 3 ] && grep -q '^archive: cannot check: ' "$FX/list.o" && ! grep -q 'not exactly the bundle' "$FX/list.o" \
   && pass "r14b: the listing cannot be written (ulimit -f 0, SIGXFSZ ignored): exit 3, cannot check" || fail "listing unwritable: rc=$rc $(grep '^archive:' "$FX/list.o" | head -1)"
+# REV 11b rule 18 (r15b P4-9, dmg/fd.out): and no stray bytes on stderr: the failed append of the line
+# after the listing left "end" in the shell's buffer, which the next write to stderr carried out
+grep -qx end "$FX/list.o" && fail "  a stray 'end' line on stderr: $(tr '\n' '|' < "$FX/list.o" | cut -c1-200)" || pass "  REV 11b rule 18: no stray bytes on stderr (only archive.sh's own line, and rc)"
+# REV 11b rule 18 (r15b P4-3, dmg/openfail.out): the listing FILE cannot be created (the temp dir made
+# read-only right after mktemp, in a copy of archive.sh: an injection): exit 3, cannot check, not "cannot
+# list" (a finding, exit 1). Control: the same copy, no injection: exit 0
+mkdir -p "$FX/inj" && cp "$SR_ROOT/scripts/lib/sigs.sh" "$FX/inj/" || exit 3
+sed 's#^    trap .rm -rf "\$t"; exit 1. \$SIGS$#&\
+    [ -z "${INJ:-}" ] || chmod 555 "$t"#' "$A" > "$FX/inj/archive.sh"
+[ "$(grep -c 'INJ' "$FX/inj/archive.sh")" = 1 ] || fail "premise: the injection is not in the copy (the row would prove nothing)"
+INJ=1 sh "$FX/inj/archive.sh" check "$FX/good.tar.gz" > "$FX/of.o" 2>&1; rc=$?
+[ $rc = 3 ] && grep -q '^archive: cannot check: ' "$FX/of.o" && ! grep -q 'cannot list' "$FX/of.o" && ! grep -qi 'permission denied' "$FX/of.o" \
+  && pass "REV 11b rule 18 (r15b P4-3): the listing file cannot be created: exit 3, cannot check; no stray words" || fail "listing file not created: rc=$rc $(tr '\n' '|' < "$FX/of.o" | cut -c1-200)"
+sh "$FX/inj/archive.sh" check "$FX/good.tar.gz" > "$FX/of.o" 2>&1; rc=$?
+[ $rc = 0 ] && pass "  control: the same copy, no injection: it passes" || fail "  injection control: rc=$rc $(tail -1 "$FX/of.o")"
 head -c 300 "$FX/good.tar.gz" > "$FX/cut.tar.gz"
 "$A" check "$FX/cut.tar.gz" > "$FX/cut.o" 2>&1; rc=$?
 [ $rc = 1 ] && grep -q '^archive: cannot list ' "$FX/cut.o" && pass "  control: a truncated archive: exit 1, it cannot be listed" || fail "  truncated: rc=$rc $(tail -1 "$FX/cut.o")"
