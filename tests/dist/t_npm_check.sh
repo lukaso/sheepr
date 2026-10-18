@@ -195,6 +195,45 @@ rm -f "$FX/spctl.ran"; mk signed false; ncc; r=$?
   && pass "r15b P4-1: npm-check, stapler refuses and spctl would too: content, stapler's words, spctl not run" \
   || fail "r15b P4-1 (npm-check): rc=$r '$(cls)' spctl ran: $( [ -e "$FX/spctl.ran" ] && echo yes || echo no); $(tail -1 "$FX/o" | cut -c1-200)"
 cp "$FX/rt.keep3" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep3" "$REPO/scripts/lib/archive.sh" || exit 3
+# gkrun FILE ARCHIVE: the two Gatekeeper lines of a spctl stop (FILE) run as printed, from / in sh and
+# in an interactive zsh -f, with a stub spctl first on PATH and TMPDIR under $FX (the line's mktemp names
+# TMPDIR: macOS's mktemp -d with no template ignores it): `spctl --status`, and
+# the line that unpacks ARCHIVE into a new temp dir and asks spctl about the bundle there (the stub
+# records whether that bundle is a directory). 0 when both gave exactly that
+gkrun() {
+  mkdir -p "$FX/spb" "$FX/gk" || return 1
+  printf '#!/bin/sh\n{ printf "spctl"; for a; do printf " [%%s]" "$a"; done; [ $# = 5 ] && { [ -d "$5" ] && printf " bundle=yes" || printf " bundle=no"; }; printf "\\n"; } >> "$REC"\n' > "$FX/spb/spctl"; chmod +x "$FX/spb/spctl"
+  l1_=$(grep -x '  spctl --status' "$1"); l2_=$(grep -x "  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf '$2' -C \"\$d\" && spctl -a -vv -t exec \"\$d/[a-zA-Z/.]*\"" "$1")
+  [ -n "$l1_" ] && [ -n "$l2_" ] || return 1
+  g_=0
+  for how_ in sh zsh; do
+    for l_ in "$l1_" "$l2_"; do
+      REC=$FX/gk.rec; : > "$REC"
+      if [ $how_ = sh ]; then (cd / && env -i PATH="$FX/spb:/usr/bin:/bin" TMPDIR="$FX/gk" REC="$REC" /bin/sh -c "$l_") > /dev/null 2>&1
+      else (cd / && printf '%s\n' "$l_" | env -i PATH="$FX/spb:/usr/bin:/bin" HOME="$FX" TMPDIR="$FX/gk" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+      case $l_ in
+        *--status) [ "$(cat "$REC")" = "spctl [--status]" ] || g_=1 ;;
+        *) case $(cat "$REC") in "spctl [-a] [-vv] [-t] [exec] [$FX/gk/sheepr-gatekeeper."*"/Sheepr.app] bundle=yes") ;; *) g_=1 ;; esac ;;
+      esac
+    done
+  done
+  rm -rf "${FX:?}/gk" "${FX:?}/gk.rec"; return $g_
+}
+# REV 11b rule 16: npm-check's spctl stop (stand-in real tools: codesign and stapler accept, spctl
+# refuses, exit 3): class fix; no "cannot change"; its Gatekeeper lines run as printed, on the darwin
+# package's bundle
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep4" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep4" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { return 0; }
+rt_spctl_ok() { echo "x.app: rejected" > "\${RT_OUT:-/dev/null}"; echo "source=Notarized Developer ID" >> "\${RT_OUT:-/dev/null}"; rt_rc=3; return 1; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = fix ] && ! grep -qi 'cannot change' "$FX/o" && grep -q 'source=Notarized Developer ID' "$FX/o" && gkrun "$FX/o" "$D/sheepr-darwin-universal-$nv.tgz" \
+  && pass "REV 11b rule 16: npm-check's spctl stop: class fix, no 'cannot change', its Gatekeeper lines run as printed on the darwin package's bundle" \
+  || fail "rule 16 (npm-check): rc=$r '$(cls)'; $(grep -e 'spctl' -e 'cannot change' "$FX/o" | tr '\n' '|' | cut -c1-300)"
+cp "$FX/rt.keep4" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep4" "$REPO/scripts/lib/archive.sh" || exit 3
 # r13b F3, F4: judged takes a checking tool's failure for a finding only for its own refusal (exit 1,
 # its "npm-same: " or "archive: " line). npm-same.py stand-ins (the fixture's): "npm-same: x", then a
 # KILL (137); a traceback (exit 1, no "npm-same: " line); exit 2 (usage): fix. Control: the real

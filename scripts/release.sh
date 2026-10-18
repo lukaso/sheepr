@@ -535,16 +535,27 @@ hashof() { # FILE: its sha256, or a stop (fix): shasum gave no hash
 # with a line of its own refusal (PREFIX) in FILE. A tool that cannot run (126, 127), a signal, a usage
 # error, or no such line is no verdict (r12b F1)
 judged() { [ "$1" = 1 ] && grep -q "^$3" "$2" 2>/dev/null; }
-# rtfail RC TOOL TEXT [CLASS]: an Apple tool's refusal (rt_judge's status). Its own refusal (1): CLASS
-# (content: a verdict on the bytes) and TEXT. No verdict (2): no class, and the cause says TOOL gave
-# none, never TEXT (a fixed verdict sentence there sent the build aside anyway; r13b F2). The tool's
-# words ($RT_OUT, read here, before the check's temp dir goes) in the cause either way. spctl's refusal
-# is fix (REV 11a rule 11): it judges only a bundle codesign's release requirement and stapler
-# accepted, and a rebuild cannot change what this Mac's Gatekeeper says of that
+# rtfail RC TOOL TEXT [CLASS [TAIL]]: an Apple tool's refusal (rt_judge's status). Its own refusal (1):
+# CLASS (content: a verdict on the bytes), TEXT, the tool's words, then TAIL. No verdict (2): no class,
+# and the cause says TOOL gave none, never TEXT (a fixed verdict sentence there sent the build aside
+# anyway; r13b F2). The tool's words ($RT_OUT, read here, before the check's temp dir goes) in the
+# cause either way. spctl's refusal is fix (REV 11a rule 11): it judges only a bundle codesign's
+# release requirement and stapler accepted; its TAIL (gkhint) says what to check (REV 11b rule 16)
 rtfail() {
   w_=$(errcut "${RT_OUT:-/dev/null}" 300)
-  if [ "$1" = 1 ]; then stopclass "${4:-content}"; die "$3 ($2: $w_)"
+  if [ "$1" = 1 ]; then stopclass "${4:-content}"; die "$3 ($2: $w_)${5:-}"
   else die "$2 gave no verdict on the bundle (exit ${rt_rc:-?}${w_:+: $w_}): it could not judge it, which says nothing about the build"; fi
+}
+# gkhint ARCHIVE PATH: what follows spctl's words when Gatekeeper rejects a bundle codesign and stapler
+# accepted (REV 11b rule 16): a rerun stops here again until Gatekeeper accepts it; what to check, each
+# on a line of its own (the second unpacks ARCHIVE into a new temp dir and asks Gatekeeper about PATH
+# there: ship's own copy is gone by then); and the signing certificate's remedy
+gkhint() {
+  printf '%s' ".
+A rerun stops here again until Gatekeeper accepts the bundle. See what Gatekeeper says on this Mac with these (the second unpacks $(basename "$1") into a new temp dir and asks Gatekeeper about its bundle):
+  spctl --status
+  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\"
+When the cause is the signing certificate (revoked or expired), move the build aside and rebuild it with a valid one."
 }
 stamp_line() { sh_=$(hashof "${MAN:-$1/MANIFEST.json}") || exit 1; printf '%s %s' "$tag" "$sh_"; }   # (in a $( ): its exit is the substitution's)
 stamp_ok() { # dir -> 0 if npm-check passed on this tag and this manifest (a hash that cannot be read: a stop, fix)
@@ -1059,7 +1070,7 @@ npm_check() { # dir
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$b/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the darwin package holds a control build (SheeprControlBuild in its Info.plist)"; }
   rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the darwin package's bundle does not meet the release requirement"
   rt_staple_ok "$b" || rtfail $? stapler "stapler: the darwin package's bundle has no valid staple ticket"
-  rt_spctl_ok "$b" || rtfail $? spctl "spctl: Gatekeeper rejects the darwin package's bundle, which codesign's release requirement and stapler accepted: a rebuild cannot change that" fix
+  rt_spctl_ok "$b" || rtfail $? spctl "spctl: Gatekeeper rejects the darwin package's bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$dt" package/Sheepr.app)"
   # the release archive: its own check (only files and directories, the bundle signed and
   # stapled), then the same files as the package, read raw: path, mode and content (a CDHash is
   # read from the embedded signature, not recomputed, so equal CDHashes prove nothing)
@@ -1096,7 +1107,7 @@ verify() { # dir -> exit 1 naming the tool that refused
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the archive holds a control build (SheeprControlBuild in its Info.plist)"; }
   rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the bundle does not meet the release requirement"
   rt_staple_ok "$a" || rtfail $? stapler "stapler: no valid staple ticket"
-  rt_spctl_ok "$a" || rtfail $? spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted: a rebuild cannot change that" fix
+  rt_spctl_ok "$a" || rtfail $? spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$arc" Sheepr.app)"
   rm -rf "$vt"; trap - EXIT
   verified=yes
   echo "release: $d: signed, notarized and stapled (checked from the archive)"

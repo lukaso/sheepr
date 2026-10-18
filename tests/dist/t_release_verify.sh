@@ -152,14 +152,48 @@ source=Notarized Developer ID"; rtset; vc; rc=$?
 [ $rc = 1 ] && [ "$(cls)" = content ] && grep -q 'does not have a ticket stapled' "$FX/o" && [ ! -e "$FX/a_sp" ] && ! grep -q 'Gatekeeper rejects' "$FX/o" \
   && pass "r15b P4-1: stapler refuses (65), spctl would too (3): content, stapler's words, spctl not run (the order of the checks decides)" \
   || fail "r15b P4-1 order: rc=$rc '$(cls)' spctl ran: $( [ -e "$FX/a_sp" ] && echo yes || echo no); $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-200)"
+# gkrun FILE ARCHIVE: the two Gatekeeper lines of a spctl stop (FILE) run as printed, from / in sh and
+# in an interactive zsh -f, with a stub spctl first on PATH and TMPDIR under $FX (the line's mktemp names
+# TMPDIR: macOS's mktemp -d with no template ignores it): `spctl --status`, and
+# the line that unpacks ARCHIVE into a new temp dir and asks spctl about the bundle there (the stub
+# records whether that bundle is a directory). 0 when both gave exactly that
+gkrun() {
+  mkdir -p "$FX/spb" "$FX/gk" || return 1
+  printf '#!/bin/sh\n{ printf "spctl"; for a; do printf " [%%s]" "$a"; done; [ $# = 5 ] && { [ -d "$5" ] && printf " bundle=yes" || printf " bundle=no"; }; printf "\\n"; } >> "$REC"\n' > "$FX/spb/spctl"; chmod +x "$FX/spb/spctl"
+  l1_=$(grep -x '  spctl --status' "$1"); l2_=$(grep -x "  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf '$2' -C \"\$d\" && spctl -a -vv -t exec \"\$d/[a-zA-Z/.]*\"" "$1")
+  [ -n "$l1_" ] && [ -n "$l2_" ] || return 1
+  g_=0
+  for how_ in sh zsh; do
+    for l_ in "$l1_" "$l2_"; do
+      REC=$FX/gk.rec; : > "$REC"
+      if [ $how_ = sh ]; then (cd / && env -i PATH="$FX/spb:/usr/bin:/bin" TMPDIR="$FX/gk" REC="$REC" /bin/sh -c "$l_") > /dev/null 2>&1
+      else (cd / && printf '%s\n' "$l_" | env -i PATH="$FX/spb:/usr/bin:/bin" HOME="$FX" TMPDIR="$FX/gk" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+      case $l_ in
+        *--status) [ "$(cat "$REC")" = "spctl [--status]" ] || g_=1 ;;
+        *) case $(cat "$REC") in "spctl [-a] [-vv] [-t] [exec] [$FX/gk/sheepr-gatekeeper."*"/Sheepr.app] bundle=yes") ;; *) g_=1 ;; esac ;;
+      esac
+    done
+  done
+  rm -rf "${FX:?}/gk" "${FX:?}/gk.rec"; return $g_
+}
+# REV 11b rule 16 (r15b P4-7): the spctl stop names no "cannot change": a rerun stops here again until
+# Gatekeeper accepts the bundle; what to check, each on a line of its own, run as printed; the signing
+# certificate's remedy (move the build aside, rebuild with a valid one). The class stays fix
+mkt cs 0 ''; mkt xc 0 ''; mkt sp 3 "$AP: rejected
+source=Notarized Developer ID"; rtset; vc; rc=$?
+[ $rc = 1 ] && [ "$(cls)" = fix ] && ! grep -qi 'cannot change' "$FX/o" && grep -q '^A rerun stops here again until Gatekeeper accepts the bundle' "$FX/o" \
+  && grep -q '^When the cause is the signing certificate (revoked or expired), move the build aside and rebuild it with a valid one.$' "$FX/o" \
+  && gkrun "$FX/o" "$D/sheepr-macos-universal.tar.gz" \
+  && pass "REV 11b rule 16: the spctl stop: no 'cannot change'; a rerun stops here again; spctl --status and spctl -a -vv on the bundle, each a line that runs as printed; the certificate's remedy; class fix" \
+  || fail "rule 16: rc=$rc '$(cls)'; $(grep -e 'cannot change' -e 'spctl' "$FX/o" | grep -v '(class)' | tr '\n' '|' | cut -c1-300)"
 cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
 n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple_ok|spctl_ok) "')
 n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -cE '\|\| rtfail \$\? (codesign|stapler|spctl) "')
 [ "$n_rt" -ge 6 ] && [ "$n_rt" = "$n_ok" ] && pass "every Apple tool call in release.sh ($n_rt lines) hands its status to rtfail" || fail "rt_* calls: $n_rt lines, $n_ok through rtfail"
 n_sp=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_spctl_ok "')
-n_spf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_spctl_ok "' | grep -cE '\|\| rtfail \$\? spctl "[^"]*" fix$')
-n_xf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok) "' | grep -cE '" fix$')
+n_spf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_spctl_ok "' | grep -cE '\|\| rtfail \$\? spctl "[^"]*" fix( |$)')
+n_xf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok) "' | grep -cE '" fix( |$)')
 [ "$n_sp" -ge 2 ] && [ "$n_sp" = "$n_spf" ] && [ "$n_xf" = 0 ] && pass "  REV 11a rule 11: each spctl call ($n_sp lines: verify, npm-check) makes its refusal class fix; no codesign or stapler call does" \
   || fail "  spctl calls: $n_sp lines, $n_spf with class fix; $n_xf codesign or stapler calls with fix"
 finish
