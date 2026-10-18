@@ -1612,10 +1612,10 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   if [ -n "$pl" ] && [ -n "$txt" ] && [ $keep = no ]; then
     drain
     if [ -n "$lo" ]; then
-      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || { wrote=no; nfgone; }
+      [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || nfkept
       printf '%s\n' "release: $lo"; nfsaid
     else
-      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt" || { wrote=no; nfgone; }; fi
+      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt" || nfkept; fi
       printf '%s\n' "release: ship's npm session is ended (its own file removed)."
       [ "$shipok" = yes ] || nfsaid
     fi
@@ -1666,10 +1666,15 @@ nfgone() {
   [ -e "$nf" ] || [ -L "$nf" ] || return 0
   if [ ! -d "$nf" ] && rm -f "$nf" 2>/dev/null && [ ! -e "$nf" ] && [ ! -L "$nf" ]; then nfleft=removed; else nfleft=yes; fi
 }
+# nfkept: after a failed rewrite (after the logout; r16b F3): this run's own file, written before the
+# logout, holds these steps (its line 2, pl, holds whatever the logout did): it stays (nfleft=kept); when
+# no regular file is left at the name, as after a failed first write (nfgone)
+nfkept() { if [ -f "$nf" ] && [ ! -L "$nf" ]; then nfleft=kept; else wrote=no; nfgone; fi; }
 # nfsaid: where else the steps are: the next file, or that it could not be written (wrote, ship_exit's),
-# and what nfgone did with what was at its name
+# and what nfgone or nfkept did with what was at its name
 nfsaid() {
-  if [ "$wrote" = yes ]; then printf '%s\n' "release: (these steps are also in $nf)"
+  if [ "$wrote" = yes ] && [ "$nfleft" = kept ]; then printf '%s\n' "release: (the next file, $nf, could not be rewritten after the logout: it holds these steps as this run wrote them before the logout)"
+  elif [ "$wrote" = yes ]; then printf '%s\n' "release: (these steps are also in $nf)"
   elif [ "$nfleft" = removed ]; then printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here. ship removed the earlier next file that was there)"
   elif [ "$nfleft" = yes ]; then printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here. What is at $nf is not these steps: do not use it)"
   else printf '%s\n' "release: (the next file, $nf, could not be written: these steps are only here)"; fi

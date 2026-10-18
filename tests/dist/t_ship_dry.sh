@@ -1579,25 +1579,36 @@ done
 # REV 11b rule 15 (r15b P3-1, P4-5, P4-6): when the next file cannot be written, no earlier text stays
 # at its name: ship removes it and stdout says so; what it cannot remove (a directory there) stdout
 # calls not these steps. r15b N1: run 1 stops before the push (its file names ship again); run 2 stops
-# after the push and cannot write its file. N2: run 2 writes its file before the logout, then cannot
-# rewrite it after a logout that ended the session. N5: a directory at the file's name (mv would put
-# the text inside it): not written. Control N0: every write works
+# after the push and cannot write its file. N5: a directory at the file's name (mv would put the text
+# inside it): not written. Control N0: every write works. r16b F3, REV 12: a REWRITE after the logout
+# that fails keeps this run's own file, written before the logout (its line 2, pl, holds whatever the
+# logout did), and stdout never calls this run's file earlier: N2, the logout ended the session; N3, a
+# stop and the logout failed (ETIMEDOUT); N4, a release done and the logout failed
 TMPN=$OUTR/.v0.1.0.ship-next.tmp
-for k_ in N1 N2 N5 N0; do
+for k_ in N1 N2 N3 N4 N5 N0; do
   rm -rf "${OUTR:?}"
   case $k_ in
     N1) : > "$FX/loginfail"; ship; r1_=$?; rm -f "${FX:?}/loginfail"; grep -q 'stopped at npm-login' "$NF" || fail "  N1: run 1 left no next file (the row would prove nothing)"
         : > "$FX/pubfail.sheepr"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogin" ;;
     N2) : > "$FX/pubfail.sheepr"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogout" ;;
+    N3) : > "$FX/pubfail.sheepr"; echo ETIMEDOUT > "$FX/logoutcode"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogout" ;;
+    N4) echo ETIMEDOUT > "$FX/logoutcode"; printf 'mkdir -p "%s"\n' "$TMPN" > "$FX/onlogout" ;;
     N5) mkdir -p "$NF" || exit 3; : > "$FX/pubfail.sheepr" ;;
     N0) : > "$FX/pubfail.sheepr" ;;
   esac
-  ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/onlogin" "${FX:?}/onlogout"; rmdir "$TMPN" 2>/dev/null
-  nt_=$(grep '^notify failed-' "$FX/calls" | sed 's/^notify [^ ]* v0\.1\.0 //')
+  ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/onlogin" "${FX:?}/onlogout" "${FX:?}/logoutcode"; rmdir "$TMPN" 2>/dev/null
+  nt_=$(grep -e '^notify failed-' -e '^notify logout-failed' "$FX/calls" | sed 's/^notify [^ ]* v0\.1\.0 //')
   case $k_ in
-    N1|N2) [ $r = 1 ] && [ ! -e "$NF" ] && [ "$nt_" = - ] && grep -qF "release: (the next file, $NF, could not be written: these steps are only here. ship removed the earlier next file that was there)" "$FX/o" \
-        && pass "REV 11b rule 15 (r15b $k_): the next file not written: the earlier one $( [ $k_ = N1 ] && echo "(run 1's)" || echo "(this run's, from before its logout)") removed, and stdout says so; the notification names none" \
-        || fail "rule 15 ($k_): rc=$r; at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-60) $(head -1 "$NF" 2>/dev/null | cut -c1-100); stdout: $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)" ;;
+    N1) [ $r = 1 ] && [ ! -e "$NF" ] && [ "$nt_" = - ] && grep -qF "release: (the next file, $NF, could not be written: these steps are only here. ship removed the earlier next file that was there)" "$FX/o" \
+        && pass "REV 11b rule 15 (r15b N1): the next file not written: the earlier one (run 1's) removed, and stdout says so; the notification names none" \
+        || fail "rule 15 (N1): rc=$r; at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-60) $(head -1 "$NF" 2>/dev/null | cut -c1-100); stdout: $(grep -e 'these steps' -e 'could not be written' "$FX/o" | tr '\n' '|' | cut -c1-200)" ;;
+    N2|N3|N4)
+        if [ $k_ = N4 ]; then h_="release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:"; else h_='release: ship v0.1.0 stopped at npm-main'; fi
+        [ $r = 1 ] && [ -f "$NF" ] && [ ! -L "$NF" ] && head -1 "$NF" | grep -qF "$h_" && sed -n 2p "$NF" | grep -qF "$PLS" && [ "$nt_" = "$OUTR" ] \
+          && grep -qF "release: (the next file, $NF, could not be rewritten after the logout: it holds these steps as this run wrote them before the logout)" "$FX/o" \
+          && ! grep -q -e 'earlier next file' -e 'these steps are only here' "$FX/o" \
+          && pass "r16b F3 ($k_): a rewrite after the logout that fails keeps this run's own file (pl on its line 2); stdout says so and calls nothing earlier; the notification names the file" \
+          || fail "r16b F3 ($k_): rc=$r notify '$nt_'; at the name: $(ls -ld "$NF" 2>/dev/null | cut -c1-60) $(head -2 "$NF" 2>/dev/null | cut -c1-90 | tr '\n' '|'); stdout: $(grep -e 'these steps' -e 'could not be' "$FX/o" | tr '\n' '|' | cut -c1-260)" ;;
     N5) [ $r = 1 ] && [ -d "$NF" ] && [ "$nt_" = - ] && ! grep -q 'these steps are also in' "$FX/o" \
         && grep -qF "release: (the next file, $NF, could not be written: these steps are only here. What is at $NF is not these steps: do not use it)" "$FX/o" \
         && pass "REV 11b rule 15 (r15b N5): a directory at the next file's name: not written, the notification names none, stdout says what is there is not these steps" \
