@@ -2055,6 +2055,33 @@ for pk in sheepr-linux-arm64 sheepr-darwin-universal; do
     && pass "C8's wait on $pk timed out: 'this step did not upload the main package', npm may hold a part of it" || fail "C8 wait on $pk: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-80)…$(head -1 "$NF" 2>/dev/null | tail -c 120)"
 done
 
+# REV 12a (r16b F1, F6): Gatekeeper's refusal (spctl, class fix) names the certificate's rebuild only while
+# ship knows nothing is public, before C5: at C3 (the control), move the build aside and rebuild it; at
+# C7 (after the push; r16b walk-c7) the rebuild only on the condition that v0.1.0 is not pushed, checked
+# by a runnable ls-remote line (here the tag is pushed: the line, run as printed, lists it). Never
+# "expired", in the cause, the stop text or the next file. (SR_SHIP_DRY_SPCTL: verify's own spctl stop
+# at that phase, in the dry entry)
+GKR="When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one."
+GKC="If that prints nothing, v0.1.0 is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, v0.1.0 is pushed: never rebuild v0.1.0; release a new version."
+SETX=SR_SHIP_DRY_SPCTL=C3; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
+[ $r = 1 ] && grep -q 'stopped at checks: spctl: Gatekeeper rejects the bundle' "$NF" && grep -qxF "$GKR" "$NF" && ! grep -q -e 'release a new version' -e 'ls-remote origin refs/tags' "$NF" \
+  && pass "REV 12a, control: Gatekeeper's refusal at C3 (nothing public): the certificate's remedy, move the build aside and rebuild it" \
+  || fail "REV 12a at C3: rc=$r $(head -1 "$NF" 2>/dev/null | cut -c1-120) $(grep -e 'rebuild' "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-240)"
+! grep -qi 'expired' "$NF" "$FX/o" && pass "REV 12a: at C3, no 'expired'" || fail "REV 12a at C3: $(grep -i 'expired' "$NF" | head -1 | cut -c1-200)"
+SETX=SR_SHIP_DRY_SPCTL=C7; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; SETX=
+gl_=$(grep -x "  git -C '$REPO' ls-remote origin refs/tags/v0.1.0" "$NF" | head -1); gk7_=no
+if [ -n "$gl_" ]; then
+  eval "set -- ${gl_# }"; shift
+  (cd / && env -i PATH=/usr/bin:/bin HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$S/sgit" "$@") > "$FX/gk7" 2>&1 && grep -q 'refs/tags/v0.1.0$' "$FX/gk7" && ! grep -q '^SGIT REFUSED' "$FX/calls" && gk7_=yes
+fi
+world_reset
+[ $r = 1 ] && [ "$(lastprog)" = "start github" ] && grep -q 'stopped at github: spctl: Gatekeeper rejects the bundle' "$NF" && ! grep -qxF "$GKR" "$NF" "$FX/o" \
+  && grep -qxF "$GKC" "$NF" && [ $gk7_ = yes ] \
+  && pass "REV 12a: Gatekeeper's refusal at C7 (after the push): no rebuild but on the condition that v0.1.0 is not pushed, in stdout or the next file; the ls-remote line runs as printed (it lists the pushed tag)" \
+  || fail "REV 12a at C7: rc=$r '$(lastprog)' ls-remote line '$gl_' ($gk7_); $(grep -e 'rebuild' "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-300)"
+! grep -qi 'expired' "$NF" "$FX/o" && pass "REV 12a: at C7, no 'expired'" || fail "REV 12a at C7: $(grep -i 'expired' "$NF" | head -1 | cut -c1-200)"
+rm -f "${FX:?}/gk7"
+
 # --- next_hint: under ship, no message but the stop text names an entry to run next; the remedies stay
 hint_free() { # the lines of the run's output that are not the stop text name no entry to run next
   if [ -f "$NF" ]; then grep -v -x -F -f "$NF" "$FX/o"; else cat "$FX/o"; fi \

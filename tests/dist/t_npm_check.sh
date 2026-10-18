@@ -231,7 +231,8 @@ EOF
 printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
 mk signed false; ncc; r=$?
 [ $r = 1 ] && [ "$(cls)" = fix ] && ! grep -qi 'cannot change' "$FX/o" && grep -q 'source=Notarized Developer ID' "$FX/o" && gkrun "$FX/o" "$D/sheepr-darwin-universal-$nv.tgz" \
-  && pass "REV 11b rule 16: npm-check's spctl stop: class fix, no 'cannot change', its Gatekeeper lines run as printed on the darwin package's bundle" \
+  && grep -qxF "If that prints nothing, v0.1.0 is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, v0.1.0 is pushed: never rebuild v0.1.0; release a new version." "$FX/o" && ! grep -qxF "When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one." "$FX/o" && ! grep -qi 'expired' "$FX/o" \
+  && pass "REV 11b rule 16, REV 12a: npm-check's spctl stop: class fix, no 'cannot change', its Gatekeeper lines run as printed on the darwin package's bundle; the rebuild only if v0.1.0 is not pushed; never 'expired'" \
   || fail "rule 16 (npm-check): rc=$r '$(cls)'; $(grep -e 'spctl' -e 'cannot change' "$FX/o" | tr '\n' '|' | cut -c1-300)"
 cp "$FX/rt.keep4" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep4" "$REPO/scripts/lib/archive.sh" || exit 3
 # r13b F3, F4: judged takes a checking tool's failure for a finding only for its own refusal (exit 1,

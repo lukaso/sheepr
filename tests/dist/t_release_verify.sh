@@ -182,9 +182,10 @@ gkrun() {
 mkt cs 0 ''; mkt xc 0 ''; mkt sp 3 "$AP: rejected
 source=Notarized Developer ID"; rtset; vc; rc=$?
 [ $rc = 1 ] && [ "$(cls)" = fix ] && ! grep -qi 'cannot change' "$FX/o" && grep -q '^A rerun stops here again until Gatekeeper accepts the bundle' "$FX/o" \
-  && grep -q '^When the cause is the signing certificate (revoked or expired), move the build aside and rebuild it with a valid one.$' "$FX/o" \
+  && grep -qx "  git -C '$(cd "$REPO" && pwd -P)' ls-remote origin refs/tags/v0.1.0" "$FX/o" && grep -qxF "If that prints nothing, v0.1.0 is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, v0.1.0 is pushed: never rebuild v0.1.0; release a new version." "$FX/o" \
+  && ! grep -qxF "When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one." "$FX/o" && ! grep -qi 'expired' "$FX/o" \
   && gkrun "$FX/o" "$D/sheepr-macos-universal.tar.gz" \
-  && pass "REV 11b rule 16: the spctl stop: no 'cannot change'; a rerun stops here again; spctl --status and spctl -a -vv on the bundle, each a line that runs as printed; the certificate's remedy; class fix" \
+  && pass "REV 11b rule 16, REV 12a: the spctl stop: no 'cannot change'; a rerun stops here again; spctl --status and spctl -a -vv on the bundle, each a line that runs as printed; the certificate's rebuild only if v0.1.0 is not pushed (an ls-remote line; a standalone verify cannot know), never 'expired'; class fix" \
   || fail "rule 16: rc=$rc '$(cls)'; $(grep -e 'cannot change' -e 'spctl' "$FX/o" | grep -v '(class)' | tr '\n' '|' | cut -c1-300)"
 cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)

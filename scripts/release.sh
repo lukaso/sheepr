@@ -66,9 +66,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -535,13 +535,26 @@ rtfail() {
 # gkhint ARCHIVE PATH: what follows spctl's words when Gatekeeper rejects a bundle codesign and stapler
 # accepted (REV 11b rule 16): a rerun stops here again until Gatekeeper accepts it; what to check, each
 # on a line of its own (the second unpacks ARCHIVE into a new temp dir and asks Gatekeeper about PATH
-# there: ship's own copy is gone by then); and the signing certificate's remedy
+# there: ship's own copy is gone by then); and the signing certificate's remedy (REV 12a): a rebuild
+# only while ship knows nothing of the tag is public (under ship, before its push); after the push,
+# and in a standalone verify, npm-check or publish, only once a runnable ls-remote line shows the tag
+# is not pushed (a pushed tag is never rebuilt: a new version). Never "expired": an expired
+# certificate does not make Gatekeeper reject a notarized, timestamped build
 gkhint() {
   printf '%s' ".
 A rerun stops here again until Gatekeeper accepts the bundle. See what Gatekeeper says on this Mac with these (the second unpacks $(basename "$1") into a new temp dir and asks Gatekeeper about its bundle):
   spctl --status
-  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\"
-When the cause is the signing certificate (revoked or expired), move the build aside and rebuild it with a valid one."
+  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\""
+  if [ "$shipping" = yes ] && [ -n "$shipprog" ] && ! grep -qx 'start push' "$shipprog" 2>/dev/null; then
+    printf '%s' "
+When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one."
+  else
+    gr_=$root; [ "$shipping" != yes ] || gr_=${oroot:-$root}   # (the operator's checkout: ship's root is its frozen tree)
+    printf '%s' "
+When the cause is a revoked signing certificate, first see whether $tag is pushed:
+  git -C $(dq "$gr_") ls-remote origin refs/tags/$tag
+If that prints nothing, $tag is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, $tag is pushed: never rebuild $tag; release a new version."
+  fi
 }
 stamp_line() { sh_=$(hashof "${MAN:-$1/MANIFEST.json}") || exit 1; printf '%s %s' "$tag" "$sh_"; }   # (in a $( ): its exit is the substitution's)
 stamp_ok() { # dir -> 0 if npm-check passed on this tag and this manifest (a hash that cannot be read: a stop, fix)
@@ -1127,6 +1140,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
+  ship_gk=${SR_SHIP_DRY_SPCTL:-}   # (the cells: C3 or C7, where ship_dry_verify gives Gatekeeper's refusal)
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
   GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry
   shipping=yes
@@ -1135,6 +1149,14 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
 ship_dry_verify() { # dir: verify's stand-in in __ship-dry (verify runs the real Apple tools): the
                     # archive judged is the hash SR_PUBLISH_DRY_VERIFIED names, or none (1)
   [ -n "${SR_PUBLISH_DRY_VERIFIED:-}" ] || { echo "release: verify (dry): no SR_PUBLISH_DRY_VERIFIED, no archive judged" >&2; return 1; }
+  # the cells' Gatekeeper refusal at C3 (no progress yet) or C7 ('start github'; SR_SHIP_DRY_SPCTL, read by
+  # ship_dry): verify's own spctl stop there, with spctl's words for a rejection (verify itself, with the
+  # real tools' stand-ins: t_release_verify)
+  case $ship_gk:$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1) in
+    C3:|'C7:start github')
+      RT_OUT=$st/gk.out rt_rc=3; /usr/bin/printf '%s\n' "$1/Sheepr.app: rejected" "source=Notarized Developer ID" > "$RT_OUT"
+      rtfail 1 spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$1/sheepr-macos-universal.tar.gz" Sheepr.app)" ;;
+  esac
   verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
 }
 ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A, B, C)
