@@ -1159,11 +1159,31 @@ pre_row "a counted token line, whoami's E401 in npm's colours" "Deleting or edit
 # A7: the build's preconditions
 : > "$FX/nodocker"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nodocker"; pre_row "Docker does not answer" "Docker"
 : > "$FX/nobase"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/nobase"; pre_row "the pinned base image missing" "no local image rust:"
-# r12b F8: the step names the checkout's test-all by its full path (single-quoted: dq), so it runs as
-# printed from any directory (test-all cds to its own directory)
-grep -qF "(run '$REPO/test-all' pull)" "$OUTR/v0.1.0.ship-next.txt" && pass "  the step: the checkout's test-all by its full path" || fail "  test-all step: $(grep -o '(run [^)]*)' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
+# r12b F8, REV 11b rule 17 (r15b P4-8): the step names the checkout's test-all by its full path
+# (single-quoted: dq) on a line of its own, so it runs as printed from any directory (test-all cds to
+# its own directory). Each line, pasted into sh and into an interactive zsh -f from /, gives a stub
+# test-all (put at the checkout's path after the run, then taken back) exactly its argument
+ta7() { # FILE WANT...: the test-all lines of FILE are exactly the WANTs (pull, amd64), each a line of its own that runs as printed
+  ta_=$(grep -c "test-all" "$1"); tl_=$(grep -c "^  '$REPO/test-all' [a-z0-9]*$" "$1"); f_=$1; shift
+  [ "$tl_" = $# ] && [ "$ta_" = $# ] || return 1
+  cp "$REPO/test-all" "$FX/ta.keep" || return 1
+  printf '#!/bin/sh\n{ printf "ta"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$REPO/test-all"
+  ok_=0
+  for w_; do
+    l_=$(grep -x "  '$REPO/test-all' $w_" "$f_")
+    for how_ in sh zsh; do
+      REC=$FX/ta.rec; : > "$REC"
+      if [ $how_ = sh ]; then (cd / && env -i PATH=/usr/bin:/bin REC="$REC" /bin/sh -c "$l_") > /dev/null 2>&1
+      else (cd / && printf '%s\n' "$l_" | env -i PATH=/usr/bin:/bin HOME="$FX" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+      [ "$(cat "$REC")" = "ta [$w_]" ] || ok_=1
+    done
+  done
+  cp "$FX/ta.keep" "$REPO/test-all"; rm -f "$FX/ta.keep" "$FX/ta.rec"
+  return $ok_
+}
+ta7 "$OUTR/v0.1.0.ship-next.txt" pull && pass "  the step: the checkout's test-all by its full path, a line of its own; it runs as printed (sh, zsh)" || fail "  test-all step: $(grep 'test-all' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | tr '\n' '|')"
 : > "$FX/noamd64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/noamd64"; pre_row "the amd64 image missing" "no local amd64 image"
-grep -qF "(run '$REPO/test-all' pull, or '$REPO/test-all' amd64)" "$OUTR/v0.1.0.ship-next.txt" && pass "  the step: the checkout's test-all by its full path" || fail "  test-all step: $(grep -o '(run [^)]*)' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null)"
+ta7 "$OUTR/v0.1.0.ship-next.txt" pull amd64 && pass "  the steps: test-all pull and test-all amd64, each a line of its own; each runs as printed (sh, zsh)" || fail "  test-all steps: $(grep 'test-all' "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | tr '\n' '|')"
 SETX="SR_SHIP_DRY_IDENTITY=$S/docker"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=; pre_row "the signing identity not in the keychain" "signing identity"
 mv "$FX/ghome/Library/Keychains/sheepr-notary.keychain-db" "$FX/kc.away"; rm -rf "${OUTR:?}"; ship; r=$?; mv "$FX/kc.away" "$FX/ghome/Library/Keychains/sheepr-notary.keychain-db"
 pre_row "no notary keychain" "D2"

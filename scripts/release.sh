@@ -1536,11 +1536,14 @@ ship_build_ready() { # A7: no build yet: the build's preconditions; a finished o
     return 0
   fi
   shipdocker info >/dev/null 2>&1 || die "Docker does not answer (docker info): start it, then run ship again"
-  # (each step names the checkout's test-all by its full path: it runs as printed from any directory;
-  # test-all cds to its own)
-  shipdocker image inspect "$SR_IMG_ALPINE" >/dev/null 2>&1 || die "no local image $SR_IMG_ALPINE (run $(dq "$oroot/test-all") pull)"
+  # (each step names the checkout's test-all by its full path, on a line of its own: it runs as printed
+  # from any directory; test-all cds to its own; REV 11b rule 17)
+  shipdocker image inspect "$SR_IMG_ALPINE" >/dev/null 2>&1 || die "no local image $SR_IMG_ALPINE. Pull it with this, then run ship again:
+  $(dq "$oroot/test-all") pull"
   a1=sr-amd64-base:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12) a2=sr-amd64-alpine:$(printf %s "${SR_IMG_ALPINE##*sha256:}" | cut -c1-12)
-  shipdocker image inspect "$a1" >/dev/null 2>&1 || shipdocker image inspect "$a2" >/dev/null 2>&1 || die "no local amd64 image of the pinned base (run $(dq "$oroot/test-all") pull, or $(dq "$oroot/test-all") amd64)"
+  shipdocker image inspect "$a1" >/dev/null 2>&1 || shipdocker image inspect "$a2" >/dev/null 2>&1 || die "no local amd64 image of the pinned base. Get it with one of these, then run ship again:
+  $(dq "$oroot/test-all") pull
+  $(dq "$oroot/test-all") amd64"
   shipcall "$SHIP_IDENTITY" find-identity -v -p codesigning 2>/dev/null | grep -q " $SR_SIGN_IDENTITY " || die "the signing identity $SR_SIGN_IDENTITY is not in the keychain"
   [ -f "$HOME/$SR_NOTARY_KEYCHAIN" ] || die "no notary keychain at $HOME/$SR_NOTARY_KEYCHAIN: do PHASE3.md D2 step 3 first"
 }
