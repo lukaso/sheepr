@@ -206,6 +206,7 @@ fi
 for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ npm" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
+echo "\$1 \$UC" >> "$FX/npmucs"   # (the userconfig each call loads: REV 11b rule 19)
 last=""; for a; do last=\$a; done
 TOK='//registry.npmjs.org/:_authToken='
 # (\$FX/npmall: every npm command that reaches the registry writes this text on stderr and fails)
@@ -299,6 +300,8 @@ case \$1 in
     [ -e "$FX/loginnormalizes" ] && [ -f "\$UC" ] && { sed -e "s/^'\\([^']*\\)'=/\\1=/" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }
     # (\$FX/logintoken: the token the login writes, instead of npm_dry)
     echo LOGIN >> "$FX/tokops"   # (\$FX/tokops: each login's write, in order with the tokens the logouts end)
+    # (the root line replaced, as npm 9 to 11 do: notes/r15a/np/t6)
+    [ -f "\$UC" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }
     if [ -s "$FX/logintoken" ]; then echo "\${TOK}\$(cat "$FX/logintoken")" >> "\$UC"; else echo "\${TOK}npm_dry" >> "\$UC"; fi; exit 0 ;;
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
@@ -439,7 +442,7 @@ chmod +x "$S/sgit"
 tnow() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }   # the clock, in seconds, to 1/100
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
-  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/pipe.rc" "$FX/made"
+  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/npmucs" "$FX/pipe.rc" "$FX/made"
   set -- SR_ASK_RECORD="$FX/asks" SR_SHIP_DRY_BUILD="$S/build" SR_SHIP_DRY_NPMCHECK="$S/npmcheck" SR_SHIP_DRY_NOTIFY="$S/notify" SR_SHIP_DRY_CAFFEINATE="$S/caffeinate" \
     SR_SHIP_DRY_IDENTITY="$S/identity" SR_SHIP_DRY_DOCKER="$S/docker" SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" \
     SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" NPM_CONFIG_USERCONFIG="$FX/npmrc" $( [ "${VERIFIED:-}" = - ] || printf '%s' "SR_PUBLISH_DRY_VERIFIED=${VERIFIED:-$AH}" ) "$@"
@@ -1737,10 +1740,22 @@ printf 'userconfig=%s\n' "$FX/other.npmrc" > "$FX/npmrc"; rm -rf "${OUTR:?}"; sh
 completed && ! grep -q 'as its userconfig' "$FX/o" && pass "  control: NPM_CONFIG_USERCONFIG names F and F holds a userconfig= key (npm answers F): the run completes" \
   || fail "  A1 control (the variable, a key in F): rc=$r $(grep -m1 'userconfig' "$FX/o" | cut -c1-200)"
 # F by default (no variable: the dry HOME's .npmrc): A1 passes, and the run reaches the login (r14a R4;
-# its MH, npm_file naming $HOME/npmrc, goes red here)
-rm -rf "${OUTR:?}"; NO=NPM_CONFIG_USERCONFIG; ship; r=$?; NO=
-grep -q '^npm config get userconfig' "$FX/calls" && grep -q '^npm login' "$FX/calls" && ! grep -q 'as its userconfig' "$FX/o" \
-  && pass "  F by default (no variable: the HOME's .npmrc): A1 passes, the run reaches the login" || fail "  default F: rc=$r $(grep -m1 'userconfig' "$FX/o" | cut -c1-220)"
+# its MH, npm_file naming $HOME/npmrc, goes red here). REV 11b rule 19 (r15a F4): and it completes, the
+# operator's setup end to end: the four uploads, then the logout of that same .npmrc, then done; every
+# npm call, in every phase, loads that one file. Control: the same run with the variable (F $FX/npmrc)
+for k_ in default variable; do
+  rm -rf "${OUTR:?}"; [ $k_ = default ] && NO=NPM_CONFIG_USERCONFIG; KEEP=1; ship; r=$?; KEEP=; NO=
+  np_=$(ls "$FX"/pub.* 2>/dev/null | grep -c .); uf_=$(awk '{print $2}' "$FX/npmucs" 2>/dev/null | sort -u); un_=$(printf '%s\n' "$uf_" | grep -c .)
+  lo_=$(awk '$1 == "logout" {print $2}' "$FX/npmucs" | tail -1)
+  case $k_ in default) case $uf_ in /private/tmp/sr-dryhome.*/.npmrc) wf_=$uf_ ;; *) wf_=none ;; esac ;; *) wf_=$FX/npmrc ;; esac
+  [ $k_ = default ] && { grep -q '^npm config get userconfig' "$FX/calls" && grep -q '^npm login' "$FX/calls" && ! grep -q 'as its userconfig' "$FX/o"; } \
+    && pass "  F by default (no variable: the HOME's .npmrc): A1 passes, the run reaches the login"
+  completed && [ "$np_" = 4 ] && [ "$un_" = 1 ] && [ "$uf_" = "$wf_" ] && [ "$lo_" = "$wf_" ] && [ "$(ln_ '^npm logout')" -gt "$(grep -n '^npm publish' "$FX/calls" | tail -1 | cut -d: -f1)" ] \
+    && [ "$(nots | awk '{print $NF}')" = done ] \
+    && pass "$( [ $k_ = variable ] && echo '  control (NPM_CONFIG_USERCONFIG set): ' || echo 'REV 11b rule 19 (r15a F4): no userconfig variable: ')the dry ship completes: 4 uploads, then the logout of F, then done; every npm call loads F ($un_ file)" \
+    || fail "rule 19 ($k_): rc=$r $np_ uploads; files loaded: $(printf '%s' "$uf_" | tr '\n' ' '); logout of '$lo_'; $(lastline | cut -c1-160)"
+  world_reset
+done
 # (r13a X1) the key appears after A1 (here at C4's login); the logout fails (ETIMEDOUT) and leaves
 # ship's line in F: ship reads F, so the remedy, logout-failed, exit 1. Control: no key
 for k_ in key control; do

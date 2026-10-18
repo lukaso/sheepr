@@ -65,9 +65,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok lgstate
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok lgstate NPMHOME
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no lgstate=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no lgstate="" NPMHOME=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -243,7 +243,7 @@ tool() { # class command... (base: HOME PATH TMPDIR USER LOGNAME [DEVELOPER_DIR]
             ${ALL_PROXY:+ALL_PROXY="$ALL_PROXY"} ${all_proxy:+all_proxy="$all_proxy"} \
             ${NO_PROXY:+NO_PROXY="$NO_PROXY"} ${no_proxy:+no_proxy="$no_proxy"} "$@" 8>&- 9>&- ;;
     npm) npm_env "${HOME:-}" "${NPM_CONFIG_USERCONFIG:-${npm_config_userconfig:-}}" "$@" ;;
-    npmdry) npm_env "$DRYHOME" "${NPM_CONFIG_USERCONFIG:-${npm_config_userconfig:-}}" "$@" ;;   # (a dry entry's npm is a stand-in by path; its userconfig is the one the entry got, as npm's)
+    npmdry) npm_env "${NPMHOME:-$DRYHOME}" "${NPM_CONFIG_USERCONFIG:-${npm_config_userconfig:-}}" "$@" ;;   # (a dry entry's npm is a stand-in by path; its userconfig is the one the entry got, as npm's; its HOME the entry's own: NPMHOME)
     # the dry publish: a fresh temp HOME and nothing else of the caller's, so even a real gh reached
     # through a stand-in would have no login
     dry) /usr/bin/env -i HOME="$DRYHOME" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" "$@" 8>&- 9>&- ;;
@@ -1132,6 +1132,9 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   # before it sets its own exit handler (which then replaces this one and removes the temp HOME)
   trap 'trap "" $SIGS; rm -rf "$DRYHOME"' EXIT; trap 'rm -rf "$DRYHOME"; exit 1' $SIGS
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
+  # npm's HOME for the whole run (REV 11b rule 19): the operator's HOME is one in every phase, so a
+  # dry run's npm keeps this one too; a phase's own temp HOME (drysub) is for its other tools
+  NPMHOME=$DRYHOME
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
   GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry
@@ -1388,7 +1391,7 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
 npm_file() {
   if [ -n "${NPM_CONFIG_USERCONFIG:-}" ]; then printf '%s' "$NPM_CONFIG_USERCONFIG"
   elif [ -n "${npm_config_userconfig:-}" ]; then printf '%s' "$npm_config_userconfig"
-  else case ${NPMC:-} in npmdry) h_=${DRYHOME:-} ;; *) h_=${HOME:-} ;; esac; h_=${h_%/}; printf '%s' "$h_/.npmrc"; fi
+  else case ${NPMC:-} in npmdry) h_=${NPMHOME:-${DRYHOME:-}} ;; *) h_=${HOME:-} ;; esac; h_=${h_%/}; printf '%s' "$h_/.npmrc"; fi
 }
 # npm_ucheck DIR ENTRY [TAIL]: npm's own name for its userconfig must be F (REV 11 rule 1). npm names
 # another when a userconfig= key in $HOME/.npmrc names one (with no variable: the key counts nowhere
