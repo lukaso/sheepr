@@ -65,9 +65,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok lgstate
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no lgstate=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -919,16 +919,23 @@ publish_npm_exec() { # dir
   # npm's own name for its userconfig, as A1 checks it (REV 11a rule 7), the first npm call (npm_list
   # makes none); under ship, A1 made the check
   [ "$shipping" = yes ] || npm_ucheck "$pc" publish-npm "; this step uploaded nothing"
-  me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$pc/err") \
-    || die "npm whoami failed (not logged in to npm?); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")$(next_hint ".
+  # (REV 11b rule 12: the login line only for a missing credential, ENEEDAUTH, or a dead one, E401;
+  # any other failure says nothing about F's line, and a login there could write over a live one)
+  me=$(tool "$NETC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$pc/err") || case $(npmcode "$pc/err") in
+    ENEEDAUTH|E401) die "npm whoami failed: npm has no live login for registry.npmjs.org in $(npm_file); this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")$(next_hint ".
 Log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
-  $(npmcmd login)")"
+  $(npmcmd login)")" ;;
+    *) die "npm whoami failed; this step uploaded nothing ($(errcut "$pc/err" 200))$(npmhint "$pc/err")$(next_hint ". npm's words say why, and they are no sign of a missing login: log in to nothing. When npm answers, run publish-npm again")" ;;
+  esac
   [ "$me" = "${SR_NPM_USER:-}" ] || die "logged in to npm as $(printf '%s' "$me" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; this step uploaded nothing$(next_hint ".
-Run this logout first (for a token, npm's docs say it ends that token everywhere it is used):
+To end that session, run this logout (for a token, npm's docs say it ends that token everywhere it is used; an _auth line, a user name and password, is not ended by npm logout):
   $(npmcmd logout)
-Then log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
+Only once that logout ends with no error, log in as ${SR_NPM_USER:-the owner} with this, then run publish-npm again:
   $(npmcmd login)
-Or, to keep that token: run neither line; run the release with another userconfig file instead, an absolute path in NPM_CONFIG_USERCONFIG.")"
+While that logout keeps failing (npm's words say why), log in to nothing: that token is still live. Or, to keep that token, run neither line above and use another userconfig file instead: log in to it, run publish-npm with it, then log out of it:
+  $(npmcmd login "$(npmg)")
+$(pnstep "$(npmg)")
+  $(npmcmd logout "$(npmg)")")"
   npm_owners "$NETC" "$NPM" "$pc"
   case $tag in *-rc.*) set -- --tag next ;; *) set -- ;; esac
   mainp=""; for p in $SR_NPM_PKGS; do mainp=$p; done   # the main package: the last (npm_list checked the list)
@@ -1205,6 +1212,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   pubok=yes             # from here a stop before the push may say "nothing is public"
   ship_tap              # A5
   ship_npm_ready        # A6
+  lgstate=none          # (A6: no npm session, and ship made none: npmsteps)
   ship_build_ready      # A7
   armed=yes             # A8: from here a stop notifies
   # B. the build, when there is none: the frozen tree's release.sh, a direct child (sign.sh checks
@@ -1238,7 +1246,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # browser); logged_in from the attempt on (the handler logs out); then npm must name SR_NPM_USER
   phase=npm-login; stopclass fix
   notify npm-login
-  logged_in=yes
+  logged_in=yes lgstate=pending
   tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "npm login failed, or was not answered; nothing is public"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
@@ -1395,7 +1403,26 @@ npm_ucheck() {
 # pnstep: the next file's publish-npm step, one construction (REV 11a rule 7): F named in the line
 # itself, so the publish-npm it runs reads the file the printed login wrote, whatever the shell that
 # runs it holds; the checkout and the out dir by absolute path, through dq; a line of its own
-pnstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s publish-npm --out %s %s\n' "$(dq "$(npm_file)")" "$(dq "$oroot/scripts/release.sh")" "$(dq "$out")" "$tag"; }
+pnstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s publish-npm --out %s %s\n' "$(dq "${1:-$(npm_file)}")" "$(dq "${oroot:-$root}/scripts/release.sh")" "$(dq "$out")" "$tag"; }   # [FILE]
+# npmg: G, the keep route's userconfig file (REV 11b rule 13): $HOME/.npmrc-sheepr (the operator's
+# HOME), or that name with -2 when F is that file already (a route naming F again would loop)
+npmg() { g_=${HOME%/}/.npmrc-sheepr; [ "$g_" != "$(npm_file)" ] || g_=$g_-2; printf '%s' "$g_"; }
+# shipstep FILE: the ship line with FILE as its userconfig (the keep route under ship: ship logs in
+# to FILE and out of it itself)
+shipstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s ship --out %s %s\n' "$(dq "$1")" "$(dq "${oroot:-$root}/scripts/release.sh")" "$(dq "$out")" "$tag"; }
+# npmsteps [then]: the npm login, then the publish-npm step, of a stop's text (REV 11b rule 12): the
+# login only where the credential is known to be missing: ship's own logout ended with no error
+# (lgstate done), or A6 found no session and ship made none (none). Before ship's logout ran, or while
+# it fails (pending): both lines only once that logout ends with no error. Neither known (a stop before
+# A6): no login; publish-npm checks npm's login first, and names one when npm needs it
+npmsteps() {
+  case ${lgstate:-} in
+    pending) echo "Then, only once ship's npm logout above ends with no error, these two:"; echo "  $(npmcmd login)" ;;
+    done|none) [ -z "${1:-}" ] || echo "Then:"; echo "  $(npmcmd login)" ;;
+    *) echo "Then this (publish-npm checks npm's login first, and names the login when npm needs one):" ;;
+  esac
+  pnstep
+}
 # npmcmd login|logout|delete: the npm credential commands ship prints, one construction (REV 11 rule
 # 3): from / (no project config), npmjs's registry, no scope (npm's scope routes login and logout to
 # the scope's registry), and F by name, through dq (the operator's shell may name another userconfig).
@@ -1404,8 +1431,8 @@ pnstep() { printf '  NPM_CONFIG_USERCONFIG=%s sh %s publish-npm --out %s %s\n' "
 # --logs-max=0 (REV 11b rule 14): the operator's shell has no pin, and a failed logout's debug log
 # holds the token it sent (npm 10.9.2, 11.1.0, 11.4.2: notes/r15a/np/t3; the flag honoured on npm 9.6.7,
 # 10.5.2, 10.9.2 and 11.6.0 for login, logout and config delete: notes/builder/np15/t15m2-*)
-npmcmd() {
-  f_=$(dq "$(npm_file)")
+npmcmd() { # login|logout|delete [FILE]: FILE (default F)
+  f_=$(dq "${2:-$(npm_file)}")
   case $1 in
     login|logout) printf '%s' "cd / && npm $1 --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig=$f_" ;;
     delete) printf '%s' "cd / && npm config delete //registry.npmjs.org/:_authToken --location=user --logs-max=0 --userconfig=$f_" ;;
@@ -1451,7 +1478,9 @@ ship_npm_ready() { # A6: npm's list and owners (no login needed); no npm session
     # REV 11 rule 4: the logout step; how a token and an _auth line end
     die "an npm session exists (npm whoami: $(printf '%s' "$who" | head -c 60 | tr '\n' ' ')). Run this logout:
   $(npmcmd logout)
-For a token, npm logout asks npm's server to end it, and npm's docs say that invalidates it everywhere it is used; an _auth line (a user name and password) is not ended by npm logout. If it fails, npm's words say why, and the next run stops here again. $npm_tokens. Then run ship again (ship logs in itself, after the build)"
+For a token, npm logout asks npm's server to end it, and npm's docs say that invalidates it everywhere it is used; an _auth line (a user name and password) is not ended by npm logout. If it fails, npm's words say why, and the next run stops here again. $npm_tokens. Then run ship again (ship logs in itself, after the build).
+To keep that session instead: run no logout, and run ship with another userconfig file (ship logs in to it, and out of it, itself):
+$(shipstep "$(npmg)")"
   fi
   [ "$n" != unreadable ] || die "cannot count npm's login tokens (npm's userconfig cannot be read): make it readable, then run ship again"
   # no token line and npm's ENEEDAUTH is no session; any other answer stops, with npm's own words and
@@ -1631,7 +1660,8 @@ $(npm_delstep)"
       [ $wrote = no ] || nfput "$(line2 "$txt" "$lo")" || wrote=no
       printf '%s\n' "release: $lo"; nfsaid
     else
-      if [ "$shipok" = yes ]; then rm -f "$nf"; else [ $wrote = no ] || nfput "$txt" || wrote=no; fi
+      # (the logout ended with no error: the file's text names the login plainly, REV 11b rule 12)
+      if [ "$shipok" = yes ]; then rm -f "$nf"; else lgstate=done; txt=$(ship_stoptext); [ $wrote = no ] || nfput "$txt" || wrote=no; fi
       printf '%s\n' "release: ship's line is no longer in npm's userconfig after ship's own npm logout: the npm logout step above is done."
       [ "$shipok" = yes ] || nfsaid
     fi
@@ -1685,7 +1715,6 @@ ship_stoptext() {
   # each runnable line names the operator's checkout by its absolute path (oroot: root is the frozen
   # tree by now), so it runs as printed from any directory (a new terminal window opens in ~)
   run="  sh $(dq "$oroot/scripts/release.sh")" o="--out $(dq "$out") $tag"
-  login="  $(npmcmd login)"
   mainp=""; for p_ in ${SR_NPM_PKGS:-}; do mainp=$p_; done
   up=$(sed -n 's/^start npm-platform //p' "$shipprog" 2>/dev/null); grep -qx 'start npm-main' "$shipprog" 2>/dev/null && up="$up $mainp"
   echo "release: ship $tag stopped at $phase: $cause"
@@ -1700,7 +1729,7 @@ ship_stoptext() {
             echo "$run publish $o"
             echo "When the GitHub release is already public, run this instead of the line above:"
             echo "$run publish-cask $o"
-            echo "$login"; pnstep
+            npmsteps
           else
             echo "Continue with the separate steps of PHASE3.md §5: build --sign, npm-check, the push, publish, publish-npm."
           fi ;;
@@ -1733,25 +1762,25 @@ ship_stoptext() {
       echo "The push started and was not confirmed. Check whether $tag is on GitHub:"
       echo "  git -C $(dq "$oroot") ls-remote origin refs/tags/$tag"
       echo "If it is not: run ship again. If it is, run in order:"
-      echo "$run publish $o"; echo "$login"; pnstep ;;
+      echo "$run publish $o"; npmsteps ;;
     'done push')
       echo "$tag is pushed; nothing else is public. Run in order:"
-      echo "$run publish $o"; echo "$login"; pnstep ;;
+      echo "$run publish $o"; npmsteps ;;
     'start npm-platform '*|'done npm-platform '*)
       echo "$tag is pushed, and npm may hold a part of it; GitHub has no release of it. Run in order:"
-      echo "$run publish $o"; echo "$login"; pnstep ;;
+      echo "$run publish $o"; npmsteps ;;
     'start github')
       echo "$tag is pushed, and npm may hold a part of it; the GitHub publish stopped. Check GitHub's releases for $tag:"
       echo "  a draft is not public: delete it on GitHub, then run:"; echo "  $run publish $o"
       echo "  a public release: run:"; echo "  $run publish-cask $o"
       echo "  neither: run:"; echo "  $run publish $o"
-      echo "Then:"; echo "$login"; pnstep ;;
+      npmsteps then ;;
     exit5)
       echo "$tag is public on GitHub, but its Homebrew cask is not updated, and npm may hold a part of it. Run in order:"
-      echo "$run publish-cask $o"; echo "$login"; pnstep ;;
+      echo "$run publish-cask $o"; npmsteps ;;
     'done github'|'start npm-main')
       echo "$tag is public on GitHub and Homebrew, and npm may hold a part of it. Run in order:"
-      echo "$login"; pnstep ;;
+      npmsteps ;;
     *) echo "$tag is public on GitHub, Homebrew and npm." ;;
   esac
   # after an upload: the wait, and npm's review

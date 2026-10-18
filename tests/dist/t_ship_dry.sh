@@ -286,6 +286,7 @@ case \$1 in
     if grep -q "^\$TOK" "\$UC" 2>/dev/null; then
       [ -e "$FX/whoamibad2" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
       [ -e "$FX/expired" ] && { echo "npm error code E401" >&2; exit 1; }
+      case \$(sed -n "s|^\$TOK||p" "\$UC" | tail -1) in npm_stranger*) echo stranger; exit 0 ;; esac   # (the other account's token)
       cat "$FX/whoami" 2>/dev/null || echo lukasco; exit 0
     fi
     # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
@@ -1596,7 +1597,7 @@ DONE_L="release: ship's line is no longer in npm's userconfig after ship's own n
   && [ "$(lnof "$FX/o" "$LG")" -lt "$(grep -n '^  cd / && npm login' "$FX/o" | head -1 | cut -d: -f1)" ] && [ "$(grep -n . "$FX/o" | grep -F "$DONE_L" | cut -d: -f1)" -gt "$(lnof "$FX/o" "$LG")" ] && gone \
   && pass "a stop and a logout that removes ship's line: the next file without the logout step; stdout named it before the logout, then that it is done" \
   || fail "stop + logout removes the line: rc=$r next file logout at $(lnof "$NF" "$LG"); stdout logout at $(lnof "$FX/o" "$LG"), done line at $(lnof "$FX/o" "$DONE_L")"
-PFL=$(tail -1 "$NF"); PFN=$(grep -c . "$NF")
+PFL=$(tail -1 "$NF"); PFN=$(grep -c . "$NF")   # (the text after the logout: no step, and the login plain, REV 11b rule 12)
 rm -rf "${OUTR:?}"; : > "$FX/build.nomanifest"; ship; r=$?; rm -f "$FX/build.nomanifest"
 [ $r = 1 ] && ! grep -q 'npm logout' "$NF" "$FX/o" && pass "  control: a stop before the login: no logout step, in the file or on stdout" || fail "  no login: a logout step"
 nfr_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE '>>? *"?\$nf"?([^.A-Za-z_]|$)'); nfm_=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'mv -f "\$out/\.\$tag\.ship-next\.tmp" "\$nf"')
@@ -1612,7 +1613,7 @@ EOS
 chmod +x "$B/mv"; printf ': > "%s/logout.ran"\n' "$FX" > "$FX/onlogout"; : > "$FX/pubfail.sheepr"; rm -f "$FX/logout.ran"
 rm -rf "${OUTR:?}"; SETSID=1; ship; r=$?; SETSID=; rm -f "${FX:?}/onlogout" "${FX:?}/pubfail.sheepr" "${FX:?}/logout.ran" "${B:?}/mv"
 grep -q '^SIG KILL at mv$' "$FX/calls" && ! grep -q UNSAFE "$FX/calls" && grep -q '^release: ship v0.1.0 stopped at npm-main' "$NF" && [ "$(lnof "$NF" "$LG")" = 3 ] \
-  && [ "$(tail -1 "$NF")" = "$PFL" ] && [ "$(grep -c . "$NF")" = "$((PFN + 4))" ] && ! grep -qF "$LG" "$OUTR/.v0.1.0.ship-next.tmp" && [ "$(head -1 "$OUTR/.v0.1.0.ship-next.tmp")" = "$(head -1 "$NF")" ] \
+  && [ "$(tail -1 "$NF")" = "$PFL" ] && [ "$(grep -c . "$NF")" = "$((PFN + 5))" ] && ! grep -qF "$LG" "$OUTR/.v0.1.0.ship-next.tmp" && [ "$(head -1 "$OUTR/.v0.1.0.ship-next.tmp")" = "$(head -1 "$NF")" ] \
   && pass "a KILL at the rename after the logout: the next file whole, as written before the logout ($PFN lines and the step); the new text in the temp file beside it" \
   || fail "KILL at the rewrite: rc=$r $(grep -e '^SIG' -e UNSAFE "$FX/calls" | tr '\n' ' ') next file: $(grep -c . "$NF" 2>/dev/null) lines, step at $(lnof "$NF" "$LG"), last '$(tail -1 "$NF" 2>/dev/null | cut -c1-80)'"
 killclean
@@ -1809,7 +1810,7 @@ echo '//registry.npmjs.org/:_authToken=npm_old' > "$FX/npmrc"; rm -rf "${OUTR:?}
 # checkout's, the out dir's and F's paths hold a space
 SW=$FX/stw; rm -rf "${SW:?}"; mkdir -p "$SW/bin" "$SW/st ate/repo/scripts" "$SW/o ut/v0.1.0" "$SW/u rc" || exit 3
 printf '%s\n' 'index($0, n "() {") == 1 { f = 1; print; if ($0 ~ /[}][[:space:]]*(#.*)?$/) exit; next }' 'f { print }' 'f && /^[}]/ { exit }' > "$SW/fn.awk"
-for f_ in dq npm_file npmcmd pnstep ship_stoptext; do awk -v n="$f_" -f "$SW/fn.awk" "$SR_ROOT/scripts/release.sh"; done > "$SW/fns.sh"
+for f_ in dq npm_file npmcmd pnstep npmsteps ship_stoptext; do awk -v n="$f_" -f "$SW/fn.awk" "$SR_ROOT/scripts/release.sh"; done > "$SW/fns.sh"
 printf '#!/bin/sh\n{ printf "rs [%%s]" "$0"; for a; do printf " [%%s]" "$a"; done; [ "$1" != publish-npm ] || printf " uc=[%%s]" "${NPM_CONFIG_USERCONFIG-unset}"; printf "\\n"; } >> "$REC"\n' > "$SW/st ate/repo/scripts/release.sh"
 printf '#!/bin/sh\n{ printf "git"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$SW/bin/git"
 printf '#!/bin/sh\n{ printf "npm"; for a; do printf " [%%s]" "$a"; done; printf " cwd=[%%s]\\n" "$PWD"; } >> "$REC"\n' > "$SW/bin/npm"
@@ -1829,7 +1830,7 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
   la_=${s_%%|*} r_=${s_#*|}; cl_=${r_%%|*} mf_=${r_#*|}
   { echo "run 1 2026-10-17T00:00:00Z"; [ -z "$la_" ] || echo "$la_"; } > "$SW/prog"; echo "$cl_" > "$SW/cls"; echo "a cause" > "$SW/cause"
   [ -n "$mf_" ] && cm_=c0ffee || cm_=other
-  sh -c '. "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes
+  sh -c '. "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes lgstate=done
     SR_NPM_PKGS="sheepr-linux-arm64 sheepr" SR_NPM_USER=lukasco commit=$2 NPMC= NPMREG=https://registry.npmjs.org/ NPM_CONFIG_USERCONFIG="$1/u rc/npmrc"; export NPM_CONFIG_USERCONFIG
     ship_stoptext' sh "$SW" "$cm_" > "$SW/text" 2> "$SW/text.err" || bad_="$bad_ [${la_:-$cl_}: ship_stoptext failed: $(head -c 120 "$SW/text.err")]"
   while IFS= read -r l_; do
@@ -1848,6 +1849,25 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
     for how_ in sh zsh; do srun $how_ "$l_" "$w_" || bad_="$bad_ [${la_:-$cl_} $how_: '$(printf '%s' "$t_" | cut -c1-90)': $(tr '\n' '|' < "$REC" | cut -c1-80) $(head -c 80 "$SW/o" | tr '\n' ' ')]"; done
   done < "$SW/text"
 done
+# REV 11b rule 12 (r15a F1): the npm login before publish-npm in a stop's text, by what ship knows of F's
+# credential ('done push'): its own logout still to run or failing (pending): both lines only once
+# that logout ends with no error; that logout ended (done): the login plainly; nothing known (a stop
+# before A6): no login line, publish-npm names one when npm needs it
+LGI="cd / && npm login --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$SW/u rc/npmrc'"
+{ echo "run 1 2026-10-17T00:00:00Z"; echo "done push"; } > "$SW/prog"; echo fix > "$SW/cls"; echo "a cause" > "$SW/cause"; lb_=""
+for lg_ in pending done none ""; do
+  sh -c '. "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes lgstate=$2
+    SR_NPM_PKGS="sheepr-linux-arm64 sheepr" SR_NPM_USER=lukasco commit=c0ffee NPMC= NPMREG=https://registry.npmjs.org/ NPM_CONFIG_USERCONFIG="$1/u rc/npmrc"; export NPM_CONFIG_USERCONFIG
+    ship_stoptext' sh "$SW" "$lg_" > "$SW/lg.txt" 2>&1
+  b_=$(grep -B1 -xF "  $LGI" "$SW/lg.txt" | head -1); nli_=$(grep -cxF "  $LGI" "$SW/lg.txt"); npn_=$(grep -c " publish-npm --out " "$SW/lg.txt")
+  case ${lg_:-unknown} in
+    pending) [ "$b_" = "Then, only once ship's npm logout above ends with no error, these two:" ] && [ "$nli_" = 1 ] && [ "$npn_" = 1 ] || lb_="$lb_ [pending: '$b_' $nli_ $npn_]" ;;
+    done|none) [ "$nli_" = 1 ] && [ "$npn_" = 1 ] && ! grep -qi 'only once' "$SW/lg.txt" || lb_="$lb_ [$lg_: '$b_' $nli_ $npn_]" ;;
+    unknown) [ "$nli_" = 0 ] && ! grep -q 'npm login' "$SW/lg.txt" && grep -q "^Then this (publish-npm checks npm's login first, and names the login when npm needs one):$" "$SW/lg.txt" && [ "$npn_" = 1 ] || lb_="$lb_ [unknown: $nli_ $npn_ $(grep -c 'npm login' "$SW/lg.txt")]" ;;
+  esac
+done
+[ -z "$lb_" ] && pass "REV 11b rule 12: a stop's login before publish-npm: only once ship's logout ends (pending); plainly once it ended, or with A6's no session; none when nothing is known" \
+  || fail "rule 12, the stop's login:$lb_"
 [ -z "$bad_" ] && [ "$nl_" -ge 29 ] && [ "$np_" = 9 ] && pass "r13b F6: every runnable line of ship_stoptext ($nl_ lines over 20 classes and progress states) runs as printed, from sh and from an interactive zsh; each of the $np_ publish-npm lines gives publish-npm F (REV 11a rule 7)" \
   || fail "stoptext lines ($nl_, $np_ publish-npm lines):$(printf '%s' "$bad_" | cut -c1-500)"
 # REV 11a rule 6 (r14a): each npm credential command ship prints is a line of its own with nothing after
@@ -1859,10 +1879,11 @@ ownrun() { # LABEL FILE: each line of FILE holding `cd / && npm `: that command 
   while IFS= read -r l_; do
     case $l_ in *'cd / && npm '*) ;; *) continue ;; esac
     t_=${l_#"${l_%%[! ]*}"}
+    f_=$FX/npmrc g_=""; case $t_ in *" --userconfig='$FX/ghome/.npmrc-sheepr'") f_=$FX/ghome/.npmrc-sheepr g_=G ;; esac   # (the keep route's G: REV 11b rule 13)
     case $t_ in
-      'cd / && npm login '*) k_=login w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
-      'cd / && npm logout '*) k_=logout w_="npm [logout] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
-      'cd / && npm config delete '*) k_=delete w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--logs-max=0] [--userconfig=$FX/npmrc] cwd=[/]" ;;
+      'cd / && npm login '*) k_=login$g_ w_="npm [login] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$f_] cwd=[/]" ;;
+      'cd / && npm logout '*) k_=logout$g_ w_="npm [logout] [--registry=https://registry.npmjs.org/] [--scope=] [--logs-max=0] [--userconfig=$f_] cwd=[/]" ;;
+      'cd / && npm config delete '*) k_=delete$g_ w_="npm [config] [delete] [//registry.npmjs.org/:_authToken] [--location=user] [--logs-max=0] [--userconfig=$f_] cwd=[/]" ;;
       *) bad_="$bad_ [$1: not a line of its own: '$(printf '%s' "$t_" | cut -c1-90)']"; continue ;;
     esac
     on_="$on_ $1:$k_"
@@ -1892,7 +1913,7 @@ world_reset; rm -f "${FX:?}/npmrc"
 for s_ in s1.o s1.nf s2.o s2.nf s3a.o s3b.o s3c.o; do ownrun "$s_" "$SW/$s_"; done
 on_=$(printf '%s\n' $on_ | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 ow_=$(printf '%s\n' s1.o:logout s1.o:delete s1.o:login s1.o:logout s1.o:delete s1.nf:logout s1.nf:delete s1.nf:login \
-  s2.o:logout s2.o:logout s2.nf:logout s3a.o:login s3b.o:logout s3b.o:login s3c.o:logout | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+  s2.o:logout s2.o:logout s2.nf:logout s3a.o:login s3b.o:logout s3b.o:login s3b.o:loginG s3b.o:logoutG s3c.o:logout | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 [ -z "$bad_" ] && [ "$on_" = "$ow_" ] && [ "$r3_" = 0 ] && grep -q 'npm whoami failed' "$SW/s3a.o" && grep -q 'logged in to npm as stranger' "$SW/s3b.o" \
   && pass "REV 11a rule 6: each npm credential command ship prints (pl, lo, A6's stop, publish-npm's two whoami stops and its last line; stdout and the next file) is a line of its own and runs as printed, from sh and an interactive zsh" \
   || fail "rule 6: kinds [$on_], want [$ow_]; publish-npm rc ${r3_:-?};$(printf '%s' "$bad_" | cut -c1-700)"
@@ -1906,6 +1927,36 @@ for l_ in "cd / && npm config delete //registry.npmjs.org/:_authToken --location
   for how_ in sh zsh; do srun $how_ "$l_" "$w_" || { grep -qF "$g_" "$SW/rec" && cc_=$((cc_ + 1)); }; done
 done
 [ "$cc_" = 4 ] && pass "  control: today's sentences, copied from 'cd /' to their end, give the stub F. and F, (4 of 4 runs caught)" || fail "  control: $cc_ of 4 runs gave F. or F,"
+# REV 11b rule 13 (r15a F3): A6's keep route: the ship line with G, run as printed (from /, its dry entry
+# in its place, ship's own stand-ins): ship logs in to G and out of it, and the release completes; F's
+# session line is as it was
+echo '//registry.npmjs.org/:_authToken=npm_old' > "$FX/npmrc"; rm -rf "${OUTR:?}"; ship; r=$?
+sl_=$(grep "^  NPM_CONFIG_USERCONFIG='$FX/ghome/.npmrc-sheepr' sh '[^']*/scripts/release.sh' ship --out " "$NF" | head -1)
+grep -v '^NPM_CONFIG_USERCONFIG=' "$FX/envs" > "$FX/envs.k"; rm -f "$FX/made" "$FX/calls" "$FX/ghome/.npmrc-sheepr"
+sd_=$(printf '%s\n' "$sl_" | sed 's/ ship --out / __ship-dry --out /')
+(cd / && IFS='
+'; no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 $(cat "$FX/envs.k") sh -c "$sd_") > "$FX/ko" 2>&1; kr_=$?
+dryhomes "$FX/ko"; cat "$FX/made" >> "$FX/allmade" 2>/dev/null
+[ $r = 1 ] && [ -n "$sl_" ] && [ $kr_ = 0 ] && grep -q 'release: ship: v0.1.0 is public on GitHub, Homebrew and npm' "$FX/ko" && grep -qx '//registry.npmjs.org/:_authToken=npm_old' "$FX/npmrc" \
+  && ! grep -q '_authToken=' "$FX/ghome/.npmrc-sheepr" 2>/dev/null && grep -q '^npm login' "$FX/calls" \
+  && pass "REV 11b rule 13: A6's keep route, the ship line with G run as printed: the release completes with G (logged in and out), F's session line as it was" \
+  || fail "A6 keep route: rc=$r line '$(printf '%s' "$sl_" | cut -c1-140)' kept run rc=$kr_ $(grep -e 'stopped at' -e 'is public' "$FX/ko" | head -1 | cut -c1-200); F: $(tr '\n' ' ' < "$FX/npmrc")"
+world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/envs.k" "${FX:?}/ko" "${FX:?}/ghome/.npmrc-sheepr"
+# REV 11b rule 12: in the next file, after a stop past the push, the login's lead-in follows ship's
+# logout: it failed (ETIMEDOUT): both lines only once that logout ends with no error; it ended: the
+# login plainly (control)
+LGIF="cd / && npm login --registry=https://registry.npmjs.org/ --scope= --logs-max=0 --userconfig='$FX/npmrc'"
+for k_ in failed ended; do
+  : > "$FX/pubfail.sheepr"; [ $k_ = failed ] && echo ETIMEDOUT > "$FX/logoutcode"
+  rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/pubfail.sheepr" "${FX:?}/logoutcode" "${FX:?}/npmrc"
+  b_=$(grep -B1 -xF "  $LGIF" "$NF" | head -1)
+  if [ $k_ = failed ]; then
+    [ $r = 1 ] && [ "$b_" = "Then, only once ship's npm logout above ends with no error, these two:" ] && grep -q "ship's npm login line is still in npm's userconfig after npm logout" "$NF" \
+      && pass "REV 11b rule 12: ship's logout failed: the next file's login comes only once that logout ends with no error" || fail "rule 12 (logout failed): before the login: '$b_'"
+  else
+    [ $r = 1 ] && grep -qxF "  $LGIF" "$NF" && ! grep -qi 'only once' "$NF" && pass "  control: ship's logout ended: the next file names the login plainly" || fail "  rule 12 control: '$b_' $(grep -ci 'only once' "$NF")"
+  fi
+done
 # REV 11a rule 7 (r14a F3, R3): the next file's publish-npm step names F itself. ship ran with
 # NPM_CONFIG_USERCONFIG=$FX/ship.npmrc and stopped after the push; in a shell without that variable
 # (its HOME's .npmrc empty): the printed npm login, then the printed publish-npm line, as printed:
@@ -1930,28 +1981,87 @@ for k_ in bare control; do
   else fail "rule 7 R3 ($k_): rc=$rc_, $np_ uploads, the line '$(printf '%s' "$pnl_" | cut -c1-120)'; publish-npm said: $(grep -m1 -e 'whoami failed' -e 'userconfig' "$FX/co" | cut -c1-200) | last: $(tail -1 "$FX/co" | cut -c1-160)"; fi
 done
 rm -rf "${FX:?}/h3"; rm -f "${FX:?}/ship.npmrc" "${FX:?}/r3.nf"; world_reset; rm -f "${FX:?}/npmrc"
-# REV 11a rule 9 (r14a F2): publish-npm finds npm logged in as another account (F's live token): its stop
-# names the logout step first (it ends that token everywhere it is used), then the login, then how to
-# keep that token (another userconfig file). Its command lines, run in order as printed: the stand-in
-# ends the other account's token before the login writes. Control: whoami ENEEDAUTH: the login alone
+# follow FILE: the stop's lines in FILE run in order as an operator who obeys the text does. Each
+# command line (two spaces in: cd / && npm ..., or the publish-npm line, its dry entry in its place)
+# runs from / in a shell with no userconfig variable. A command whose lead-in says "only once" runs only
+# when the command before it ended with no error. The route ends at a lead-in that says "run neither
+# line"; with keep as its second argument, that lead-in starts the route instead (the keep route; an
+# argument, not a variable: an assignment before a function call stays, under the system's sh). The stand-in npm
+# records what it did in $FX/tokops; the publish-npm run's output is $FX/fo
+follow() {
+  fr_=0 lead_="" on_=yes fk_=${2:-}; [ -z "$fk_" ] || on_=no
+  while IFS= read -r l_; do
+    case $l_ in
+      "  cd / && npm "*|"  NPM_CONFIG_USERCONFIG="*" publish-npm --out "*)
+        [ $on_ = yes ] || continue
+        case $lead_ in *[Oo]"nly once"*) [ $fr_ = 0 ] || return 0 ;; esac
+        case $l_ in
+          *" publish-npm --out "*) cmd_=$(printf '%s\n' "$l_" | sed 's/ publish-npm --out / __publish-npm-dry --out /'); printf 'v0.1.0\nv0.1.0\n' > "$FX/ask"
+            (cd / && no_osascript env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 SR_PUBLISH_DRY_NPM="$S/npm" \
+              SR_PUBLISH_DRY_NOTIFY="$S/notify" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/asks" sh -c "$cmd_") > "$FX/fo" 2>&1 < /dev/null; fr_=$?; dryhomes "$FX/fo" ;;
+          *) (cd / && env -i PATH="$S:/usr/bin:/bin" HOME="$FX/ghome" sh -c "$l_") > /dev/null 2>&1 < /dev/null; fr_=$? ;;
+        esac ;;
+      *) lead_=$l_
+        case $l_ in *"run neither line"*) if [ -n "$fk_" ]; then on_=yes; else return 0; fi ;; esac ;;
+    esac
+  done < "$1"
+}
+GF=$FX/ghome/.npmrc-sheepr   # G, the keep route's file (REV 11b rule 13), for runs with HOME $FX/ghome
+# REV 11a rule 9 (r14a F2), REV 11b rules 12 and 13 (r15a F3): publish-npm finds npm logged in as another
+# account (F's live token): its stop names the logout first (it ends that token everywhere it is used),
+# then the login only once that logout ended with no error, then the keep route (G). An operator who
+# obeys it (follow): the other account's token ends before the login writes. Control: whoami ENEEDAUTH:
+# the login alone. r15a X3: the logout failing (ETIMEDOUT): the operator logs in to nothing
 printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/afterpush" "${FX:?}/viewfailv.sheepr-linux-arm64"
-for k_ in stranger control; do
-  : > "$FX/npmrc"; [ $k_ = control ] || { echo '//registry.npmjs.org/:_authToken=npm_stranger' > "$FX/npmrc"; echo stranger > "$FX/whoami"; }
-  pnx; rc_=$?; rm -f "${FX:?}/whoami"; : > "$FX/tokops"
-  grep '^  cd / && npm ' "$FX/co" > "$FX/co.steps"
-  while IFS= read -r l_; do (cd / && env -i PATH="$S:/usr/bin:/bin" HOME="$FX/ghome" sh -c "$l_") > /dev/null 2>&1 < /dev/null; done < "$FX/co.steps"
+for k_ in stranger control x3; do
+  : > "$FX/npmrc"; [ $k_ = control ] || echo '//registry.npmjs.org/:_authToken=npm_stranger' > "$FX/npmrc"
+  pnx; rc_=$?; cp "$FX/co" "$FX/co.$k_"; : > "$FX/tokops"
+  [ $k_ = x3 ] && echo ETIMEDOUT > "$FX/logoutcode"; follow "$FX/co"; rm -f "${FX:?}/logoutcode"
   ops_=$(tr '\n' '|' < "$FX/tokops")
-  if [ $k_ = stranger ]; then
-    [ $rc_ = 1 ] && grep -q 'logged in to npm as stranger' "$FX/co" && [ "$ops_" = "DELETE token=npm_stranger|LOGIN|" ] \
-      && grep -q 'to keep that token: run neither line' "$FX/co" && grep -qF 'an absolute path in NPM_CONFIG_USERCONFIG' "$FX/co" \
-      && pass "REV 11a rule 9: npm logged in as another account: the logout step, then the login, then how to keep that token; run in order, the other token ends before the login writes" \
-      || fail "rule 9: rc=$rc_ ops [$ops_]; $(grep -c . "$FX/co.steps") command lines; $(grep -A1 'logged in to npm as' "$FX/co" | tr '\n' '|' | cut -c1-300)"
+  case $k_ in
+    stranger) [ $rc_ = 1 ] && grep -q 'logged in to npm as stranger' "$FX/co" && [ "$ops_" = "DELETE token=npm_stranger|LOGIN|" ] \
+        && grep -q "^Only once that logout ends with no error, log in as lukasco with this, then run publish-npm again:$" "$FX/co" && grep -q 'run neither line above' "$FX/co" \
+        && pass "REV 11a rule 9, REV 11b rule 12: npm logged in as another account: the logout, the login only once it ended, then the keep route; an operator who obeys it ends the other token before the login writes" \
+        || fail "rule 9: rc=$rc_ ops [$ops_]; $(grep -A1 'logged in to npm as' "$FX/co" | tr '\n' '|' | cut -c1-300)" ;;
+    control) [ $rc_ = 1 ] && grep -q 'npm whoami failed' "$FX/co" && [ "$ops_" = "LOGIN|" ] && ! grep -q '^  cd / && npm logout' "$FX/co" \
+        && pass "  control: whoami ENEEDAUTH: the login step alone" || fail "  rule 9 control: rc=$rc_ ops [$ops_]" ;;
+    x3) [ $rc_ = 1 ] && [ -z "$ops_" ] && grep -qx '//registry.npmjs.org/:_authToken=npm_stranger' "$FX/npmrc" \
+        && pass "r15a X3: the other account's logout failing (ETIMEDOUT): an operator who obeys the text logs in to nothing; that token's line kept" \
+        || fail "r15a X3: ops [$ops_]; F: $(tr '\n' ' ' < "$FX/npmrc")" ;;
+  esac
+done
+# REV 11b rule 13 (r15a F3): the keep route under publish-npm: the login of G, the publish-npm line with
+# G, then the logout of G, each run as printed (from /, env -i): G gets ship's login and loses it, the
+# four packages go up, and F's other-account line is as it was
+echo '//registry.npmjs.org/:_authToken=npm_stranger' > "$FX/npmrc"; rm -f "$FX"/pub.* "$GF"; : > "$FX/tokops"
+follow "$FX/co.stranger" keep; ops_=$(tr '\n' '|' < "$FX/tokops")
+np_=$(ls "$FX"/pub.* 2>/dev/null | grep -c .)
+[ "$ops_" = "LOGIN|DELETE token=npm_dry|" ] && [ "$np_" = 4 ] && grep -qx '//registry.npmjs.org/:_authToken=npm_stranger' "$FX/npmrc" && [ "$(grep -c . "$FX/npmrc")" = 1 ] \
+  && ! grep -q '_authToken=' "$GF" 2>/dev/null && grep -qxF "  $(printf '%s' "$LGF" | sed "s|'$FX/npmrc'|'$GF'|")" "$FX/co.stranger" \
+  && pass "REV 11b rule 13: the keep route, run as printed: the login of G, publish-npm with G (4 uploads), the logout of G; F's other-account line as it was" \
+  || fail "keep route: ops [$ops_], $np_ uploads, F: $(tr '\n' ' ' < "$FX/npmrc"); G: $(tr '\n' ' ' < "$GF" 2>/dev/null); publish-npm: $(tail -1 "$FX/fo" 2>/dev/null | cut -c1-160)"
+world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/tokops" "${FX:?}/co.stranger" "${FX:?}/co.control" "${FX:?}/co.x3" "${GF:?}"
+# REV 11b rule 12 (r15a F1, X2): publish-npm's whoami failing for another reason than a missing or dead
+# credential (ETIMEDOUT) while F holds a live token: npm's words, "run publish-npm again", and no login
+# line (followed, nothing is written over that token). Controls: ENEEDAUTH with an empty F, and E401
+# with a dead token, each name the login
+printf ': > "%s/viewfailv.sheepr-linux-arm64"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/afterpush" "${FX:?}/viewfailv.sheepr-linux-arm64"
+for k_ in ETIMEDOUT ENEEDAUTH E401; do
+  case $k_ in
+    ETIMEDOUT) echo '//registry.npmjs.org/:_authToken=npm_liveCI' > "$FX/npmrc"; echo ETIMEDOUT > "$FX/whoamicode" ;;
+    ENEEDAUTH) : > "$FX/npmrc" ;;
+    E401) echo '//registry.npmjs.org/:_authToken=npm_dead' > "$FX/npmrc"; : > "$FX/expired" ;;
+  esac
+  pnx; rc_=$?; rm -f "${FX:?}/whoamicode" "${FX:?}/expired"; : > "$FX/tokops"; follow "$FX/co"; ops_=$(tr '\n' '|' < "$FX/tokops")
+  nl_=$(grep -c '^  cd / && npm login ' "$FX/co")
+  if [ $k_ = ETIMEDOUT ]; then
+    [ $rc_ = 1 ] && [ "$nl_" = 0 ] && [ -z "$ops_" ] && grep -q 'When npm answers, run publish-npm again' "$FX/co" && grep -q 'npm error code ETIMEDOUT' "$FX/co" \
+      && pass "r15a X2: whoami ETIMEDOUT with a live token in F: npm's words, run publish-npm again, no login line (nothing written over the token)" || fail "r15a X2: rc=$rc_ $nl_ login lines, ops [$ops_]; $(grep -m1 'whoami failed' "$FX/co" | cut -c1-200)"
   else
-    [ $rc_ = 1 ] && grep -q 'npm whoami failed' "$FX/co" && [ "$ops_" = "LOGIN|" ] && ! grep -q 'npm logout' "$FX/co.steps" \
-      && pass "  control: whoami ENEEDAUTH: the login step alone" || fail "  rule 9 control: rc=$rc_ ops [$ops_] $(tr '\n' '|' < "$FX/co.steps" | cut -c1-200)"
+    [ $rc_ = 1 ] && [ "$nl_" = 1 ] && [ "$ops_" = "LOGIN|" ] && pass "  control: whoami $k_ ($( [ $k_ = E401 ] && echo 'a dead token' || echo 'an empty F')): the login line" || fail "  X2 control $k_: rc=$rc_ $nl_ login lines, ops [$ops_]"
   fi
 done
-world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/tokops" "${FX:?}/co.steps"
+world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/tokops"
 # r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
 # child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
 # with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a
@@ -2329,7 +2439,7 @@ grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -qx 'R
 rm -rf "${OUTR:?}"; : > "$FX/owner404json.sheepr-linux-x64"; ship; r=$?; rm -f "$FX/owner404json.sheepr-linux-x64"; hint_row "a name not on npm, its E404 only in --json's stdout (A4)" "reserve the name first (publish a 0.0.0 placeholder as lukasco); this run made nothing public"
 printf 'cd "%s/v0.1.0" && echo x > NPM-CHECKED\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's stamp check" "npm-check has not passed on"
 printf 'echo x >> "%s/v0.1.0/sheepr-linux-x86_64"\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; hint_row "C6's file check" "a file npm-check checked has changed since"
-printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed (not logged in to npm?); this step uploaded nothing"
+printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed; this step uploaded nothing"
 printf 'echo other > "%s/whoami"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoami"; hint_row "C6's whoami another user" "but the packages belong to lukasco; this step uploaded nothing"
 : > "$FX/pubfail.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"; hint_row "an upload refused" "A browser login or 2FA approval that failed or timed out may be the cause"
 rm -rf "${OUTR:?}"; ship; r=$?

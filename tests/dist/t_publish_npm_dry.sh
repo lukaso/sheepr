@@ -178,6 +178,16 @@ h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*)
 # who may publish: npm's own answer, for all four names before any view or upload; the main
 # package is asked last, so a refusal there proves no platform package went out first
 nopub() { ! grep -q -e '^npm publish' -e '^npm view' "$FX/calls"; }
+# REV 11b rule 12 (r15a F1): a whoami failure names the npm login only for a missing (ENEEDAUTH) or a dead
+# (E401) credential; any other code: npm's words and "run publish-npm again", and no login line
+bw_=""
+for c_ in ENEEDAUTH E401 ETIMEDOUT E403; do
+  mkout "$D" v0.1.0; echo $c_ > "$FX/whoamicode"; pub v0.1.0; r=$?; rm -f "$FX/whoamicode"
+  case $c_ in ENEEDAUTH|E401) w_=1 ;; *) w_=0 ;; esac
+  g_=$(grep -c '^  cd / && npm login ' "$FX/o")
+  [ $r = 1 ] && nopub && [ "$g_" = "$w_" ] && grep -q "npm error code $c_" "$FX/o" && { [ $w_ = 1 ] || grep -q 'When npm answers, run publish-npm again' "$FX/o"; } || bw_="$bw_ [$c_: rc=$r, $g_ login lines]"
+done
+[ -z "$bw_" ] && pass "REV 11b rule 12: whoami ENEEDAUTH and E401 name the login; ETIMEDOUT and E403 name none (npm's words, run publish-npm again)" || fail "rule 12, whoami:$bw_"
 mkout "$D" v0.1.0; : > "$FX/whoamifail"; pub v0.1.0; r=$?; rm -f "$FX/whoamifail"
 [ $r = 1 ] && nopub && grep -q 'npm whoami failed' "$FX/o" && pass "not logged in to npm: refused before any view or upload" || fail "whoami fails: rc=$r $(order) $(tail -1 "$FX/o")"
 # REV 11a rule 7 (r14a F3): publish-npm makes A1's check too: npm naming another userconfig than the
