@@ -61,6 +61,8 @@ Sheepr.app/Contents/CodeResources"
     tar -tvzf "$arc" > "$t/list" 2>/dev/null; r_=$?
     [ $r_ -le 125 ] || nocheck "tar stopped by a signal while it listed $arc (exit $r_)"
     [ $r_ = 0 ] || bad "cannot list $arc"
+    # (no row holds the tail compare below: a listing cut mid-line, with the append after it landing,
+    # needs a seam the cells' PATH cannot reach; r15b's MTAIL, the compare dropped, passes every cell)
     { /usr/bin/printf 'end\n' >> "$t/list"; } 2>/dev/null && [ "$(tail -n 1 "$t/list")" = end ] \
       || nocheck "the listing of $arc could not be written into $t (a full or unwritable temp dir)"
     list=$(sed '$d' "$t/list")
