@@ -534,17 +534,17 @@ rtfail() {
 }
 # gkhint ARCHIVE PATH: what follows spctl's words when Gatekeeper rejects a bundle codesign and stapler
 # accepted (REV 11b rule 16): a rerun stops here again until Gatekeeper accepts it; what to check, each
-# on a line of its own (the second unpacks ARCHIVE into a new temp dir and asks Gatekeeper about PATH
-# there: ship's own copy is gone by then); and the signing certificate's remedy (REV 12a): a rebuild
+# on a line of its own (the second unpacks ARCHIVE into a new temp dir, asks Gatekeeper about PATH
+# there, ship's own copy being gone by then, and removes that dir: r16b F5); and the signing certificate's remedy (REV 12a): a rebuild
 # only while ship knows nothing of the tag is public (under ship, before its push); after the push,
 # and in a standalone verify, npm-check or publish, only once a runnable ls-remote line shows the tag
 # is not pushed (a pushed tag is never rebuilt: a new version). Never "expired": an expired
 # certificate does not make Gatekeeper reject a notarized, timestamped build
 gkhint() {
   printf '%s' ".
-A rerun stops here again until Gatekeeper accepts the bundle. See what Gatekeeper says on this Mac with these (the second unpacks $(basename "$1") into a new temp dir and asks Gatekeeper about its bundle):
+A rerun stops here again until Gatekeeper accepts the bundle. See what Gatekeeper says on this Mac with these (the second unpacks $(basename "$1") into a new temp dir, asks Gatekeeper about its bundle, and removes that dir):
   spctl --status
-  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\""
+  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\"; rm -rf \"\${d:?}\""
   if [ "$shipping" = yes ] && [ -n "$shipprog" ] && ! grep -qx 'start push' "$shipprog" 2>/dev/null; then
     printf '%s' "
 When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one."

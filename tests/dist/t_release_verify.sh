@@ -155,12 +155,13 @@ source=Notarized Developer ID"; rtset; vc; rc=$?
 # gkrun FILE ARCHIVE: the two Gatekeeper lines of a spctl stop (FILE) run as printed, from / in sh and
 # in an interactive zsh -f, with a stub spctl first on PATH and TMPDIR under $FX (the line's mktemp names
 # TMPDIR: macOS's mktemp -d with no template ignores it): `spctl --status`, and
-# the line that unpacks ARCHIVE into a new temp dir and asks spctl about the bundle there (the stub
-# records whether that bundle is a directory). 0 when both gave exactly that
+# the line that unpacks ARCHIVE into a new temp dir, asks spctl about the bundle there (the stub
+# records whether that bundle is a directory) and removes that dir (r16b F5: none is left). 0 when
+# both gave exactly that
 gkrun() {
   mkdir -p "$FX/spb" "$FX/gk" || return 1
   printf '#!/bin/sh\n{ printf "spctl"; for a; do printf " [%%s]" "$a"; done; [ $# = 5 ] && { [ -d "$5" ] && printf " bundle=yes" || printf " bundle=no"; }; printf "\\n"; } >> "$REC"\n' > "$FX/spb/spctl"; chmod +x "$FX/spb/spctl"
-  l1_=$(grep -x '  spctl --status' "$1"); l2_=$(grep -x "  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf '$2' -C \"\$d\" && spctl -a -vv -t exec \"\$d/[a-zA-Z/.]*\"" "$1")
+  l1_=$(grep -x '  spctl --status' "$1"); l2_=$(grep -x "  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf '$2' -C \"\$d\" && spctl -a -vv -t exec \"\$d/[a-zA-Z/.]*\"; rm -rf \"\${d:?}\"" "$1")
   [ -n "$l1_" ] && [ -n "$l2_" ] || return 1
   g_=0
   for how_ in sh zsh; do
@@ -170,7 +171,9 @@ gkrun() {
       else (cd / && printf '%s\n' "$l_" | env -i PATH="$FX/spb:/usr/bin:/bin" HOME="$FX" TMPDIR="$FX/gk" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
       case $l_ in
         *--status) [ "$(cat "$REC")" = "spctl [--status]" ] || g_=1 ;;
-        *) case $(cat "$REC") in "spctl [-a] [-vv] [-t] [exec] [$FX/gk/sheepr-gatekeeper."*"/Sheepr.app] bundle=yes") ;; *) g_=1 ;; esac ;;
+        *) case $(cat "$REC") in "spctl [-a] [-vv] [-t] [exec] [$FX/gk/sheepr-gatekeeper."*"/Sheepr.app] bundle=yes") ;; *) g_=1 ;; esac
+           # (r16b F5: the line removes its temp dir: none is left)
+           [ "$(ls "$FX/gk" | grep -c '^sheepr-gatekeeper\.')" = 0 ] || g_=1 ;;
       esac
     done
   done
