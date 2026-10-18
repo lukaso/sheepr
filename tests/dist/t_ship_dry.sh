@@ -88,9 +88,10 @@ cat > "$S/build" <<EOF
 for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ build" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "build \$*" >> "$FX/calls"
 [ -e "$FX/onbuild" ] && sh "$FX/onbuild"
-# (\$FX/buildlinger: a child left behind, fds 0-2 closed, any other kept; \$FX/buildlinger1: fd 1 kept too)
-[ -e "$FX/buildlinger" ] && { /bin/sleep 15 < /dev/null > /dev/null 2>&1 & echo \$! > "$FX/linger.pid"; }
-[ -e "$FX/buildlinger1" ] && { /bin/sleep 15 < /dev/null 2>/dev/null & echo \$! > "$FX/linger.pid"; }
+# (\$FX/buildlinger: a child left behind, fds 0-2 closed, any other kept; \$FX/buildlinger1: fd 1 kept too.
+# It lingers until \$FX/linger.go exists (the row makes it), at most 120 s)
+[ -e "$FX/buildlinger" ] && { /bin/sh -c 'n=0; while [ ! -e "\$1" ] && [ \$n -lt 600 ]; do /bin/sleep 0.2; n=\$((n + 1)); done' sh "$FX/linger.go" < /dev/null > /dev/null 2>&1 & echo \$! > "$FX/linger.pid"; }
+[ -e "$FX/buildlinger1" ] && { /bin/sh -c 'n=0; while [ ! -e "\$1" ] && [ \$n -lt 600 ]; do /bin/sleep 0.2; n=\$((n + 1)); done' sh "$FX/linger.go" < /dev/null 2>/dev/null & echo \$! > "$FX/linger.pid"; }
 if [ -e "$FX/buildint" ]; then
   # only in a process group ship leads (the row's own session): never the cell's group
   [ "\$(/usr/bin/perl -e 'print getpgrp()')" = "\$PPID" ] || { echo "UNSAFE buildint" >> "$FX/calls"; exit 1; }
@@ -2135,9 +2136,14 @@ world_reset; rm -f "${FX:?}/npmrc" "${FX:?}/tokops"
 # r12b F3, F4: no child holds ship's fd 8 or 9 (its own stdout and stderr, kept for the handler): a
 # child left behind with its fds 0-2 closed must not hold a reader of ship's stdout. `ship | reader`
 # with the build stand-in leaving such a child: the reader ends within 2 s of ship's end. Control: a
-# child that keeps fd 1 (ship's stdout) holds the reader
+# child that keeps fd 1 (ship's stdout) holds the reader. The child lingers until the row releases it,
+# 4 s after ship's own end (its t.end), so the control holds the reader however long ship ran
+# (r15b P4-10: a child that ended by itself after 15 s let a slow run's control fail)
 for k_ in buildlinger buildlinger1; do
-  rm -f "$FX/linger.pid" "$FX/t.end" "$FX/t.eof"; : > "$FX/$k_"; rm -rf "${OUTR:?}"; PIPEEOF=1; ship; r=$?; PIPEEOF=; rm -f "${FX:?}/$k_"
+  rm -f "$FX/linger.pid" "$FX/t.end" "$FX/t.eof" "$FX/linger.go"; : > "$FX/$k_"; rm -rf "${OUTR:?}"
+  ( n_=0; until [ -e "$FX/t.end" ] || [ $n_ -ge 1500 ]; do /bin/sleep 0.2; n_=$((n_ + 1)); done; /bin/sleep 4; : > "$FX/linger.go" ) < /dev/null > /dev/null 2>&1 &
+  rl_=$!
+  PIPEEOF=1; ship; r=$?; PIPEEOF=; rm -f "${FX:?}/$k_"; wait $rl_
   lp_=$(cat "$FX/linger.pid" 2>/dev/null); d_=$(/usr/bin/perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$(cat "$FX/t.end" 2>/dev/null)" "$(cat "$FX/t.eof" 2>/dev/null)")
   if [ $k_ = buildlinger ]; then
     completed && [ -n "$lp_" ] && /usr/bin/perl -e 'exit !($ARGV[0] <= 2)' "$d_" \
@@ -2146,9 +2152,10 @@ for k_ in buildlinger buildlinger1; do
     completed && [ -n "$lp_" ] && /usr/bin/perl -e 'exit !($ARGV[0] >= 3)' "$d_" \
       && pass "  control: a child that keeps fd 1 holds the reader (${d_} s after ship)" || fail "  control linger: rc=$r child '$lp_' reader ${d_} s after ship"
   fi
-  # the child ends by itself (15 s); wait for it, so no row after this one sees it
+  # the child ends once released; wait for it, so no row after this one sees it
   n_=0; while [ -n "$lp_" ] && kill -0 "$lp_" 2>/dev/null && [ $n_ -lt 80 ]; do /bin/sleep 0.25; n_=$((n_ + 1)); done
 done
+rm -f "${FX:?}/linger.go"
 # r12b F5: a closed fd 1 or fd 2 at the start (ship keeps both on fds 8 and 9: the exec that keeps them
 # killed the shell before its handler, leaving its temp dir): a refusal on the open channel, a
 # non-zero exit, no temp dir left, nothing public. Under sh (bash 3.2), dash and zsh as sh
