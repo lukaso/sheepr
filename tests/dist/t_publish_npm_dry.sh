@@ -634,6 +634,16 @@ left_=$(grep -rl '_authToken=npm_pn' "$FX/t" 2>/dev/null | tr '\n' ' ')
   && pass "r18a F1: publish-npm, --out with a \$: refused before any npm call, the text names the \$, no token anywhere" \
   || fail "r18a F1, publish-npm --out with a \$: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_] $(grep -m1 '^release:' "$FX/o" | cut -c1-200)"
 rm -rf "${FX:?}/t"
+# r19a PX1 (REV 12d rule 40; REV 12c rule 32): --out a link to a dir whose name holds ${HOME} (the build in
+# it): the check sees the physical path (publish-npm has no second check, as ship_run does): refused before
+# any npm call, the text names the $, no token under the fixture. Control: the literal ${TMPDIR} row above
+mkdir -p "$FX/t" && mkout "$FX/t/"'${HOME}'/v0.1.0 v0.1.0 && ln -s "$FX/t/"'${HOME}' "$FX/t/lnk" || exit 3
+: > "$FX/tokops"; PUBOUT=$FX/t/lnk; pub v0.1.0; r=$?; PUBOUT=
+left_=$(grep -rl '_authToken=npm_pn' "$FX/t" 2>/dev/null | tr '\n' ' ')
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && grep -qF 'holds a $' "$FX/o" && [ -z "$left_" ] \
+  && pass "r19a PX1: publish-npm, --out a link to a dir named \${HOME}: refused before any npm call, no token anywhere" \
+  || fail "r19a PX1: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_] $(grep -m1 -e 'ended' -e 'holds a' "$FX/o" | cut -c1-200)"
+rm -rf "${FX:?}/t"
 # r18a F6 (REV 12c rule 35): publish-npm stops inside npm_login before npm's login (D/end a directory it cannot
 # remove): no login ran, so no text says its session is ended. Control: every completed row (the line)
 mkout "$D" v0.1.0; rm -rf "${PN:?}"; mkdir -p "$PN/end/x" && chmod 700 "$PN" || exit 3

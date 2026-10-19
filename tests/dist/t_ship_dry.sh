@@ -2248,6 +2248,28 @@ KEEP=1; ship; r2_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; r12keep
   && pass "  control: that second logout fails too: a stop, P and the earlier next file kept as they were, nothing says ended" \
   || fail "  control, the second logout fails: rc $r1_ $r2_ P $( [ -e "$PP" ] && echo kept || echo gone) file $( [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && echo same || echo changed); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
 world_reset; rm -rf "${OUTR:?}"
+# r19a X2 (PLAN-ship.md REV 12d rule 40; REV 12c rule 34: never while another run holds the lock): the
+# lock is held (pid 99999) and P holds that run's live session: no npm call, P byte-identical, the lock
+# untouched. Control: rule 2's rows (no lock: the logout of P first)
+rm -rf "${OUTR:?}"; mkdir -p "$PD" "$OUTR/.ship.lock" && chmod 700 "$PD" && echo 99999 > "$OUTR/.ship.lock/pid" \
+  && printf '//registry.npmjs.org/:_authToken=npm_live_other_run\n' > "$PP" || exit 3; p0_=$(cksum < "$PP")
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && [ "$(cksum < "$PP" 2>/dev/null)" = "$p0_" ] && [ ! -s "$FX/tokops" ] && [ "$(cat "$OUTR/.ship.lock/pid")" = 99999 ] \
+  && pass "r19a X2: another run holds the lock: no npm call, its P byte-identical" \
+  || fail "r19a X2: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && cat "$PP" || echo gone)"
+rm -rf "${OUTR:?}"; world_reset
+# r19a X3 (REV 12d rule 40; REV 12c rule 34: before A1's checks): a done ship whose end logout fails, then
+# the checkout is not clean (an untracked file: the operator's next work), then ship again: its first npm
+# call is the logout of the kept P, P removed, then A1's refusal. Control: r18a F3's row (a clean checkout:
+# the same logout, then A2's refusal)
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; rm -f "${FX:?}/logoutcode"
+: > "$REPO/x19-untracked"; : > "$FX/tokops"; KEEP=1; ship; r2_=$?; KEEP=; rm -f "${REPO:?}/x19-untracked"
+f2_=$(grep '^npm ' "$FX/calls" 2>/dev/null | head -1)
+[ $r1_ = 1 ] && [ $r2_ = 1 ] && grep -q 'the tree is not clean' "$FX/o" && case $f2_ in "npm logout "*) true ;; *) false ;; esac \
+  && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PP" ] \
+  && pass "r19a X3: a kept session, then ship with a checkout that is not clean: the logout first, then A1's refusal" \
+  || fail "r19a X3: rc $r1_ $r2_ first npm call [$(printf '%s' "$f2_" | cut -c1-60)] tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && echo left || echo gone); $(grep -m1 'stopped at' "$FX/o" | cut -c1-200)"
+world_reset; rm -rf "${OUTR:?}"
 # rule 4: no npm command is printed: no stop text, next file or stdout above, and no notification text,
 # holds "npm login", "npm logout" or "npm config" (release.sh's and notify.sh's own texts: no such words
 # outside comments)
