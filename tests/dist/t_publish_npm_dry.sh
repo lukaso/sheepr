@@ -621,6 +621,14 @@ left_=$(grep -rl '_authToken=npm_pn' "$FX/t" 2>/dev/null | tr '\n' ' ')
   && pass "r18a F1: publish-npm, --out with a \$: refused before any npm call, the text names the \$, no token anywhere" \
   || fail "r18a F1, publish-npm --out with a \$: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_] $(grep -m1 '^release:' "$FX/o" | cut -c1-200)"
 rm -rf "${FX:?}/t"
+# r18a F6 (REV 12c rule 35): publish-npm stops inside npm_login before npm's login (D/end a directory it cannot
+# remove): no login ran, so no text says its session is ended. Control: every completed row (the line)
+mkout "$D" v0.1.0; rm -rf "${PN:?}"; mkdir -p "$PN/end/x" && chmod 700 "$PN" || exit 3
+: > "$FX/tokops"; pub v0.1.0; r=$?
+[ $r = 1 ] && grep -q "cannot remove $PN/end" "$FX/o" && ! grep -q '^npm login' "$FX/calls" && ! grep -q "npm session is ended" "$FX/o" \
+  && pass "r18a F6: publish-npm, a stop before npm's login: no text says its session is ended" \
+  || fail "r18a F6, publish-npm: rc=$r logins $(grep -c '^npm login' "$FX/calls"); $(grep -e 'cannot remove' -e 'session is ended' "$FX/o" | tr '\n' '|' | cut -c1-240)"
+rm -rf "${PN:?}"
 # this cell's own dry HOMEs (each run prints the one it made; other sessions may run these cells at
 # the same time, so the whole /private/tmp is not counted): at least ten seen, none left
 nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""

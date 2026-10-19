@@ -324,6 +324,7 @@ case \$1 in
     if [ -s "$FX/logintoken" ]; then echo "\${TOK}\$(cat "$FX/logintoken")" >> "\$UC"; else echo "\${TOK}npm_dry" >> "\$UC"; fi
     [ ! -e "$FX/loginfailw" ] || exit 1
     [ ! -e "$FX/loginempty" ] || : > "\$UC"   # (\$FX/loginempty: the login leaves P with no token line, exit 0)
+    [ ! -e "$FX/loginauth" ] || printf '//registry.npmjs.org/:_auth=c3RyYW5nZXI6eA==\n' > "\$UC"   # (\$FX/loginauth: only a basic-auth line, no token line: r18a F5)
     exit 0 ;;   # (\$FX/loginfailw: the login writes its line, then fails)
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     # (\$FX/logoutonce CODE: the next logout fails with that npm error code, once, and the line stays)
@@ -2032,6 +2033,78 @@ for k_ in plain acl; do
     || fail "r18a F2 ($k_): rc=$r D: [$(tr '\n' '|' < "$FX/acl.d" 2>/dev/null | sed "s|$FX|FX|g" | cut -c1-200)] P: [$(tr '\n' '|' < "$FX/acl.p" 2>/dev/null | sed "s|$FX|FX|g" | cut -c1-200)] tokops [$(tr '\n' ' ' < "$FX/tokops")]"
 done
 rm -rf "${FX:?}/ap"; rm -f "${FX:?}/acl.d" "${FX:?}/acl.p"
+# r18a F4 (PLAN-ship.md REV 12c rule 35): P is a hard link (a second name of another file, which holds a
+# live token and a line of its own): a stop (fix) before any npm call, that file byte-identical (a logout
+# through it ended its token and rewrote it, mode 0600: real npm 9 to 11, notes/r18a/np/t1-v*.txt part H).
+# Control: rule 2's rows (P with one name)
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$PD" "$FX/elsewhere" && chmod 700 "$PD" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_elsewhere\nkeep=me\n' > "$FX/elsewhere/npmrc" && ln "$FX/elsewhere/npmrc" "$PP" || exit 3; es0_=$(cksum < "$FX/elsewhere/npmrc")
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && grep -q "is not the file ship's login writes" "$FX/o" \
+  && pass "r18a F4: a hard link at P: a stop (fix) before any npm call; the other file byte-identical" \
+  || fail "r18a F4: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]"
+rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
+# r18a F5 (REV 12c rule 35): the login leaves P with no token line (here a basic-auth line only) and whoami
+# names another account: no logout of P (with no token line, npm logout ends a token of another layer: here
+# one planted in D/global), P removed, and the stop that says to log in as lukasco. Control: rule 3's row
+# (P with the login's token: its logout, P removed)
+rm -rf "${OUTR:?}"; mkdir -p "$PD" && chmod 700 "$PD" && printf '//registry.npmjs.org/:_authToken=npm_global18\n' > "$PD/global" || exit 3
+: > "$FX/tokops"; : > "$FX/loginauth"; echo stranger > "$FX/whoami"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/loginauth" "${FX:?}/whoami"
+[ $r = 1 ] && ! grep -q '^npm logout' "$FX/calls" && ! grep -q DELETE "$FX/tokops" && [ ! -e "$PP" ] && grep -q 'the login to npm was as stranger' "$FX/o" \
+  && pass "r18a F5: the login leaves no token line, whoami names another account: no logout (another layer's token kept), P removed, the stop" \
+  || fail "r18a F5: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && echo left || echo gone); $(grep -m1 'stopped at' "$FX/o" | cut -c1-200)"
+rm -rf "${PD:?}"; world_reset
+# r18a F6 (REV 12c rule 35): a stop inside npm_login before npm's login (D's volume ignores ownership: the
+# seam): no login ran, so no text says ship logged in or that its session is ended. Control: the stop and
+# logout row above (a login ran: pl, then "the session is ended")
+: > "$FX/tokops"; rm -rf "${OUTR:?}"; SETX=SR_SHIP_DRY_NOOWNERS=yes; ship; r=$?; SETX=
+[ $r = 1 ] && ! grep -q '^npm login' "$FX/calls" && ! grep -q 'logged in to npm in this run' "$FX/o" "$NF" && ! grep -q 'session is ended' "$FX/o" \
+  && pass "r18a F6: a stop before npm's login: no text claims a login or an ended session" \
+  || fail "r18a F6: rc=$r logins $(grep -c '^npm login' "$FX/calls"); $(grep -h -e 'logged in to npm' -e 'session is ended' "$FX/o" "$NF" 2>/dev/null | head -2 | tr '\n' '|' | cut -c1-240)"
+# r18a OWN3 (REV 12c rule 35): the volume check cannot tell (npm-same.py's 3; the seam: SR_SHIP_DRY_NOOWNERS=3):
+# a stop (fix) before the login, no P. Control: the noowners row (1) and every completed row (0)
+: > "$FX/tokops"; rm -rf "${OUTR:?}"; SETX=SR_SHIP_DRY_NOOWNERS=3; ship; r=$?; SETX=
+[ $r = 1 ] && grep -q 'cannot tell whether the volume of' "$NF" && ! grep -q '^npm login' "$FX/calls" && [ ! -s "$FX/tokops" ] && endsfix "$NF" \
+  && pass "r18a OWN3: the volume check cannot tell: a stop (fix) before the login" \
+  || fail "r18a OWN3: rc=$r logins $(grep -c '^npm login' "$FX/calls"); $(head -1 "$NF" 2>/dev/null | cut -c1-200)"
+# r18a G1-G4 (REV 12c rule 35; notes/r18a/rows/gaps.rows): the shapes no row made.
+# G1: P a FIFO: a stop (fix) before any npm call. (A writer opens it, non-blocking, for up to 20 s: a reader
+# that blocks on it, ptok's grep, is let go, so a mutant shows as a run that went on, not a hang)
+rm -rf "${OUTR:?}"; mkdir -p "$PD" && chmod 700 "$PD" && mkfifo "$PP" || exit 3
+/usr/bin/perl -e 'use Fcntl; for (1..40) { if (sysopen(my $f, $ARGV[0], O_WRONLY|O_NONBLOCK)) { close $f; exit 0 } select(undef,undef,undef,0.5) } exit 1' "$PP" &
+wp_=$!
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; wait $wp_; wr_=$?
+[ $r = 1 ] && grep -q "is not the file ship's login writes" "$FX/o" && ! grep -q '^npm ' "$FX/calls" \
+  && pass "r18a G1: a FIFO at P: a stop (fix) before any npm call" \
+  || fail "r18a G1: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) (writer $wr_: 0 = a reader opened the FIFO); $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
+rm -rf "${PD:?}"; world_reset
+# G2: D a regular file: a stop (fix) before any npm call
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && echo x > "$PD" || exit 3
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=
+[ $r = 1 ] && grep -q "is not the directory ship makes" "$FX/o" && ! grep -q '^npm ' "$FX/calls" \
+  && pass "r18a G2: a regular file at D: a stop (fix) before any npm call" \
+  || fail "r18a G2: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null); $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
+rm -rf "${PD:?}"; world_reset
+# G3: after the push (C8's view of the main package) P is replaced by a link to another file holding a live
+# token: the end's logout does not go through it, and that file is untouched
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_elsewhere\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+printf 'rm -f "%s"; ln -s "%s" "%s"\n' "$PP" "$FX/elsewhere/npmrc" "$PP" > "$FX/onviewpush.sheepr"
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/onviewpush.sheepr" "${FX:?}/onviewpush.sheepr.done"
+[ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q 'DELETE token=npm_elsewhere' "$FX/tokops" \
+  && pass "r18a G3: a link at P made after the push: no logout through it; its target untouched" \
+  || fail "r18a G3: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] target [$(tr '\n' ' ' < "$FX/elsewhere/npmrc")]"
+rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
+# G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
+# check: a stop before the login), its target untouched
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_elsewhere\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+printf 'mkdir -p "%s" && chmod 700 "%s" && ln -s "%s" "%s"\n' "$PD" "$PD" "$FX/elsewhere/npmrc" "$PP" > "$FX/onbuild"
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/onbuild"
+[ $r = 1 ] && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q '^npm login' "$FX/calls" && ! grep -q 'DELETE token=npm_elsewhere' "$FX/tokops" \
+  && pass "r18a G4: a link at P made during the build: a stop before the login; its target untouched" \
+  || fail "r18a G4: rc=$r logins $(grep -c '^npm login' "$FX/calls") tokops [$(tr '\n' ' ' < "$FX/tokops")] target [$(tr '\n' ' ' < "$FX/elsewhere/npmrc")]"
+rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
 # r17a P4-c (REV 12b rule 29): an earlier run's end time left in D (no P): gone when npm's login starts,
 # and D is mode 0700 then (r17a P4-g: MMODE); the release completes. (A KILL after the login, before the
 # new end was written, let the next run take that live session as ended by itself)

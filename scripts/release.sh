@@ -77,9 +77,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners npm_try
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners="" npm_try=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -1212,7 +1212,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   ship_gk=${SR_SHIP_DRY_SPCTL:-}   # (the cells: C3 or C7, where ship_dry_verify gives Gatekeeper's refusal)
-  ship_noowners=${SR_SHIP_DRY_NOOWNERS:-}   # (the cells: yes, D's volume answers that it ignores file ownership)
+  ship_noowners=${SR_SHIP_DRY_NOOWNERS:-}   # (the cells: yes, D's volume answers that it ignores file ownership; 3, that the check cannot tell)
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
   GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry
   shipping=yes
@@ -1485,13 +1485,16 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
 # only then: with none, npm logout ends a token of another layer it reads (r17a F1; REV 12b rule 25)
 ptok() { grep -q '^//registry\.npmjs\.org/:_authToken=.' "$1" 2>/dev/null; }
 # npm_dok WHO TAIL: before any npm call names P (REV 12b rule 25; r17a P4-a): D absent or a directory
-# (not a link), P absent or a regular file (not a link), as ship's mkdir and npm's login make them; else a
-# stop (fix): npm would log out, or log in, through a link into another file, and a directory at P takes
-# a login's token nowhere
+# (not a link), P absent or a regular file with one name (not a link, not a hard link), as ship's mkdir and
+# npm's login make them; else a stop (fix): npm would log out, or log in, through a link into another file
+# (a hard link too: npm writes through the shared file, r18a F4), and a directory at P takes a login's
+# token nowhere
 npm_dok() {
   d_=${out%/}/.$tag.npm
   if [ -L "$d_" ] || { [ -e "$d_" ] && [ ! -d "$d_" ]; }; then stopclass fix; die "$d_ is not the directory ship makes (a link, or a file): remove it, then run $1 again; $2"; fi
-  if [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; }; then stopclass fix; die "$d_/npmrc is not the file ship's login writes (a link, or a directory): remove it, then run $1 again; $2"; fi
+  if [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
+    stopclass fix; die "$d_/npmrc is not the file ship's login writes (a link, a second name of another file, or a directory): remove it, then run $1 again; $2"
+  fi
 }
 # npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): D's and P's shapes (npm_dok); when P exists (an
 # earlier run's: a KILL, a logout that failed) and holds a token line (ptok; else it is removed), the
@@ -1525,8 +1528,9 @@ npm_login() {
     || { stopclass fix; die "cannot remove the ACL entries of $d_ (ship's own npm directory: an entry there could let another account read ship's npm session); $3"; }
   # D's volume must keep file ownership (REV 12b rule 28; r17a F4): on one mounted noowners (an external
   # drive) every account reads D as its own, so its mode 0700 protects nothing. (The dry entry's seam:
-  # SR_SHIP_DRY_NOOWNERS=yes answers that it ignores it; the check itself runs in every other dry run)
-  if [ "$dryentry" = yes ] && [ "${ship_noowners:-}" = yes ]; then o_=1; else npy owners "$d_" 2> "$1/own.err"; o_=$?; fi
+  # SR_SHIP_DRY_NOOWNERS=yes answers that it ignores it, =3 that it cannot tell; the check itself runs in
+  # every other dry run)
+  case $dryentry:${ship_noowners:-} in yes:yes) o_=1 ;; yes:3) o_=3 ;; *) npy owners "$d_" 2> "$1/own.err"; o_=$? ;; esac
   case $o_ in
     0) ;;
     1) stopclass fix; die "$d_ is on a volume that ignores file ownership (an external drive mounted noowners?): any account on this Mac could read ship's npm session there. Use an --out on a volume that keeps ownership, such as this Mac's own disk; $3" ;;
@@ -1535,6 +1539,7 @@ npm_login() {
   # an end time from before this login goes first (r17a P4-c): with it left, a KILL between the login and
   # the new end's write let the next run take this live session as ended by itself, and remove P
   rm -f "$d_/end" 2>/dev/null; [ ! -e "$d_/end" ] || die "cannot remove $d_/end; $3"
+  npm_try=yes   # (a login was attempted: from here the texts say this run logged in; r18a F6)
   tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "the login to npm failed, or was not answered; $3"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
@@ -1543,7 +1548,9 @@ npm_login() {
   case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))); fput "$d_/end" '%s\n' $(( e_ + 7200 )) || die "cannot write $d_/end; $3" ;; esac
   who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$1/who.err") || die "npm whoami failed after the login ($(errcut "$1/who.err" 200)); $3"
   [ "$who" = "${SR_NPM_USER:-}" ] && return 0
-  tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"
+  # (only a P with a token line is logged out of: with none, npm logout ends a token of another layer it
+  # reads; r18a F5, REV 12b rule 25)
+  if ptok "$d_/npmrc"; then tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"; else rm -f "$d_/npmrc"; fi
   die "the login to npm was as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; $3. When $2 asks you to log in to npm, log in as ${SR_NPM_USER:-the owner} in the browser, then run $2 again"
 }
 # npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line): D removed (0). A
@@ -1576,7 +1583,7 @@ npm_lock() {
 npm_end() {
   if [ "${pnin:-no}" = yes ]; then
     pnin=no
-    if npm_out "$1"; then echo "release: publish-npm's npm session is ended (its own file removed)"
+    if npm_out "$1"; then [ "$npm_try" != yes ] || echo "release: publish-npm's npm session is ended (its own file removed)"   # (a stop before the login: no session; r18a F6)
     else npm_endrc=1; echo "release: $(redact "$(npm_left "$(errcut "$1/out.err" 200)")")" >&2; fi
   fi
   [ "${pnlock:-no}" != yes ] || { pnlock=no; rm -rf "${out:?}/.ship.lock"; }
@@ -1698,7 +1705,8 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # ends (REV 12 rule 4: no npm command), in the file before the logout runs: a KILL during the logout
   # leaves it in place. A release done has a file then too, that line alone
   txt="" keep=no lo="" pl=""
-  if [ "$logged_in" = yes ]; then
+  # (only once npm's login was attempted: a stop before it, the noowners one, logged nothing in; r18a F6)
+  if [ "$logged_in" = yes ] && [ "$npm_try" = yes ]; then
     pl="ship logged in to npm in this run, with its own file (${out%/}/.$tag.npm/npmrc), and logs out as it ends. If that logout fails, the session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run of $tag with this out dir logs out of it first."
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
