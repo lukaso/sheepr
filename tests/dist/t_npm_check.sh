@@ -133,6 +133,11 @@ python3 "$NS" packages "$D" "$nv" "$R" "sheepr sheepr-linux-arm64 sheepr-linux-x
 [ $r != 0 ] && grep -q 'SR_NPM_PKGS' "$FX/o" && pass "npm-same.py: a list with a name twice is refused" || fail "npm-same repeated name: rc=$r $(tail -1 "$FX/o")"
 cp "$D/sheepr-linux-arm64-$nv.tgz" "$D/sheepr-linux-x64-$nv.tgz"; python3 "$NS" packages "$D" "$nv" "$R" "$L" > "$FX/o" 2>&1; r=$?
 [ $r != 0 ] && grep -q "sheepr-linux-x64-$nv.tgz: the package inside is 'sheepr-linux-arm64', not sheepr-linux-x64" "$FX/o" && pass "npm-same.py: a tarball holding another package than its file's is refused for that" || fail "npm-same swapped: rc=$r $(tail -1 "$FX/o")"
+# r17a F4 (REV 12b rule 28): npm-same.py owners PATH: the volume of PATH keeps file ownership: / (this
+# Mac's own disk) 0; a path that is not there: cannot check (3), never an answer
+python3 -I "$NS" owners / > "$FX/o" 2>&1; r1_=$?; python3 -I "$NS" owners "$FX/no/such" > "$FX/o2" 2>&1; r2_=$?
+[ $r1_ = 0 ] && [ ! -s "$FX/o" ] && [ $r2_ = 3 ] && grep -q '^npm-same: cannot check: statfs' "$FX/o2" \
+  && pass "r17a F4: npm-same.py owners: this Mac's disk keeps ownership (0); a path not there: cannot check (3)" || fail "r17a F4, npm-same.py owners: / $r1_ '$(cat "$FX/o")'; missing $r2_ '$(cat "$FX/o2")'"
 # the list's order is the upload order: the main package must come last (its optional dependencies
 # name the others); and its optional dependencies are exactly the list's other names (a name there
 # that is not in the list would never have its npm owner checked)

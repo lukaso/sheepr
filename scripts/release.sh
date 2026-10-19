@@ -66,9 +66,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -1183,6 +1183,7 @@ ship_dry() { # the cells' entry: stand-ins by path only, never a real tool; no g
   echo "release: __ship-dry (stand-ins; a temp HOME, $DRYHOME)"
   SHIP_BUILD=$SR_SHIP_DRY_BUILD SHIP_NPMCHECK=$SR_SHIP_DRY_NPMCHECK SHIP_VERIFY=ship_dry_verify NOTIFY=$SR_SHIP_DRY_NOTIFY
   ship_gk=${SR_SHIP_DRY_SPCTL:-}   # (the cells: C3 or C7, where ship_dry_verify gives Gatekeeper's refusal)
+  ship_noowners=${SR_SHIP_DRY_NOOWNERS:-}   # (the cells: yes, D's volume answers that it ignores file ownership)
   CAFFEINATE=$SR_SHIP_DRY_CAFFEINATE SHIP_IDENTITY=$SR_SHIP_DRY_IDENTITY SHIP_DOCKER=$SR_SHIP_DRY_DOCKER
   GH=$SR_PUBLISH_DRY_GH GITCMD=$SR_PUBLISH_DRY_GIT NPM=$SR_PUBLISH_DRY_NPM NPMC=npmdry DRY=yes NETC=dry CURL=$SR_PUBLISH_DRY_CURL CURLC=dry
   shipping=yes
@@ -1483,6 +1484,15 @@ npm_pre() {
 npm_login() {
   d_=${out%/}/.$tag.npm   # (npm_pre ran first: D is absent or a directory, not a link)
   { [ -d "$d_" ] || mkdir -m 700 "$d_"; } 2>/dev/null && chmod 700 "$d_" 2>/dev/null || die "cannot make $d_ (ship's own npm directory); $3"
+  # D's volume must keep file ownership (REV 12b rule 28; r17a F4): on one mounted noowners (an external
+  # drive) every account reads D as its own, so its mode 0700 protects nothing. (The dry entry's seam:
+  # SR_SHIP_DRY_NOOWNERS=yes answers that it ignores it; the check itself runs in every other dry run)
+  if [ "$dryentry" = yes ] && [ "${ship_noowners:-}" = yes ]; then o_=1; else npy owners "$d_" 2> "$1/own.err"; o_=$?; fi
+  case $o_ in
+    0) ;;
+    1) stopclass fix; die "$d_ is on a volume that ignores file ownership (an external drive mounted noowners?): any account on this Mac could read ship's npm session there. Use an --out on a volume that keeps ownership, such as this Mac's own disk; $3" ;;
+    *) stopclass fix; die "cannot tell whether the volume of $d_ keeps file ownership ($(errcut "$1/own.err" 200)); $3" ;;
+  esac
   tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "the login to npm failed, or was not answered; $3"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);

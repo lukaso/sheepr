@@ -980,6 +980,14 @@ done
   && [ "$(grep -c '^DELETE token=npm_dry' "$FX/tokops")" = 1 ] && [ "$(cat "$FX/pd.after")" = gone ] \
   && pass "C4's whoami after the login answering E401: nothing published; npm's words, no npm command; P logged out, D removed" \
   || fail "C4 whoami E401: rc=$r $(head -1 "$A6NF" 2>/dev/null | cut -c1-240)"
+# r17a F4 (REV 12b rule 28): D's volume ignores file ownership (an external drive mounted noowners; the
+# dry seam answers so): a stop at the login (fix): no npm login call, no P, nothing pushed. Control: every
+# other run (the real check answers that the fixture's volume keeps ownership)
+: > "$FX/tokops"; rm -rf "${OUTR:?}"; SETX=SR_SHIP_DRY_NOOWNERS=yes; ship; r=$?; SETX=
+[ $r = 1 ] && grep -q "is on a volume that ignores file ownership (an external drive mounted noowners?)" "$A6NF" && grep -q 'stopped at npm-login' "$A6NF" \
+  && ! grep -q '^npm login' "$FX/calls" && [ ! -s "$FX/tokops" ] && [ "$(cat "$FX/pd.after")" = gone ] && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' "$FX/calls" && endsfix "$A6NF" \
+  && pass "r17a F4: D's volume ignores file ownership: a stop at the login (fix), no login, no P, nothing pushed" \
+  || fail "r17a F4, noowners: rc=$r logins $(grep -c '^npm login' "$FX/calls") D $(cat "$FX/pd.after"); $(head -1 "$A6NF" 2>/dev/null | cut -c1-200)"
 # r17a F3 (REV 12b rule 27): C4's whoami answering ENEEDAUTH in npm's words, whose last line advises
 # `npm adduser`: the stop quotes npm's code and words without that line, in stdout and the next file
 : > "$FX/tokops"; echo ENEEDAUTH > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamipostlogin"
