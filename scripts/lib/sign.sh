@@ -179,3 +179,6 @@ if [ $notarize = yes ]; then chk=--signed; else chk=--signed-unstapled; fi
 "$lib/archive.sh" make "$app" "$dest/sheepr-macos-universal.tar.gz" || die "archive"
 "$lib/archive.sh" check "$dest/sheepr-macos-universal.tar.gz" $chk || die "the archive fails its check"
 echo "sign: $tag signed${notarize:+ }$( [ $notarize = yes ] && echo 'and notarized' || echo '(control: not notarized)')"
+# (the line above is text: a write of it that fails, a full disk or a read-only stdout, is not this
+# script's status, which release.sh reads as "signing failed"; PLAN-ship.md REV 12d rule 39, r19b F4)
+exit 0

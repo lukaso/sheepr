@@ -286,4 +286,15 @@ for plant in '  notify password' '  if notify password; then :; fi' '  if :; the
   cmp -s "$SIGN" "$FX/sign-notify-early.$n_.sh" && { fail "control: '$plant' was not planted"; continue; }
   case $(calls_at "$FX/sign-notify-early.$n_.sh") in "above 0 "*) fail "control: '$plant' after real=yes is not caught" ;; *) pass "control: '$plant' after real=yes is caught (the copy is never run)" ;; esac
 done
+# r19b F4 (PLAN-ship.md REV 12d rule 39): sign.sh's last line is text, and its status was sign.sh's: a
+# failed write of it (a full disk, a read-only stdout) made release.sh say "signing failed" after a
+# notarized build. No dry run here reaches that line (each ends at the door's refusal, above), so the row
+# reads the script: its last two commands are that echo, then `exit 0`. Control: a copy without it
+lastcmds() { grep -vE '^[[:space:]]*(#|$)' "$1" | tail -2 | sed 's/^\(.\{20\}\).*/\1/' | tr '\n' '|'; }
+grep -vx 'exit 0' "$SIGN" > "$FX/sign-noexit.sh"
+lc_='echo "sign: $tag sig|exit 0|'
+[ "$(lastcmds "$SIGN")" = "$lc_" ] && [ "$(lastcmds "$FX/sign-noexit.sh")" != "$lc_" ] \
+  && pass "r19b F4: sign.sh ends with exit 0 after its last line of text; control: a copy without it is caught" \
+  || fail "r19b F4: sign.sh's last commands: $(lastcmds "$SIGN"); the control: $(lastcmds "$FX/sign-noexit.sh")"
+rm -f "${FX:?}/sign-noexit.sh"
 finish

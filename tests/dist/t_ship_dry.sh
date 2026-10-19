@@ -1593,7 +1593,7 @@ wwrap() { # FILE: ok, or what is wrong
   printf '%s\n' 'echo() { command echo "$@" || command echo "$@" > /dev/null 2>&1; }' \
     'printf() { command printf "$@" || command printf "$@" > /dev/null 2>&1; }' > "$FX/ww.want"
   cmp -s "$FX/ww.first" "$FX/ww.want" || { echo "the first lines that name echo or printf are not the wrappers: $(tr '\n' '|' < "$FX/ww.first" | cut -c1-200)"; return 0; }
-  o_=$(grep -v '^ *#' "$1" | grep -E 'command +(echo|printf)|builtin ' | grep -vxF -f "$FX/ww.want" | head -1)
+  o_=$(grep -v '^ *#' "$1" | grep -E 'command( +-[A-Za-z-]*)* +(echo|printf)([^A-Za-z0-9_.-]|$)|builtin ' | grep -vxF -f "$FX/ww.want" | head -1)   # (`command -p` and `command --` too: r19b F3)
   [ -z "$o_" ] || { echo "the builtin named outside the wrappers: $o_"; return 0; }
   echo ok
 }
@@ -1603,7 +1603,15 @@ ww_=$(wwrap "$SR_ROOT/scripts/release.sh"); wp_=$(wwrap "$FX/ww-planted.sh"); wn
 [ "$ww_" = ok ] && [ "$wp_" != ok ] && [ "$wn_" != ok ] \
   && pass "r18b F1: release.sh's echo and printf are the draining wrappers, the first lines that name either; no other line names the builtin; controls: a planted one, and none, each caught" \
   || fail "r18b F1, the wrappers: '$ww_'; planted: '$wp_'; none: '$wn_'"
-rm -f "${FX:?}/ww.first" "${FX:?}/ww.want" "${FX:?}/ww-planted.sh" "${FX:?}/ww-nowrap.sh"
+# r19b F3 (REV 12d rule 40): `command -p` and `command --` reach the builtin too (bash 3.2.57: each leaves a
+# failed write's bytes for the next $( ); notes/r19b/probe/w2.out): each spelling planted, each caught
+for pl_ in '  command -p echo x' '  command -- printf x' '  command -p -- echo x'; do
+  awk -v l="$pl_" '{ print } /^stopclass\(\) \{/ && !d { print l; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/ww-planted2.sh"
+  cmp -s "$SR_ROOT/scripts/release.sh" "$FX/ww-planted2.sh" && { fail "r19b F3: '$pl_' was not planted"; continue; }
+  w2_=$(wwrap "$FX/ww-planted2.sh")
+  [ "$w2_" != ok ] && pass "r19b F3: a planted '$pl_' is caught" || fail "r19b F3: a planted '$pl_' is not caught"
+done
+rm -f "${FX:?}/ww.first" "${FX:?}/ww.want" "${FX:?}/ww-planted.sh" "${FX:?}/ww-nowrap.sh" "${FX:?}/ww-planted2.sh"
 # r18b F1: ship's stdout open read-only (every builtin write to it fails, EBADF, as on a full disk): a fresh
 # run, and a run on a finished build, complete as with a writable stdout: exit 0, the release's
 # notifications, no next file, its lock, tree and temp dirs gone, no "Move". (Before: a failed write's
