@@ -1543,7 +1543,9 @@ npm_login() {
   # ... file_inherit,directory_inherit, or Finder's "apply to enclosed items") is copied onto D and onto the P
   # npm's login makes in it, and macOS checks an ACL's allow before the mode, so its 0700 and P's 0600 would
   # protect nothing. chmod -N removes them; ls -led must then list none (its numbered lines; the mode's +
-  # does not show beside an @)
+  # does not show beside an @). (On APFS the owner's chmod -N removes every entry, an inherited deny of
+  # writesecurity too: the check stops a run only where chmod -N cannot remove one, so no row reaches it on
+  # its own; the ACL row reaches it when chmod -N is taken out. r19a F7)
   /bin/chmod -N "$d_" 2>/dev/null; a_=$(/bin/ls -led "$d_" 2>/dev/null) && [ -n "$a_" ] && ! printf '%s\n' "$a_" | grep -q '^ *[0-9][0-9]*: ' \
     || { stopclass fix; die "cannot remove the ACL entries of $d_ (ship's own npm directory: an entry there could let another account read ship's npm session); $3"; }
   # D's volume must keep file ownership (REV 12b rule 28; r17a F4): on one mounted noowners (an external
