@@ -1574,13 +1574,21 @@ npm_login() {
   die "the login to npm was as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; $3. When $2 asks you to log in to npm, log in as ${SR_NPM_USER:-the owner} in the browser, then run $2 again"
 }
 # npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line): D removed (0). A
-# failure: P kept (1); npm's words in DIR/out.err (the next ship or publish-npm run of this tag, with this
-# out dir, logs out of it first)
+# failure, or D or P not of ship's shapes: P kept (1); npm's words, or what is wrong, in DIR/out.err (the
+# next ship or publish-npm run of this tag, with this out dir, logs out of it first)
 npm_out() {
   d_=${out%/}/.$tag.npm
-  # (only a regular P with a token line: a link, a directory or a P without one holds nothing of ship's
-  # to end, and its logout would end another file's token or another layer's: REV 12b rule 25)
-  if [ -f "$d_/npmrc" ] && [ ! -L "$d_/npmrc" ] && ptok "$d_/npmrc"; then
+  # (D or P not as ship's mkdir and npm's login made them, npm_dok's shapes: a link, P not a regular file,
+  # P with a second name: a logout would go through it into another file, and end that file's token while
+  # ship's own stays live; so none, D is kept, and the end says the session could not be ended (REV 12d
+  # rule 37; r19a F3: a hard link made after the push)
+  if [ -L "$d_" ] || [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
+    /usr/bin/printf '%s\n' "none: $d_/npmrc is not the file ship's login wrote (a link, a second name of another file, or not a file), so ship did not log out through it" > "$1/out.err" 2>/dev/null
+    return 1
+  fi
+  # (only a P with a token line: one without holds nothing of ship's to end, and its logout would end
+  # another layer's token: REV 12b rule 25)
+  if [ -f "$d_/npmrc" ] && ptok "$d_/npmrc"; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/out.err" || return 1
   fi
   rm -rf "${d_:?}"; return 0

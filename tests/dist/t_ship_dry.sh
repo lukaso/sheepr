@@ -1708,6 +1708,7 @@ RULES = [
     ('*', '${SR_ASK_RECORD:-/dev/null}', "a cell's record (/dev/null in a real run)"),
     ('exec-guard.sh', '$SR_EXEC_RECORD', "a cell's record (unset in a real run)"),
     ('release.sh', '$pt/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pt/npmrc"'),
+    ('release.sh', '$1/out.err', "npm_out's words on why it did not log out: a lost line leaves them out of the end's text, never its verdict (npm_out answers 1 either way)", r'"none: \$d_/npmrc is not the file'),
     ('npm-pack.sh', '$pk/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/npmrc"'),
     ('npm-pack.sh', '$pk/globalrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/globalrc"'),
     ('archive.sh', '$t/list', "the listing's end line read back (tail): a short listing is \"cannot check\""),
@@ -2095,6 +2096,22 @@ printf 'rm -f "%s"; ln -s "%s" "%s"\n' "$PP" "$FX/elsewhere/npmrc" "$PP" > "$FX/
   && pass "r18a G3: a link at P made after the push: no logout through it; its target untouched" \
   || fail "r18a G3: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] target [$(tr '\n' ' ' < "$FX/elsewhere/npmrc")]"
 rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
+# r19a F3 (PLAN-ship.md REV 12d rule 37): the same after the push, a symbolic link (G3's) and a hard link
+# (a second name of the other file): no logout through it, that file byte-identical, and the end says
+# ship's session could not be ended, with its end time, rc 1, never "ended". Control: every completed row
+for k_ in sym hard; do
+  rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
+  printf '//registry.npmjs.org/:_authToken=npm_elsewhere\nkeep=me\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+  case $k_ in sym) l_='ln -s' ;; hard) l_=ln ;; esac
+  printf 'rm -f "%s"; %s "%s" "%s"\n' "$PP" "$l_" "$FX/elsewhere/npmrc" "$PP" > "$FX/onviewpush.sheepr"
+  : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/onviewpush.sheepr" "${FX:?}/onviewpush.sheepr.done"
+  [ $r = 1 ] && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q 'DELETE token=npm_elsewhere' "$FX/tokops" \
+    && grep -q "ship's npm session (its own file, $PP) could not be ended" "$FX/o" && grep -qE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o" \
+    && ! grep -q 'session is ended' "$FX/o" \
+    && pass "r19a F3: a $k_ link at P made after the push: no logout through it, the other file untouched; the end says the session could not be ended" \
+    || fail "r19a F3 ($k_): rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
+  rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
+done
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
