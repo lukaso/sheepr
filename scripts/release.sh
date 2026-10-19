@@ -151,6 +151,10 @@ done
 # the tree's root, npm pack in its own), and one relative spelling must name one directory
 [ -n "$out" ] || usage
 case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
+# ... and physical (cd -P) once it exists (here, and in ship_run right after it makes it): npm resolves a
+# path by its text, the kernel by its links, so out/lnk/.. would name two directories, ship's own npm file
+# in one and npm's in the other (r17a F5; PLAN-ship.md REV 12b rule 24)
+[ ! -d "$out" ] || out=$(cd -P -- "$out" && pwd -P) || exit 1
 case $sub in
   check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class|__class-verify|__class-npm-check) ;;
   *) usage ;;
@@ -1193,6 +1197,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   valid "$tag" || die "the tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
   mkdir -p "$out" || die "cannot make $out"
+  out=$(cd -P -- "$out" && pwd -P) && [ -n "$out" ] || die "cannot resolve $out"   # (physical: REV 12b rule 24)
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   drydir "$st"
   shipcause=$st/cause shipcls=$st/class; stopclass fix || die "cannot write $shipcls"

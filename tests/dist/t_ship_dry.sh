@@ -1962,6 +1962,22 @@ cdn_=$(cat "$SR_ROOT/scripts/release.sh" "$SR_ROOT/scripts/lib/notify.sh" | grep
   && pass "REV 12 rule 4: no npm command printed: the texts of the $(grep -c 'stopped at\|is public' "$FX/r12out") runs above, and release.sh's and notify.sh's own words, hold no 'npm login', 'npm logout' or 'npm config'" \
   || fail "REV 12 rule 4, the census: $nc_ lines in the runs' texts ($(grep -m1 -e 'npm login' -e 'npm logout' -e 'npm config' "$FX/r12out" | cut -c1-140)); $ns_ in the sources; step words [$sw_]; 'cd / && npm' $cdn_"
 rm -f "${FX:?}/r12out"
+# r17a F5 (REV 12b rule 24): --out spelt with `..` after a symbolic link. ship resolves it physically, so
+# its D and npm's P (npm reads --userconfig by its text, as the stand-in does) are one file: the release
+# completes, with one login and one logout that ends npm_dry, and nothing lands in the text-spelt dir
+# (made here, as npm's config save would make it). With a finished build there (the start resolves out),
+# and with none (ship_run resolves it after making it). Control: the plain --out, every other row
+mkdir -p "$FX/sub/x" "$FX/out2/.v0.1.0.npm" "$FX/out3/.v0.1.0.npm" && ln -s "$FX/sub/x" "$FX/lnk" || exit 3
+mkbuild "$FX/sub/out2/v0.1.0" v0.1.0 "$C"
+for k_ in 2 3; do
+  AHX=$(printf 'sheepr-macos-universal.tar.gz %s\n' "$FX/sub/out$k_/v0.1.0" | shasum -a 256 | cut -d' ' -f1)
+  : > "$FX/tokops"; OUT=$FX/lnk/../out$k_; VERIFIED=$AHX; ship; r=$?; OUT=; VERIFIED=
+  [ $r = 0 ] && grep -q 'release: ship: v0.1.0 is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(tr '\n' ' ' < "$FX/tokops")" = "LOGIN DELETE token=npm_dry " ] \
+    && [ -z "$(ls -A "$FX/out$k_/.v0.1.0.npm")" ] && [ ! -e "$FX/sub/out$k_/.v0.1.0.npm" ] && grep -q "ship's npm session is ended" "$FX/o" \
+    && pass "r17a F5: --out lnk/../out$k_ ($( [ $k_ = 2 ] && echo 'a finished build there' || echo 'no build yet')): resolved physically; one login, one logout ending npm_dry; nothing in the text-spelt dir" \
+    || fail "r17a F5, lnk/../out$k_: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] text-spelt: [$(ls -A "$FX/out$k_/.v0.1.0.npm" | tr '\n' ' ')] $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
+done
+rm -rf "${FX:?}/sub" "${FX:?}/out2" "${FX:?}/out3" "${FX:?}/lnk"
 # --- REV 11 rule 2, npm routing (r13a F1): npm's scope setting routes logout, view, owner and publish
 # to the scope's registry B, and login rewrites <scope>:registry; every npm call ship makes has --scope=
 # (and --registry), and loads P only (REV 12). With scope=@acme, @acme:registry=B and B's token in the

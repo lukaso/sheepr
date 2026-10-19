@@ -68,6 +68,9 @@ cat > "$FX/npm" <<EOF
 #!/bin/sh
 n=\$(ls "$FX" | grep -c '^env\\.npm\\.'); env > "$FX/env.npm.\$n"
 echo "npm \$*" >> "$FX/calls"
+# (--userconfig by its text, as npm reads it: each /NAME/.. dropped, path.resolve's rule; r17a F5)
+uc_=""; for a_; do case \$a_ in --userconfig=*) uc_=\${a_#--userconfig=} ;; esac; done
+case \$uc_ in */../*|*/..) n_=\$(printf '%s\n' "\$uc_" | sed -E -e ':u' -e 's#/[^/]+/\.\.(/|\$)#/#' -e 'tu'); for a_; do shift; case \$a_ in --userconfig=*) set -- "\$@" "--userconfig=\$n_" ;; *) set -- "\$@" "\$a_" ;; esac; done ;; esac
 case \$1 in
   view) for a; do case \$a in sheepr*@*) p=\${a%@*} ;; esac; done
     [ -f "$FX/onview.\$p" ] && sh "$FX/onview.\$p"
@@ -125,7 +128,7 @@ pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the n
   (cd "$REPO" && no_osascript env HOME="$FX/ghome" NPM_TOKEN="$DECOY" NODE_AUTH_TOKEN="$DECOY" npm_config__authToken="$DECOY" GH_TOKEN="$DECOY" \
     HTTPS_PROXY=http://127.0.0.1:9 NPM_CONFIG_USERCONFIG="$FX/decoy-npmrc" \
     PATH="$FX/bin:$PATH" SR_PUBLISH_DRY_NPM="$FX/npm" ${PART:+SR_PUBLISH_DRY_NPM_PART="$PART"} ${PUBX:+"$PUBX"} "$nv_" \
-    sh scripts/release.sh __publish-npm-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; sed -n 's/^release: __publish[a-z-]*-dry (.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\))$/\1/p' "$FX/o" >> "$FX/homes"
+    sh scripts/release.sh __publish-npm-dry --out "${PUBOUT:-$FX/out}" "$1") > "$FX/o" 2>&1; r_=$?; sed -n 's/^release: __publish[a-z-]*-dry (.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\))$/\1/p' "$FX/o" >> "$FX/homes"
   return $r_
 }
 # "view NAME" or "publish NAME" per call (a name's parts start with a letter, a version with a digit)
@@ -573,6 +576,18 @@ mkout "$D" v0.1.0; rm -f "$FX/exported"; echo 2 > "$FX/processing.sheepr-linux-x
 rm -f "$FX/processing.sheepr-linux-x64"
 [ $r = 0 ] && [ -s "$FX/sleeps" ] && [ ! -e "$FX/exported" ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] \
   && pass "the caller exports all of release.sh's own variables: none reaches a child, and today's order runs (four uploads, 0)" || fail "caller's exports: rc=$r exported: $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ') $(order)"
+# r17a F5 (REV 12b rule 24): publish-npm, --out spelt with `..` after a symbolic link ($FX/t/lnk -> $FX/tx,
+# so t/lnk/../out is $FX/out by its links and $FX/t/out by its text, which is how npm, and the stand-in,
+# read --userconfig). The start of release.sh resolves it physically, so D and npm's P are one file: P
+# (physical) on every npm call, one login, one logout ending npm_pn, nothing in the text-spelt dir (made
+# here, as npm's config save would make it). Control: the plain --out, every other row
+mkdir -p "$FX/tx" "$FX/t/out/.v0.1.0.npm" && ln -s "$FX/tx" "$FX/t/lnk" || exit 3
+mkout "$D" v0.1.0; : > "$FX/tokops"; PUBOUT=$FX/t/lnk/../out; pub v0.1.0; r=$?; PUBOUT=
+[ $r = 0 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v -- "$PNU\$")" ] && [ "$(sed 's/ .*//' "$FX/tokops" | tr '\n' ' ')" = "LOGIN DELETE " ] && grep -q '^DELETE npm_pn ' "$FX/tokops" \
+  && [ -z "$(ls -A "$FX/t/out/.v0.1.0.npm")" ] && [ ! -e "$PN" ] && grep -q "release: publish-npm's npm session is ended" "$FX/o" \
+  && pass "r17a F5: publish-npm, --out t/lnk/../out: resolved physically; P on every npm call, one login, one logout ending npm_pn; nothing in the text-spelt dir" \
+  || fail "r17a F5, publish-npm lnk/../out: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] text-spelt: [$(ls -A "$FX/t/out/.v0.1.0.npm" | tr '\n' ' ')] $(tail -1 "$FX/o" | cut -c1-160)"
+rm -rf "${FX:?}/t" "${FX:?}/tx"
 # this cell's own dry HOMEs (each run prints the one it made; other sessions may run these cells at
 # the same time, so the whole /private/tmp is not counted): at least ten seen, none left
 nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""
