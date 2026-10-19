@@ -2103,6 +2103,21 @@ KEEPP=1; world_reset; KEEPP=; : > "$FX/tokops"; ship; r2_=$?; r=$r2_; r12keep
   && completed && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PD" ] \
   && pass "REV 12 rule 4: ship's logout failing: P kept, the text names the end time and that the next run logs out of it first; the next run does, and completes (D removed)" \
   || fail "REV 12 rule 4: text $w_ $g_, P $r4p_; the next run: rc=$r2_ first [$(head -1 "$FX/tokops")], D $( [ -e "$PD" ] && echo left || echo gone)"
+# r18a F3 (PLAN-ship.md REV 12c rule 34): a done ship whose end logout fails (P kept; its text says the
+# next ship or publish-npm run of v0.1.0 with this out dir logs out of it first), then ship again with the
+# world as the first run left it (v0.1.0 on origin, so A2 or A3 refuses it): that run's first npm call is
+# the logout of P, P is removed, and it stops because v0.1.0 is public. Control: rule 4's row above (origin
+# reset between the runs: the second run logs out first and completes)
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; r12keep
+pk1_=$( [ -f "$PP" ] && grep -q '_authToken=npm_dry' "$PP" && echo kept || echo gone)
+t1_=$(grep -c 'the next ship or publish-npm run of v0.1.0 with this out dir logs out of it first' "$FX/o")
+: > "$FX/tokops"; KEEP=1; ship; r2_=$?; KEEP=; r12keep
+f2_=$(grep '^npm ' "$FX/calls" 2>/dev/null | head -1)
+[ $r1_ = 1 ] && [ $pk1_ = kept ] && [ "$t1_" -ge 1 ] && [ $r2_ = 1 ] && case $f2_ in "npm logout "*) true ;; *) false ;; esac \
+  && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PP" ] && grep -q 'v0.1.0 is public' "$FX/o" \
+  && pass "r18a F3: after a done ship whose logout failed, the next ship of v0.1.0 (the tag public) logs out of the kept session first, then refuses" \
+  || fail "r18a F3: first rc=$r1_ P $pk1_ text $t1_; next rc=$r2_ first npm call [$(printf '%s' "$f2_" | cut -c1-60)] tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && echo left || echo gone); $(grep -m1 'stopped at\|refused' "$FX/o" | cut -c1-200)"
+world_reset; rm -rf "${OUTR:?}"
 # rule 4: no npm command is printed: no stop text, next file or stdout above, and no notification text,
 # holds "npm login", "npm logout" or "npm config" (release.sh's and notify.sh's own texts: no such words
 # outside comments)

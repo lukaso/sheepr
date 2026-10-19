@@ -1261,6 +1261,11 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   rm -f "$shipprog.tmp" 2>/dev/null
   fput "$shipprog" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || die "cannot write $shipprog"
   progok=yes   # (ship_stoptext: from here a record it cannot read is never "nothing started")
+  # REV 12 rule 2, ship's first npm call: an earlier P logged out of first (a dead token there would fail
+  # every npm call with E401), before A1's checks (REV 12c rule 34; r18a F3): so every later ship of this
+  # tag with this out dir ends a kept session, one after the push too, which A2 or A3 refuses (the tag is
+  # public). C4 makes sure again before the login
+  npm_pre "$st" ship "this run has made nothing public"
   # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
   shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
@@ -1295,9 +1300,6 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # A2. the push target; A3. the push, as far as a dry run can tell
   ship_target
   ship_pushcheck
-  # REV 12 rule 2, before ship's first npm call (A4's views name P): an earlier P logged out of first (a
-  # dead token there would fail every npm call with E401); C4 makes sure again before the login
-  npm_pre "$st" ship "this run has made nothing public"
   ship_nothing_public   # A4
   pubok=yes             # from here a stop before the push may say "nothing is public"
   ship_tap              # A5
