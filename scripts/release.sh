@@ -75,6 +75,15 @@ root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the tag's bytes
 sourced=scripts/lib/sigs.sh
 . "$root/$sourced" || exit 1   # SIGS: the signals every cleanup trap here catches (ship's parent adds PIPE)
+# fput FILE FORMAT [ARG...]: FILE holds exactly what printf FORMAT ARG... makes, or 1. fout FILE COMMAND
+# [ARG...]: FILE holds exactly COMMAND's output (written, then COMMAND run again and compared), or 1.
+# Every file this script writes and later reads, hashes or publishes goes through one of them, or its
+# text stays in a variable (PLAN-ship.md REV 12b rule 20; the census row in t_ship_dry names the files
+# kept otherwise, each with its reason): /usr/bin/printf and shasum exit 0 when a full disk took none of
+# the bytes (r17b F1, measured on HFS+ and APFS), and bash 3.2's builtin printf keeps a failed write's
+# bytes for the next write (r16b F2), so the bytes are read back
+fput() { f_=$1; shift; /usr/bin/printf "$@" > "$f_" 2>/dev/null; /usr/bin/printf "$@" | /usr/bin/cmp -s - "$f_"; }
+fout() { f_=$1; shift; "$@" > "$f_" && "$@" | /usr/bin/cmp -s - "$f_"; }
 usage() { echo "usage: release.sh check|build|npm-check|publish|publish-cask|publish-npm|verify|ship [--sign] [--no-notarize] [--out DIR] vTAG" >&2; exit 2; }
 # redact TEXT: every URL's userinfo replaced by <redacted>, so a text still says one was there: in
 # scheme://userinfo@host it runs to the authority's last @ (a password may hold one), and in the scp
@@ -103,7 +112,7 @@ errcut() {
   ec_=$(sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null); [ -n "$ec_" ] || return 0
   { printf '%s\n' "$ec_" | grep -E "$ep_"; printf '%s\n' "$ec_" | grep -vE "$ep_"; } | head -c "$2" | tr '\n' ' '
 }
-die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || /usr/bin/printf '%s\n' "$m_" > "$shipcause" 2>/dev/null; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
+die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || fput "$shipcause" '%s\n' "$m_" || rm -f "$shipcause"; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
 # the remedy around it
@@ -122,7 +131,7 @@ dq() {
   done
   printf "'%s%s'" "$o_" "$r_"
 }
-stopclass() { [ -z "$shipcls" ] || /usr/bin/printf '%s\n' "$1" > "$shipcls" 2>/dev/null; }   # ship's stop text: what kind of stop (no-op outside ship)
+stopclass() { [ -z "$shipcls" ] || fput "$shipcls" '%s\n' "$1" || { rm -f "$shipcls"; return 1; }; }   # ship's stop text: what kind of stop (no-op outside ship); a class that did not land: no class file, and 1
 
 [ $# -ge 1 ] || usage
 sub=$1; shift
@@ -420,8 +429,8 @@ build_release() { # mode: unsigned | signed | control
     step "signing"
     # sign.sh as a direct child (never in ( ), $( ) or a pipeline: it checks that its parent is
     # this process, by pid), with a nonce only this run knows, in a 0600 file of this user's
-    umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$scratch/nonce"; umask 022
-    nn=$(cat "$scratch/nonce")
+    nn=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    umask 077; fput "$scratch/nonce" '%s' "$nn" || die "cannot write $scratch/nonce"; umask 022
     set -- --bin "$scratch/sheepr" --version "$xyz" --build "$c" --tag "$tag" --commit "$short" --dest "$dest" --real "$nn" --nonce-file "$scratch/nonce" --parent-pid "$$"
     [ "$mode" = control ] && set -- "$@" --no-notarize
     # in the foreground: a background child of a non-interactive sh ignores INT, so ctrl-C would
@@ -452,13 +461,14 @@ build_release() { # mode: unsigned | signed | control
   files="sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh"
   [ -f "$S/install.sh" ] || die "no scripts/install.sh at the tag"
   tool base sh "$S/lib/render-install.sh" "$S/install.sh" "${tag#v}" "$dest/install.sh" || die "render install.sh"
-  (cd "$dest" && shasum -a 256 $files > SHA256SUMS) || die "SHA256SUMS"
+  ss_=$(cd "$dest" && shasum -a 256 $files) && fput "$dest/SHA256SUMS" '%s\n' "$ss_" || die "SHA256SUMS: cannot write it"
   # the Homebrew cask for lukaso/tap (PHASE3.md S4): a file for the tap, never uploaded
   tool base sh "$S/lib/render-cask.sh" "${tag#v}" "$(shasum -a 256 "$dest/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)" "$dest/sheepr.rb" \
     || die "render the cask"
   npm_pack || die "npm packing"
   step "the manifest, then the rename"
-  {
+  # (the manifest's text from a function: bash 3.2 misreads a case pattern's ) inside a $( ); then fput)
+  mjson() {
     printf '{\n  "v": 1,\n  "tag": "%s",\n  "commit": "%s",\n  "mode": "%s",\n  "control": %s,\n  "files": [\n' "$tag" "$commit" "$mode" "$( [ "$mode" = control ] && echo true || echo false)"
     sep=""
     for f in $files $files_npm; do
@@ -473,7 +483,8 @@ build_release() { # mode: unsigned | signed | control
 "
     done
     printf '\n  ]\n}\n'
-  } > "$dest/MANIFEST.json" || die "cannot write the manifest"
+  }
+  mj_=$(mjson) && fput "$dest/MANIFEST.json" '%s\n' "$mj_" || die "cannot write the manifest"
 
   # 8. the rename. mv into a directory that exists puts the staging dir inside it and returns 0
   # (measured), so the output dir must not exist right before, and must be the staging dir (its
@@ -603,18 +614,19 @@ publish_check() { # dir
   drydir "$pt"
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
-  stamp_ok "$d" || { stopclass content; die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"; }
+  stamp_ok "$d" || { stopclass fix; die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"; }   # (the stamp is npm-check's record, not the build's bytes: REV 12b rule 22)
   files_ok "$d" || { stopclass content; die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"; }
   [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; this step uploaded nothing"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
     || { stopclass content; die "the archive verify judged is not the stamped manifest's (it changed since); this step uploaded nothing"; }
   # SHA256SUMS is not in the manifest: the build wrote it from those four files, in this order, so
-  # its bytes follow from the manifest's hashes; nothing else is published, at any time
-  for x in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh; do
+  # its bytes follow from the manifest's hashes; nothing else is published, at any time. The bytes it
+  # must hold are made in memory, never in a file (r17b F2: a temp dir with no room cut that file short)
+  sums_=$(for x in sheepr-macos-universal.tar.gz sheepr-linux-aarch64 sheepr-linux-x86_64 install.sh; do
     printf '%s  %s\n' "$(man_hash "$d" "$x")" "$x"
-  done > "$pt/sums"
-  cmp -s "$pt/sums" "$d/SHA256SUMS" || { stopclass content; die "SHA256SUMS is not the one the build wrote (from MANIFEST.json's hashes)"; }
-  sums_h=$(shasum -a 256 "$pt/sums" | cut -d' ' -f1)
+  done)
+  printf '%s\n' "$sums_" | cmp -s - "$d/SHA256SUMS" || { stopclass content; die "SHA256SUMS is not the one the build wrote (from MANIFEST.json's hashes)"; }
+  sums_h=$(printf '%s\n' "$sums_" | shasum -a 256 | cut -d' ' -f1)
   # npm's owners of the four names, before any git or gh call: GitHub must not go public when npm
   # would then refuse (the first v0.1.0 did exactly that). On its own, publish never logs in: its npm
   # calls name an empty npm file of this run (npmuc), never P (an earlier run's P may hold a dead token)
@@ -634,8 +646,10 @@ publish_check() { # dir
 }
 publish_exec() { # dir
   publish_check "$1" || die "the checks before publishing did not pass; this step uploaded nothing"
-  tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote" || die "git ls-remote $UPSTREAM"
-  tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases" --paginate --jq '.[].tag_name' > "$pt/releases" || die "gh: cannot list the releases"
+  lrt_=$(tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*") || die "git ls-remote $UPSTREAM"
+  fput "$pt/remote" '%s\n' "$lrt_" || die "cannot write $pt/remote"
+  rl_=$(tool "$NETC" "$GH" api "repos/lukaso/sheepr/releases" --paginate --jq '.[].tag_name') || die "gh: cannot list the releases"
+  fput "$pt/releases" '%s\n' "$rl_" || die "cannot write $pt/releases"
   (cd "$root" && sh scripts/release-plan.sh --out "$d" --manifest "$MAN" --tag "$tag" --remote "$pt/remote" --releases "$pt/releases") > "$pt/plan" || die "the planner refused"
   sh "$root/scripts/release-plan.sh" --validate "$pt/plan" || die "the plan does not validate"
   echo "release: the plan:"; sed 's/^/  /' "$pt/plan"
@@ -662,8 +676,8 @@ publish_exec() { # dir
     [ -n "$want" ] || die "$name has no manifest hash; the draft $id stays a draft"
     [ "$(shasum -a 256 "$pt/dl" | cut -d' ' -f1)" = "$want" ] || die "the uploaded $name is not the build's (its manifest hash); the draft $id stays a draft"
   done < "$pt/assets"
-  tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*" > "$pt/remote2" || die "git ls-remote $UPSTREAM"
-  cmp -s "$pt/remote" "$pt/remote2" || die "the remote tag changed during the upload; the draft $id stays a draft"
+  lrt2_=$(tool "$NETC" "$GITCMD" ls-remote "$UPSTREAM" "refs/tags/$tag*") || die "git ls-remote $UPSTREAM"
+  [ "$lrt2_" = "$lrt_" ] || die "the remote tag changed during the upload; the draft $id stays a draft"
   # the second confirmation; under ship its one confirmation, at the start, covers this step
   if [ "$shipping" = no ]; then
     confirm "release: the draft $id holds the five files, each matching. Type the tag again to make it public$( [ $cask = yes ] && [ "$cask_put" = yes ] && echo " and update $TAP"):" || die "not confirmed; the draft $id stays a draft"
@@ -740,8 +754,8 @@ cask_pre() { # dir tmp: before anything is public; sets cask_put (yes|no) and ca
   cd_=$1 ct=$2 xyz=${tag#v}
   # the cask the tag renders (the tag's own template and renderer, the archive's manifest hash)
   mkdir -p "$ct/src/scripts/lib" "$ct/src/packaging/homebrew" || die "no temp dir for the cask"
-  git -C "$root" show "refs/tags/$tag:scripts/lib/render-cask.sh" > "$ct/src/scripts/lib/render-cask.sh" \
-    && git -C "$root" show "refs/tags/$tag:packaging/homebrew/sheepr.rb.in" > "$ct/src/packaging/homebrew/sheepr.rb.in" || die "cannot read $tag's cask template"
+  fout "$ct/src/scripts/lib/render-cask.sh" git -C "$root" show "refs/tags/$tag:scripts/lib/render-cask.sh" \
+    && fout "$ct/src/packaging/homebrew/sheepr.rb.in" git -C "$root" show "refs/tags/$tag:packaging/homebrew/sheepr.rb.in" || die "cannot read $tag's cask template (or write it into $ct)"
   ah=$(man_hash "$cd_" "$ARCHIVE"); [ -n "$ah" ] || { stopclass content; die "$ARCHIVE has no manifest hash"; }
   tool base sh "$ct/src/scripts/lib/render-cask.sh" "$xyz" "$ah" "$ct/cask.rb" || die "cannot render $tag's cask"
   cmp -s "$ct/cask.rb" "$cd_/sheepr.rb" || { stopclass content; die "$cd_/sheepr.rb is not the cask the tag renders (its template, the archive's manifest hash)"; }
@@ -1058,7 +1072,7 @@ npm_check() { # dir
   # the four packages, read raw, before anything unpacks them (npm-same.py says why), against the
   # tag's license texts, README and launcher
   for x in LICENSE-MIT LICENSE-APACHE README.md npm/sheepr/bin/sheepr; do
-    git -C "$root" show "refs/tags/$tag:$x" > "$nt/ref/$(basename "$x")" 2>/dev/null || die "cannot read $x at $tag"
+    fout "$nt/ref/$(basename "$x")" git -C "$root" show "refs/tags/$tag:$x" 2>/dev/null || die "cannot read $x at $tag (or write it into $nt/ref)"
   done
   mv "$nt/ref/sheepr" "$nt/ref/launcher"
   dt=$d/sheepr-darwin-universal-$nv.tgz
@@ -1082,7 +1096,7 @@ npm_check() { # dir
   npy same "$dt" "$d/sheepr-macos-universal.tar.gz" 2> "$nt/npy.err"; r_=$?; cat "$nt/npy.err" >&2
   [ $r_ = 0 ] || { judged $r_ "$nt/npy.err" 'npm-same: ' && stopclass content; die "the darwin package's bundle is not the release archive's bundle (above)"; }
   sl_=$(stamp_line "$d") || exit 1
-  /usr/bin/printf '%s' "$sl_" > "$d/NPM-CHECKED" || die "cannot write $d/NPM-CHECKED"
+  fput "$d/NPM-CHECKED" '%s' "$sl_" || { rm -f "$d/NPM-CHECKED"; die "cannot write $d/NPM-CHECKED (no stamp is left)"; }
   rm -rf "$nt"; trap - EXIT
   echo "release: the npm tarballs of $tag check out (NPM-CHECKED written)$(next_hint "; publish comes next, then publish-npm")"
 }
@@ -1161,7 +1175,7 @@ ship_dry_verify() { # dir: verify's stand-in in __ship-dry (verify runs the real
   # real tools' stand-ins: t_release_verify)
   case $ship_gk:$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1) in
     C3:|'C7:start github')
-      RT_OUT=$st/gk.out rt_rc=3; /usr/bin/printf '%s\n' "$1/Sheepr.app: rejected" "source=Notarized Developer ID" > "$RT_OUT"
+      RT_OUT=$st/gk.out rt_rc=3; fput "$RT_OUT" '%s\n' "$1/Sheepr.app: rejected" "source=Notarized Developer ID" || die "cannot write $RT_OUT"
       rtfail 1 spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$1/sheepr-macos-universal.tar.gz" Sheepr.app)" ;;
   esac
   verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
@@ -1188,24 +1202,25 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   trap 'exit 1' $SIGS PIPE
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship or publish-npm holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when none runs, remove that directory, then run ship again"
-  /usr/bin/printf '%s\n' "$$" > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid"
+  fput "$out/.ship.lock/pid" '%s\n' "$$" || die "cannot write $out/.ship.lock/pid"
   locked=yes
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
-  /usr/bin/printf 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$shipprog" || die "cannot write $shipprog"
+  rm -f "$shipprog.tmp" 2>/dev/null
+  fput "$shipprog" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || die "cannot write $shipprog"
   # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
   shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
   # release.sh must be the tag's own (an edit marked assume-unchanged hides from git, not from cmp)
   checks
-  git -C "$root" show "refs/tags/$tag:scripts/release.sh" > "$st/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh"
+  fout "$st/release.sh" git -C "$root" show "refs/tags/$tag:scripts/release.sh" 2>/dev/null || die "cannot read $tag's scripts/release.sh (or write it into $st)"
   cmp -s "$0" "$st/release.sh" || die "this scripts/release.sh is not $tag's (an edit, maybe marked assume-unchanged): run ship from a clean checkout of the tag"
   # every file the tag tracks under scripts/ (the sourced sigs.sh among them, and whatever any
   # spelling sources from there) holds the tag's bytes in this checkout, read from the file and never
   # from the index, so assume-unchanged and skip-worktree hide nothing: a regular file by its blob
   # hash (no filters), a symlink by its target; any other entry (a submodule) is refused
-  git -C "$root" ls-tree -r --full-tree "refs/tags/$tag" -- scripts > "$st/scripts.tree" 2>/dev/null && [ -s "$st/scripts.tree" ] \
-    || die "cannot list $tag's files under scripts/"
+  fout "$st/scripts.tree" git -C "$root" ls-tree -r --full-tree "refs/tags/$tag" -- scripts 2>/dev/null && [ -s "$st/scripts.tree" ] \
+    || die "cannot list $tag's files under scripts/ (or write the list into $st)"
   while IFS= read -r l_; do
     m_=${l_%% *} h_=${l_#* * } f_=${l_#*	}; h_=${h_%%	*}
     case $m_ in
@@ -1277,17 +1292,19 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   ship_lsr; ship_pushcheck; ship_nothing_public
   [ "$(git -C "$root" rev-parse -q --verify "refs/tags/$tag")" = "$tagobj" ] || { stopclass content; die "the tag $tag moved since ship recorded it ($tagobj); nothing is public"; }
   set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"
+  # (git's answers in variables, never in a file: a lost write must not read as "nothing landed")
   progress "start push"
-  if ! tool "$NETC" "$GITCMD" -C "$root" push --porcelain --atomic --no-follow-tags origin "$@" > "$st/push" 2> "$st/push.err"; then
+  pu_=$(tool "$NETC" "$GITCMD" -C "$root" push --porcelain --atomic --no-follow-tags origin "$@" 2> "$st/push.err"); pr_=$?
+  if [ $pr_ != 0 ]; then
     # an atomic push moves both refs or neither: refused, when github.com/lukaso/sheepr shows no tag
     # and main not at the tag's commit (pushed, or held by it before)
-    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" 2>/dev/null \
+    lp_=$(tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" 2>/dev/null) \
       || die "the push failed, and the refs of $UPSTREAM cannot be read to tell whether it landed ($(errcut "$st/push.err" 300))"
-    if ! awk -v t="refs/tags/$tag" '$2 == t {f = 1} END {exit !f}' "$st/ls.push" \
-       && { [ $pushmain = no ] || ! awk -v c="$commit" '$2 == "refs/heads/main" && $1 == c {f = 1} END {exit !f}' "$st/ls.push"; }; then
+    if ! printf '%s\n' "$lp_" | awk -v t="refs/tags/$tag" '$2 == t {f = 1} END {exit !f}' \
+       && { [ $pushmain = no ] || ! printf '%s\n' "$lp_" | awk -v c="$commit" '$2 == "refs/heads/main" && $1 == c {f = 1} END {exit !f}'; }; then
       # why, from main as the remote shows it now (C5 read it as $amain): unmoved (the remote's own
       # rules refused it), moved on past the commit, or moved elsewhere
-      um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
+      um=$(printf '%s\n' "$lp_" | awk '$2 == "refs/heads/main" {print $1}')
       if [ -n "$um" ] && [ "$um" = "$amain" ]; then why="main unmoved"
       else
         tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main 2>/dev/null \
@@ -1296,17 +1313,17 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
       fi
       progress "push refused: $why"
       # git's reason for each refused ref is its porcelain `!` line (stdout under --porcelain)
-      rej=$(grep '^!' "$st/push" 2>/dev/null | cut -f2- | tr '\t\n' ' ;' | head -c 300)
+      rej=$(printf '%s\n' "$pu_" | grep '^!' | cut -f2- | tr '\t\n' ' ;' | head -c 300)
       die "the push was refused, and nothing of it landed (${rej:+git: $rej }$(errcut "$st/push.err" 300)); nothing is public"
     fi
-    die "the push failed, but $UPSTREAM shows a part of it ($(tr '\t\n' ' ;' < "$st/ls.push"))"
+    die "the push failed, but $UPSTREAM shows a part of it ($(printf '%s\n' "$lp_" | tr '\t\n' ' ;'))"
   fi
   # what the push did: origin's main fetched, and github.com/lukaso/sheepr shows the tag at the
   # recorded object and main at or past the tag's commit
   tool "$NETC" "$GITCMD" -C "$root" fetch -q origin refs/heads/main || die "the push ran, but origin's main cannot be fetched to confirm it"
-  tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag" > "$st/ls.push" || die "the push ran, but the refs of $UPSTREAM cannot be read to confirm it"
-  [ "$(awk -v t="refs/tags/$tag" '$2 == t {print $1}' "$st/ls.push")" = "$tagobj" ] || die "after the push, $UPSTREAM's $tag is not the recorded object $tagobj"
-  um=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.push")
+  lp_=$(tool "$NETC" "$GITCMD" -C "$root" ls-remote "$UPSTREAM" refs/heads/main "refs/tags/$tag") || die "the push ran, but the refs of $UPSTREAM cannot be read to confirm it"
+  [ "$(printf '%s\n' "$lp_" | awk -v t="refs/tags/$tag" '$2 == t {print $1}')" = "$tagobj" ] || die "after the push, $UPSTREAM's $tag is not the recorded object $tagobj"
+  um=$(printf '%s\n' "$lp_" | awk '$2 == "refs/heads/main" {print $1}')
   [ -n "$um" ] && git -C "$root" merge-base --is-ancestor "$commit" "$um" 2>/dev/null || die "after the push, $UPSTREAM's main (${um:-none}) does not hold $tag's commit"
   progress "done push"
   # C6. npm, the platform packages, back to back (one approval); nothing waited for here
@@ -1330,8 +1347,13 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   shipok=yes   # the one place a run is done: the handler reads this, never the exit status (a signal
   exit 0       # ship does not trap can reach the handler with status 0)
 }
-progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names
-  [ -z "$shipprog" ] || /usr/bin/printf '%s\n' "$1" >> "$shipprog" || die "cannot write $shipprog"
+progress() { # line: ship's record of the phases (no-op outside ship); written before the step it names.
+  # The record is replaced whole: the old one and LINE into a new file beside it (fput), renamed onto
+  # it, so a write a full disk cut short leaves it as it was, and the step is not run (REV 12b rule 21)
+  [ -n "$shipprog" ] || return 0
+  pr_=$(cat "$shipprog" 2>/dev/null) && [ -n "$pr_" ] || die "cannot read $shipprog (ship's own record)"
+  rm -f "$shipprog.tmp" 2>/dev/null
+  fput "$shipprog.tmp" '%s\n%s\n' "$pr_" "$1" && mv -f "$shipprog.tmp" "$shipprog" 2>/dev/null || { rm -f "$shipprog.tmp" 2>/dev/null; die "cannot write $shipprog"; }
 }
 drydir() { # dir: a dry run names each temp dir it makes on stderr (a closed stdout cannot hide it),
            # so its cells can hold every one to being gone; a real run (no temp HOME) says nothing
@@ -1355,21 +1377,22 @@ ship_unreadable() { stopclass unreadable; die "cannot tell whether anything is p
 ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, npm and npm's time
   # record), and the version newer than GitHub's latest final release and npm's latest of each name
   xyz=${tag#v}
-  tool "$NETC" "$GH" api repos/lukaso/sheepr/releases --paginate --jq '.[] | [.tag_name, .draft, .prerelease] | @tsv' > "$st/rels" 2> "$st/rels.err" \
+  # (gh's answers in variables, never in a file: a lost write must not read as "nothing there")
+  rels_=$(tool "$NETC" "$GH" api repos/lukaso/sheepr/releases --paginate --jq '.[] | [.tag_name, .draft, .prerelease] | @tsv' 2> "$st/rels.err") \
     || ship_unreadable "gh cannot list the releases ($(errcut "$st/rels.err" 200))"
-  [ -z "$(awk -F '\t' -v t="$tag" '$1 == t' "$st/rels")" ] || ship_public "GitHub has a release or a draft $tag"
+  [ -z "$(printf '%s\n' "$rels_" | awk -F '\t' -v t="$tag" '$1 == t')" ] || ship_public "GitHub has a release or a draft $tag"
   hi=""
-  for v in $(awk -F '\t' '$2 == "false" && $3 == "false" {print $1}' "$st/rels"); do
+  for v in $(printf '%s\n' "$rels_" | awk -F '\t' '$2 == "false" && $3 == "false" {print $1}'); do
     v=${v#v}; sh "$root/scripts/lib/cask-version.sh" "$v" "$v" >/dev/null 2>&1 || continue
     if [ -z "$hi" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$hi" "$v")" = newer ]; then hi=$v; fi
   done
   [ -z "$hi" ] || [ "$(sh "$root/scripts/lib/cask-version.sh" "$hi" "$xyz")" = newer ] || die "$tag is not newer than GitHub's latest release v$hi: tag a newer version"
   # the tap's cask (A5 checks it further)
-  if ! tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" > "$st/tap.rb" 2> "$st/tap.err"; then
+  if ! tapc_=$(tool "$NETC" "$GH" api -H 'Accept: application/vnd.github.raw' "repos/$TAP/contents/$CASK" 2> "$st/tap.err"); then
     grep -q 'HTTP 404' "$st/tap.err" && die "$TAP has no $CASK (add it by hand once)"
     ship_unreadable "gh cannot read $TAP's $CASK ($(errcut "$st/tap.err" 300))"
   fi
-  grep -qxF "  version \"$xyz\"" "$st/tap.rb" && ship_public "$TAP's cask is $xyz"
+  printf '%s\n' "$tapc_" | grep -qxF "  version \"$xyz\"" && ship_public "$TAP's cask is $xyz"
   # npm, each name: the version not there (E404), never there once ("time"), and newer than its latest
   . "$root/scripts/release.conf" || die "cannot read scripts/release.conf"
   for p in $SR_NPM_PKGS; do
@@ -1389,8 +1412,8 @@ ship_nothing_public() { # A4: nothing of the version public (GitHub, the tap, np
 }
 ship_tap() { # A5: the tap's cask has one version line, below this version; this gh login may write
              # the tap and lukaso/sheepr
-  [ "$(grep -c '^  version "' "$st/tap.rb")" = 1 ] || die "$TAP's $CASK has not exactly one version line"
-  tv=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$st/tap.rb")
+  [ "$(printf '%s\n' "$tapc_" | grep -c '^  version "')" = 1 ] || die "$TAP's $CASK has not exactly one version line"
+  tv=$(printf '%s\n' "$tapc_" | sed -n 's/^  version "\(.*\)"$/\1/p')
   [ "$(sh "$root/scripts/lib/cask-version.sh" "$tv" "$xyz" 2>/dev/null)" = newer ] || die "$TAP's cask is $tv, not below $xyz"
   for r_ in "$TAP" lukaso/sheepr; do
     pp=$(tool "$NETC" "$GH" api "repos/$r_" --jq .permissions.push 2> "$st/perm.err") || { stopclass fix; die "gh: cannot read $r_ ($(errcut "$st/perm.err" 300))"; }
@@ -1428,7 +1451,7 @@ npm_login() {
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
   # a time ship cannot compute is left out
   e_=$(date +%s 2>/dev/null); ship_end=""
-  case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))); { /usr/bin/printf '%s\n' $(( e_ + 7200 )) > "$d_/end"; } 2>/dev/null ;; esac
+  case $e_ in ''|*[!0-9]*) ;; *) ship_end=$(ship_clock $(( e_ + 7200 ))); fput "$d_/end" '%s\n' $(( e_ + 7200 )) || die "cannot write $d_/end; $3" ;; esac
   who=$(tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= 2> "$1/who.err") || die "npm whoami failed after the login ($(errcut "$1/who.err" 200)); $3"
   [ "$who" = "${SR_NPM_USER:-}" ] && return 0
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"
@@ -1453,7 +1476,7 @@ npm_left() {
 # or publish-npm per out dir at a time); npm_end releases it. Never taken over
 npm_lock() {
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship or publish-npm holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when none runs, remove that directory, then run $1 again; this step uploaded nothing"
-  pnlock=yes; /usr/bin/printf '%s\n' "$$" > "$out/.ship.lock/pid" || die "cannot write $out/.ship.lock/pid; this step uploaded nothing"
+  pnlock=yes; fput "$out/.ship.lock/pid" '%s\n' "$$" || die "cannot write $out/.ship.lock/pid; this step uploaded nothing"
 }
 # npm_end DIR: publish-npm on its own, as it exits (its EXIT trap): the logout of its own session, then
 # its lock (REV 12 rule 5); nothing under ship
@@ -1535,13 +1558,15 @@ ship_lsr() { # A2's read of the remote refs, again before the push: origin's and
              # sheepr's main and this tag (exactly refs/tags/vTAG and its peeled line; an rc tag of
              # the version is not one) must agree; sets amain (origin's main) and rtag
   for r_ in origin "$UPSTREAM"; do
-    tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" > "$st/ls.raw" 2> "$st/ls.err" || { stopclass fix; die "git: cannot list the refs of $r_ (ls-remote: $(errcut "$st/ls.err" 300))"; }
-    awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' "$st/ls.raw" | sort > "$st/ls.$( [ "$r_" = origin ] && echo o || echo u)"
+    # (git's answers in variables, never in a file: a lost write must not read as "no tag there")
+    lr_=$(tool "$NETC" "$GITCMD" -C "$root" ls-remote "$r_" refs/heads/main "refs/tags/$tag*" 2> "$st/ls.err") || { stopclass fix; die "git: cannot list the refs of $r_ (ls-remote: $(errcut "$st/ls.err" 300))"; }
+    lv_=$(printf '%s\n' "$lr_" | awk -v t="refs/tags/$tag" '$2 == "refs/heads/main" || $2 == t || $2 == t "^{}"' | sort)
+    if [ "$r_" = origin ]; then lso_=$lv_; else lsu_=$lv_; fi
   done
-  cmp -s "$st/ls.o" "$st/ls.u" || { stopclass network; die "origin and $UPSTREAM disagree on main or $tag ($(tr '\t\n' ' ;' < "$st/ls.o") against $(tr '\t\n' ' ;' < "$st/ls.u")); a push in between? run ship again"; }
-  amain=$(awk '$2 == "refs/heads/main" {print $1}' "$st/ls.o")
+  [ "$lso_" = "$lsu_" ] || { stopclass network; die "origin and $UPSTREAM disagree on main or $tag ($(printf '%s\n' "$lso_" | tr '\t\n' ' ;') against $(printf '%s\n' "$lsu_" | tr '\t\n' ' ;')); a push in between? run ship again"; }
+  amain=$(printf '%s\n' "$lso_" | awk '$2 == "refs/heads/main" {print $1}')
   [ -n "$amain" ] || die "origin has no main"
-  rtag=$(awk -v t="refs/tags/$tag" '$2 == t || $2 == t "^{}"' "$st/ls.o")
+  rtag=$(printf '%s\n' "$lso_" | awk -v t="refs/tags/$tag" '$2 == t || $2 == t "^{}"')
 }
 ship_pushcheck() { # A3, again before the push: no remote tag; origin's main fetched (FETCH_HEAD is per
   # worktree: fetched and read with one -C; the refspec keeps the unpushed tag under fetch.prune and
@@ -1660,15 +1685,17 @@ line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1"
 # beside it (the lock is held: one writer) by /usr/bin/printf (r16b F2: bash 3.2's builtin keeps a failed
 # write's bytes, a full disk's, and the next write hands them on: the stop line twice), then renamed onto it; a failed write leaves it as it was
 # (ship_exit then calls nfgone). It succeeds only when the name then holds a regular file (REV 11b rule
-# 15): mv -f onto a directory puts the text inside it and says it worked (r15b N5)
+# 15): mv -f onto a directory puts the text inside it and says it worked (r15b N5); and only when the
+# temp file, and then that file, hold exactly the text (read back: /usr/bin/printf exits 0 when a full
+# disk took none of it; r17b F3)
 nfput() {
   [ ! -d "$nf" ] || return 1
   # (r16b F4: what is at the temp name goes first, a link among them, and the write makes a new file,
-  # noclobber: no write goes through a link)
+  # noclobber: no write goes through a link; a file the write left short is not the text: rm, 1)
   rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null
-  ( set -C; /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" ) 2>/dev/null && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null \
-    || { rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1; }
-  [ -f "$nf" ] && [ ! -L "$nf" ] && return 0
+  ( set -C; /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" ) 2>/dev/null && /usr/bin/printf '%s\n' "$1" | /usr/bin/cmp -s - "$out/.$tag.ship-next.tmp" \
+    && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null || { rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1; }
+  [ -f "$nf" ] && [ ! -L "$nf" ] && /usr/bin/printf '%s\n' "$1" | /usr/bin/cmp -s - "$nf" && return 0
   rm -f "$nf" 2>/dev/null; return 1   # (the rename left no regular file at the name: what is there is this run's own)
 }
 # nfgone: after a write of the next file failed, no other text stays at its name (REV 11b rule 15: an
@@ -1801,7 +1828,7 @@ case $sub in
   # the cells' view of a check's stop class: the check in a subshell, as ship's C2 and C3 run it, with
   # a class file of its own (fix first, as ship sets it); then the class it left
   __class-verify|__class-npm-check)
-    shipcls=$(mktemp /private/tmp/sr-class.XXXXXX) || die "no temp file"; /usr/bin/printf 'fix\n' > "$shipcls"
+    shipcls=$(mktemp /private/tmp/sr-class.XXXXXX) || die "no temp file"; fput "$shipcls" 'fix\n' || die "cannot write $shipcls"
     if [ "$sub" = __class-verify ]; then ( verify "$out/$tag" ); else ( npm_check "$out/$tag" ); fi; r_=$?
     echo "release: (class) $(cat "$shipcls")"; rm -f "$shipcls"; exit "$r_" ;;
 esac

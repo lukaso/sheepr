@@ -22,12 +22,13 @@ cp "$launcher" "$pk/main/bin/sheepr" && chmod 755 "$pk/main/bin/sheepr" || exit 
 cp "$root/README.md" "$pk/main/README.md" || { echo "npm-pack: no README.md in $root" >&2; exit 1; }
 # each package.json from npm-same.py, which npm-check compares against (one source for both)
 pj() { /usr/bin/env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS /usr/bin/python3 -I "$root/scripts/lib/npm-same.py" pkgjson "$@"; }
-pj main "$nv" > "$pk/main/package.json" || { echo "npm-pack: package.json (main)" >&2; exit 1; }
+# each package.json read back (a write a full disk cut short would be packed: r17b F1)
+pj main "$nv" > "$pk/main/package.json" && pj main "$nv" | /usr/bin/cmp -s - "$pk/main/package.json" || { echo "npm-pack: package.json (main)" >&2; exit 1; }
 tar -xzf "$arc" -C "$pk/darwin" || exit 1
-pj darwin "$nv" > "$pk/darwin/package.json" || { echo "npm-pack: package.json (darwin)" >&2; exit 1; }
+pj darwin "$nv" > "$pk/darwin/package.json" && pj darwin "$nv" | /usr/bin/cmp -s - "$pk/darwin/package.json" || { echo "npm-pack: package.json (darwin)" >&2; exit 1; }
 cp "$la" "$pk/linux-arm64/bin/sheepr" && cp "$lx" "$pk/linux-x64/bin/sheepr" && chmod 755 "$pk/linux-arm64/bin/sheepr" "$pk/linux-x64/bin/sheepr" || exit 1
 for a in arm64 x64; do
-  pj "linux-$a" "$nv" > "$pk/linux-$a/package.json" || { echo "npm-pack: package.json (linux-$a)" >&2; exit 1; }
+  pj "linux-$a" "$nv" > "$pk/linux-$a/package.json" && pj "linux-$a" "$nv" | /usr/bin/cmp -s - "$pk/linux-$a/package.json" || { echo "npm-pack: package.json (linux-$a)" >&2; exit 1; }
 done
 for d in main darwin linux-arm64 linux-x64; do
   cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$pk/$d/" || { echo "npm-pack: no license texts in $root" >&2; exit 1; }

@@ -225,7 +225,7 @@ fresh; mkdir -p "$OUTR/${STG}OLD000"; echo old > "$OUTR/${STG}OLD000/MANIFEST.js
 body=$(awk '/^build_release\(\) \{/ { f = 1 } f { print NR ": " $0 } f && /^}/ { exit }' "$SR_ROOT/scripts/release.sh")
 prev=0 bad=""
 for m in 'step "the signing identity"' 'step "the compiler"' 'step "the Linux images"' 'mktemp -d "$out/.' 'step "the Linux fetch"' \
-    'step "the macOS compile"' 'step "the macOS bundle"' '"$S/lib/sign.sh" "$@" || die "signing failed"' 'step "the Linux builds' '> "$dest/MANIFEST.json"' 'mv "$dest" "$final"'; do
+    'step "the macOS compile"' 'step "the macOS bundle"' '"$S/lib/sign.sh" "$@" || die "signing failed"' 'step "the Linux builds' 'fput "$dest/MANIFEST.json"' 'mv "$dest" "$final"'; do
   l=$(printf '%s\n' "$body" | grep -F -- "$m" | cut -d: -f1)
   [ "$(printf '%s\n' "$l" | grep -c .)" = 1 ] || { bad="$bad [$m: $(printf '%s\n' "$l" | grep -c .) lines]"; continue; }
   [ "$l" -gt "$prev" ] || bad="$bad [$m at $l, before $prev]"

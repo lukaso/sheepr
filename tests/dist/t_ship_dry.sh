@@ -140,6 +140,7 @@ d=\$1; tg=\$(basename "\$d")
 printf '%s %s\n' "\$tg" "\$(/usr/bin/shasum -a 256 "\$d/MANIFEST.json" | cut -d' ' -f1)" > "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.badstamp" ] || echo "\$tg 0000" > "\$d/NPM-CHECKED"
 [ ! -e "$FX/npmcheck.nostamp" ] || rm -f "\$d/NPM-CHECKED"
+[ ! -e "$FX/npmcheck.empty" ] || : > "\$d/NPM-CHECKED"   # (a stamp write that landed nothing, exit 0: r17b F1)
 [ ! -e "$FX/npmcheck.touchpkg" ] || echo x >> "\$d/sheepr-linux-x64-0.1.0.tgz"
 [ ! -e "$FX/npmcheck.touch" ] || echo x >> "\$d/sheepr-linux-x86_64"
 EOF
@@ -1148,7 +1149,7 @@ EOF
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"
 completed && [ "$(git --git-dir="$FX/origin.git" cat-file -t "$(cat "$FX/next")" 2>/dev/null)" = commit ] && pass "main moved past the tag's commit right after the push (fetched, then checked): accepted" || fail "main past: rc=$r $(lastline)"
 # the progress line before the real push: directly before it, in the text
-[ "$(grep -B1 'push --porcelain --atomic --no-follow-tags origin "\$@" > "\$st/push"' "$RS" | head -1)" = '  progress "start push"' ] && pass "'start push' is written directly before the real push" || fail "start push: $(grep -B1 'push --porcelain --atomic --no-follow-tags origin' "$RS" | head -1)"
+[ "$(grep -B1 'push --porcelain --atomic --no-follow-tags origin "\$@" 2> "\$st/push.err"); pr_=\$?' "$RS" | head -1)" = '  progress "start push"' ] && pass "'start push' is written directly before the real push" || fail "start push: $(grep -B1 'push --porcelain --atomic --no-follow-tags origin' "$RS" | head -1)"
 # every npm call in the npm class (it passes NODE_EXTRA_CA_CERTS; the dry class does not)
 SETX="NODE_EXTRA_CA_CERTS=$FX/ca.pem"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
 completed && [ -s "$FX/npmenvs" ] && [ -z "$(grep -v "^$FX/ca.pem " "$FX/npmenvs")" ] && grep -q ' login$' "$FX/npmenvs" && grep -q ' publish$' "$FX/npmenvs" && grep -q ' logout$' "$FX/npmenvs" \
@@ -1167,9 +1168,10 @@ lastprog() { tail -1 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null; }
 [ $r = 1 ] && [ "$(lastprog)" = "start github" ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 3 ] && pass "GitHub's draft refused (not exit 5): stopped, 'start github' last, the main package not uploaded" || fail "post fails: rc=$r '$(lastprog)' $(lastline)"
 : > "$FX/pubfail.sheepr"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr"
 [ $r = 1 ] && [ "$(lastprog)" = "start npm-main" ] && ! grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && pass "the main upload refused: stopped, 'start npm-main' last, no success line" || fail "main refused: rc=$r '$(lastprog)' $(lastline)"
-# the progress file cannot take 'start push': no push
+# the progress file cannot take 'start push': no push (the record is replaced through a temp file beside
+# it: a directory at the temp name makes the write fail; a read-only record no longer does, REV 12b rule 21)
 cat > "$FX/onbuild" <<EOF
-chmod 444 "$OUTR/.v0.1.0.ship-progress"
+mkdir "$OUTR/.v0.1.0.ship-progress.tmp"
 EOF
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/onbuild"
 [ $r = 1 ] && grep -q "cannot write $OUTR/.v0.1.0.ship-progress" "$FX/o" && nopub && pass "'start push' cannot be written: no push (each line before the step it names)" || fail "progress unwritable: rc=$r $(lastline)"
@@ -1474,6 +1476,181 @@ wp_=$(python3 -I "$FX/wcensus.py" "$FX/rs-planted.sh")
   && pass "r16b F2: no builtin printf or echo in release.sh or scripts/lib/*.sh writes to a file (all through /usr/bin/printf); control: a planted one is caught" \
   || fail "r16b F2, the builtin writes: $(printf '%s' "$wc_" | tr '\n' '|' | cut -c1-400); planted: $(printf '%s' "$wp_" | tail -1)"
 rm -f "${FX:?}/wcensus.py" "${FX:?}/rs-planted.sh"
+# r17b F1, F2 (REV 12b rule 20): every redirection to a file in the release scripts (release.sh,
+# scripts/lib/*.sh, bundle.sh, release-plan.sh; a compound command's too: `done >`, `} >`) is a write that
+# proves its bytes (fput, fout, read back on its line) or one kept with its reason; each reason is used.
+# Controls: a planted `done > "$st/x"`, a planted gh answer into a file, and a rule no write uses: each
+# refused. (The scanner: notes/builder/r17/redir17.py)
+cat > "$FX/redir.py" <<'SR_CENSUS_EOF'
+import sys, re, os
+# redir17.py [--rules] FILE...: every redirection of an fd to a file in the given sh files, read as the
+# shell reads them: quotes (one context per '' and ""; a $( ) inside "" is code again), $(( )) skipped,
+# comments, heredoc bodies skipped; a compound command's redirection (`done >`, `} >`, `) >`) counts as
+# any other. A target /dev/null or /dev/tty, or an fd dup (>&N, >&-), is not a file. Prints
+# "FILE:LINE: fdN OP TARGET || the line", then N=. With --rules: each one must match a rule of RULES
+# below (a write that proves its bytes, or one kept with its reason), every rule must match one, and
+# the unmatched and unused are printed; exit 1 when there is either (REV 12b rule 20).
+def scan(path):
+    src = open(path).read()
+    hits = []; i = 0; n = len(src); line = 1
+    stack = ['N']; depth = [0]; hd = []   # contexts; paren depth per N context; pending heredoc words
+    word_start = True
+    while i < n:
+        ch = src[i]; top = stack[-1]
+        if ch == '\n':
+            line += 1; i += 1; word_start = True
+            if hd and top == 'N' and len(stack) == 1:
+                # heredoc bodies follow this line: skip each until its word alone (<<- strips tabs)
+                for w, strip in hd:
+                    while i < n:
+                        j = src.find('\n', i); j = n if j < 0 else j
+                        l = src[i:j]; i = j + 1; line += 1
+                        if (l.lstrip('\t') if strip else l) == w: break
+                hd = []
+            continue
+        if top == 'S':
+            if ch == "'": stack.pop(); depth.pop()
+            i += 1; continue
+        if top == 'A':
+            if src.startswith('))', i): stack.pop(); depth.pop(); i += 2; continue
+            i += 1; continue
+        if top == 'D':
+            if ch == '\\': i += 2; continue
+            if ch == '"': stack.pop(); depth.pop(); i += 1; continue
+            if src.startswith('$((', i): stack.append('A'); depth.append(0); i += 3; continue
+            if src.startswith('$(', i): stack.append('N'); depth.append(0); i += 2; word_start = True; continue
+            i += 1; continue
+        # N
+        if ch == '\\': i += 2; word_start = False; continue
+        if ch == '#' and word_start:
+            j = src.find('\n', i); i = n if j < 0 else j; continue
+        if ch == "'": stack.append('S'); depth.append(0); i += 1; word_start = False; continue
+        if ch == '"': stack.append('D'); depth.append(0); i += 1; word_start = False; continue
+        if src.startswith('$((', i): stack.append('A'); depth.append(0); i += 3; word_start = False; continue
+        if src.startswith('$(', i): stack.append('N'); depth.append(0); i += 2; word_start = True; continue
+        if ch == '(':
+            depth[-1] += 1; i += 1; word_start = True; continue
+        if ch == ')':
+            if depth[-1] == 0 and len(stack) > 1: stack.pop(); depth.pop()
+            elif depth[-1] > 0: depth[-1] -= 1
+            i += 1; word_start = True; continue
+        if src.startswith('<<', i) and not src.startswith('<<<', i):
+            m = re.match(r'<<(-?)\s*([\'"]?)([A-Za-z_][A-Za-z_0-9]*)\2', src[i:])
+            if m: hd.append((m.group(3), m.group(1) == '-')); i += m.end(); continue
+        m = re.match(r'(\d*)(>>|>\||>)(?!&)', src[i:])
+        if m and (i == 0 or src[i-1] not in '<>&'):
+            fd = m.group(1) or '1'; op = m.group(2); j = i + m.end()
+            while j < n and src[j] in ' \t': j += 1
+            k = j; q = None; tgt = ''
+            while k < n:
+                c = src[k]
+                if q:
+                    if c == q: q = None; k += 1; continue
+                    if c == '\\' and q == '"': tgt += src[k:k+2]; k += 2; continue
+                    tgt += c; k += 1; continue
+                if c in '\'"': q = c; k += 1; continue
+                if c in ' \t\n;&|)<>': break
+                if src.startswith('$(', k):
+                    d = 0; s0 = k
+                    while k < n:
+                        if src[k] == '(': d += 1
+                        elif src[k] == ')':
+                            d -= 1
+                            if d == 0: break
+                        k += 1
+                    tgt += src[s0:k+1]; k += 1; continue
+                tgt += c; k += 1
+            if tgt not in ('/dev/null', '/dev/tty') and not tgt.startswith('&'):
+                ls = src.rfind('\n', 0, i) + 1; le = src.find('\n', i); le = n if le < 0 else le
+                hits.append((os.path.basename(path), line, fd, op, tgt, src[ls:le].strip()))
+            i = k; word_start = False; continue
+        word_start = ch in ' \t;&|{}'
+        i += 1
+    return hits
+
+# RULES: (file, target, reason[, a regex the line must match]). '*' as file: any file; 'fd2' as
+# target: any target on fd 2. Each a write that proves its bytes, or one kept as it is, with why
+RB = 'read back on its line (cmp), before it is used'
+RULES = [
+    ('*', 'fd2', "a tool's words on fd 2 (a cause, npm's code, a judged refusal line): a lost one makes a stop name no code, never a verdict"),
+    ('release.sh', '$f_', 'fput and fout themselves: the bytes read back'),
+    ('*', '${SR_ASK_RECORD:-/dev/null}', "a cell's record (/dev/null in a real run)"),
+    ('exec-guard.sh', '$SR_EXEC_RECORD', "a cell's record (unset in a real run)"),
+    ('release.sh', '$pt/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pt/npmrc"'),
+    ('npm-pack.sh', '$pk/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/npmrc"'),
+    ('npm-pack.sh', '$pk/globalrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/globalrc"'),
+    ('archive.sh', '$t/list', "the listing's end line read back (tail): a short listing is \"cannot check\""),
+    ('realtools.sh', '$o_', "an Apple tool's words: none is no verdict (rt_judge)"),
+    ('release.sh', '$pt/plan', "--validate compares the whole plan with its one shape: a short one refuses"),
+    ('release.sh', '$pt/assets', 'the exact-five check reads it whole: a short list refuses'),
+    ('release.sh', '$pt/dl', 'a download, hashed: a short one refuses'),
+    ('release.sh', '$ct/tap.rb', "the tap's raw bytes (their blob id is the write's base): a short file has no version line, is not the cask, or GitHub refuses the write"),
+    ('release.sh', '$ct/rel', 'the draft flag and exactly one asset id: a short file refuses'),
+    ('release.sh', '$ct/dl', 'a download, hashed: a short one refuses'),
+    ('release.sh', '$ct/brew', 'a download, hashed: a short one refuses'),
+    ('release.sh', '$ct/back', "the cask read back, compared whole with the one put: a short one refuses"),
+    ('release.sh', '$st/dry', 'compared whole with the refspecs ship pushes: a short one refuses'),
+    ('release.sh', '$out/.$tag.ship-next.tmp', RB, r'cmp -s - "\$out/\.\$tag\.ship-next\.tmp"'),
+    ('sign.sh', '$dest/notary-profile.txt', "the operator's record of notarytool's answer: nothing reads it"),
+    ('sign.sh', '$dest/notary-submit.json', "the operator's record of notarytool's answer: nothing reads it (the run reads the variable)"),
+    ('sign.sh', '$dest/notary-log.json', "the operator's record of notarytool's log: nothing reads it"),
+    ('bundle.sh', '$app/Contents/Info.plist', '/bin/cat exits 1 when a full disk took its bytes (measured, r17b)', r'cat > "\$app/Contents/Info\.plist" <<EOF \|\| exit 1'),
+    ('release-plan.sh', '$tmp', "validate reads the whole plan before it is printed: a short one refuses"),
+    ('npm-pack.sh', '$pk/main/package.json', RB, r'cmp -s - "\$pk/main/package\.json"'),
+    ('npm-pack.sh', '$pk/darwin/package.json', RB, r'cmp -s - "\$pk/darwin/package\.json"'),
+    ('npm-pack.sh', '$pk/linux-$a/package.json', RB, r'cmp -s - "\$pk/linux-\$a/package\.json"'),
+    ('render-cask.sh', '$o.tmp', RB, r'cmp -s - "\$o\.tmp"'),
+    ('render-install.sh', '$outf.tmp', RB, r'cmp -s - "\$outf\.tmp"'),
+]
+def match(h, r):
+    f, tgt = r[0], r[1]
+    if f != '*' and f != h[0]: return False
+    if tgt == 'fd2': return h[2] == '2'
+    if h[2] != '1' or h[4] != tgt: return False
+    return len(r) < 4 or re.search(r[3], h[5]) is not None
+args = sys.argv[1:]; rules = args[:1] == ['--rules']
+if rules: args = args[1:]
+hits = [h for p in args for h in scan(p)]
+bad = 0; used = set()
+for h in hits:
+    m = [k for k, r in enumerate(RULES) if match(h, r)]
+    used.update(m)
+    if rules and not m:
+        print('UNLISTED %s:%d: fd%s%s %s || %s' % (h[0], h[1], h[2], h[3], h[4], h[5][:160])); bad += 1
+    elif not rules:
+        print('%s:%d: fd%s%s %s || %s' % (h[0], h[1], h[2], h[3], h[4], h[5][:160]))
+if rules:
+    for k, r in enumerate(RULES):
+        if k not in used: print('UNUSED %s %s' % (r[0], r[1])); bad += 1
+print('N=%d UNLISTED+UNUSED=%d' % (len(hits), bad))
+sys.exit(1 if rules and bad else 0)
+SR_CENSUS_EOF
+RF_="$SR_ROOT/scripts/release.sh $SR_ROOT/scripts/lib/*.sh $SR_ROOT/scripts/bundle.sh $SR_ROOT/scripts/release-plan.sh"
+rc_=$(python3 -I "$FX/redir.py" --rules $RF_); rr_=$?
+mkdir -p "$FX/pl" || exit 3
+awk '{ print } /^ship_tap\(\) \{/ && !d { print "  for x in a b; do echo $x; done > \"$st/planted\""; print "  tool \"$NETC\" \"$GH\" api repos/lukaso/sheepr/releases > \"$st/rels2\""; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/pl/release.sh"
+rp_=$(python3 -I "$FX/redir.py" --rules "$FX/pl/release.sh" $(printf '%s\n' $RF_ | grep -v '/release\.sh$'))
+sed 's/^    (.release-plan.sh., .\$tmp., /    ("release-plan.sh", "$nosuch", /' "$FX/redir.py" > "$FX/redir-stale.py"
+rs_=$(python3 -I "$FX/redir-stale.py" --rules $RF_)
+[ $rr_ = 0 ] && [ "$(printf '%s\n' "$rp_" | grep -c '^UNLISTED')" = 2 ] \
+  && [ "$(printf '%s\n' "$rp_" | grep -c '^UNLISTED release.sh:[0-9]*: fd1> $st/planted ')" = 1 ] && [ "$(printf '%s\n' "$rp_" | grep -c '^UNLISTED release.sh:[0-9]*: fd1> $st/rels2 ')" = 1 ] \
+  && printf '%s\n' "$rs_" | grep -q '^UNUSED release-plan.sh \$nosuch$' && printf '%s\n' "$rs_" | grep -q '^UNLISTED release-plan.sh:[0-9]*: fd1> \$tmp ' \
+  && pass "r17b F1, F2: every redirection to a file in the release scripts proves its bytes or is kept with its reason ($(printf '%s\n' "$rc_" | tail -1)); controls: a planted done > file, a gh answer into a file, a stale rule: each refused" \
+  || fail "r17b F1, F2, the write census: $(printf '%s' "$rc_" | grep -e UNLISTED -e UNUSED | tr '\n' '|' | cut -c1-600); controls: $(printf '%s\n' "$rp_" | grep -c '^UNLISTED') planted, stale: $(printf '%s\n' "$rs_" | grep -c '^UNUSED')"
+rm -rf "${FX:?}/redir.py" "${FX:?}/redir-stale.py" "${FX:?}/pl"
+# r17b F1: fput and fout themselves (release.sh's own, read from it): a write that lands nothing (a link
+# to /dev/null takes the bytes and exits 0, as /usr/bin/printf does on a full disk: measured,
+# notes/builder/i17/wprobe.out) answers 1; control: a file answers 0 and holds exactly the bytes
+eval "$(grep '^fput() {' "$RS")"; eval "$(grep '^fout() {' "$RS")"
+ln -s /dev/null "$FX/nul.lnk" && : > "$FX/real.f" || exit 3
+fput "$FX/nul.lnk" 'stamp %s\n' v0.1.0; a_=$?
+fput "$FX/real.f" 'stamp %s\n' v0.1.0; b_=$?
+fout "$FX/nul.lnk" /bin/echo x; c_=$?
+fout "$FX/real.o" /bin/echo x; d_=$?
+[ $a_ = 1 ] && [ $b_ = 0 ] && [ "$(cat "$FX/real.f")" = 'stamp v0.1.0' ] && [ $c_ = 1 ] && [ $d_ = 0 ] && [ "$(cat "$FX/real.o")" = x ] \
+  && pass "r17b F1: fput and fout answer 1 for a write that landed nothing (a link to /dev/null); control: a file, 0 and its bytes" \
+  || fail "r17b F1, fput/fout: link fput=$a_ fout=$c_ (want 1); file fput=$b_ fout=$d_ (want 0) '$(cat "$FX/real.f" 2>/dev/null)' '$(cat "$FX/real.o" 2>/dev/null)'"
+rm -f "${FX:?}/nul.lnk" "${FX:?}/real.f" "${FX:?}/real.o"; unset -f fput fout 2>/dev/null
 # the rewrite is a rename: a KILL at the mv onto the next file, after the logout ran, leaves the
 # earlier text whole (the stop text with the logout step); the temp file beside it holds the new one
 cat > "$B/mv" <<EOS
@@ -2207,7 +2384,14 @@ hint_row() { # label want-text
   [ $r != 0 ] && grep -q "$2" "$FX/o" && hint_free && pass "under ship, $1: '$2', and no other entry named" || fail "$1: rc=$r $(head -2 "$FX/hints" 2>/dev/null | tr '\n' '|') $(lastline)"
 }
 rm -rf "${OUTR:?}"; : > "$FX/npmcheck.badstamp"; ship; r=$?; rm -f "$FX/npmcheck.badstamp"; hint_row "C3's stamp check" "npm-check has not passed on"
-grep -q "Move $OUTR/v0.1.0 aside" "$NF" && pass "  a content finding: move the build aside" || fail "  badstamp: no move aside: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
+# (REV 12b rule 22: the stamp is npm-check's record, not the build's bytes: class fix, never "move aside")
+! grep -q "Move $OUTR/v0.1.0 aside" "$NF" && grep -qx 'When the cause above is fixed, run ship again.' "$NF" && pass "  REV 12b rule 22: a stamp that is not this manifest's: class fix, no move aside" || fail "  badstamp: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
+# r17b F1: npm-check's stamp write that landed nothing (the stand-in leaves it empty, exit 0): ship stops
+# at C3 with class fix, never "move aside" (a rebuild and a second notarization for no defect)
+rm -rf "${OUTR:?}"; : > "$FX/npmcheck.empty"; ship; r=$?; rm -f "$FX/npmcheck.empty"
+[ $r = 1 ] && grep -q 'npm-check has not passed on' "$FX/o" && ! grep -qi 'move .* aside' "$NF" && grep -qx 'When the cause above is fixed, run ship again.' "$NF" && ! grep -q 'push --porcelain --atomic' "$FX/calls" \
+  && pass "r17b F1: an empty stamp (npm-check's write landed nothing): C3 stops, class fix, no move aside, nothing pushed" \
+  || fail "r17b F1, empty stamp: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"
 rm -rf "${OUTR:?}"; : > "$FX/npmcheck.touch"; ship; r=$?; rm -f "$FX/npmcheck.touch"; hint_row "C3's file check" "a file npm-check checked has changed since"
 grep -q "Move $OUTR/v0.1.0 aside" "$NF" && pass "  a content finding: move the build aside" || fail "  touch: no move aside: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
 rm -rf "${OUTR:?}"; : > "$FX/stilldraft"; ship; r=$?; rm -f "$FX/stilldraft"; hint_row "the release still a draft" "it is still a draft"
@@ -2250,7 +2434,8 @@ printf '%s\n' 'delete it with `git push --delete origin v0.1.0`' '  git push -d 
 printf '%s\n' '  set -- "$tagobj:refs/tags/$tag"' > "$FX/planted.md"; [ -z "$(tagdel "$FX/planted.md")" ] && pass "control: a push refspec of the tag object is not a deletion" || fail "control: the push refspec is counted"
 
 # --- t_publish_dry's refusals before anything is public, under ship (C3): no push, no upload, no
-# POST; the build moved aside (each check of publish_check also has its own row in t_publish_dry)
+# POST; the build moved aside (each check of publish_check also has its own row in t_publish_dry), but
+# for a missing stamp: npm-check's record, class fix (REV 12b rule 22)
 cr() { # label want-text
   [ $r = 1 ] && grep -q "$2" "$FX/o" && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
     && grep -qx "Move $OUTR/v0.1.0 aside (never delete it), then run ship again." "$NF" && pass "under ship, $1: refused at C3, nothing public; move the build aside" || fail "$1: rc=$r $(lastline)"
@@ -2259,7 +2444,10 @@ printf 'cd "%s/v0.1.0" && sort -r -k2 SHA256SUMS > S && mv S SHA256SUMS\n' "$OUT
 cr "a SHA256SUMS that is not the build's (reordered)" "SHA256SUMS is not the one the build wrote"
 printf 'echo "# edited" >> "%s/v0.1.0/sheepr.rb"\n' "$OUTR" > "$FX/afterbuild"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterbuild"
 cr "the out dir's cask edited" "is not the cask the tag renders"
-: > "$FX/npmcheck.nostamp"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.nostamp"; cr "no npm-check stamp" "npm-check has not passed on"
+: > "$FX/npmcheck.nostamp"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.nostamp"
+[ $r = 1 ] && grep -q "npm-check has not passed on" "$FX/o" && ! grep -q -e 'push --porcelain --atomic' -e '^npm publish' -e '^gh api -X POST' "$FX/calls" \
+  && ! grep -q "Move $OUTR/v0.1.0 aside" "$NF" && grep -qx 'When the cause above is fixed, run ship again.' "$NF" \
+  && pass "under ship, no npm-check stamp: refused at C3, nothing public; class fix, no move aside (REV 12b rule 22)" || fail "no npm-check stamp: rc=$r $(lastline)"
 : > "$FX/npmcheck.touchpkg"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/npmcheck.touchpkg"; cr "an npm package changed after npm-check" "a file npm-check checked has changed since"
 rm -rf "${OUTR:?}"
 

@@ -18,7 +18,11 @@ sigs=$(sed -n 's/^SIGS="\([A-Z0-9 ]*\)"$/\1/p' "$lib/sigs.sh")
 [ "$(grep -c '^SIGS=' "$lib/sigs.sh")" = 1 ] && [ -n "$sigs" ] || { echo "render-install: sigs.sh has not one SIGS line of signal names" >&2; exit 1; }
 conf=$(grep -E '^SR_RELEASE_(ID|REQUIREMENT)=' "$lib/../release.conf")
 [ "$(printf '%s\n' "$conf" | grep -c .)" = 2 ] || { echo "render-install: release.conf lacks the release ID or requirement" >&2; exit 1; }
-{
+# the rendered text in a variable (an x after it keeps its last newlines), then written and read back:
+# a builtin write a full disk refused keeps its bytes for the next one, and /usr/bin/printf exits 0 when
+# a full disk took none (r16b F2, r17b F1): an install.sh cut short would be published as the release's.
+# (From a function: bash 3.2 misreads a case pattern's ) inside a $( ))
+render() {
   while IFS= read -r line; do
     case $line in
       'SHEEPR_VERSION=') echo "SHEEPR_VERSION=$ver" ;;
@@ -37,4 +41,9 @@ conf=$(grep -E '^SR_RELEASE_(ID|REQUIREMENT)=' "$lib/../release.conf")
       *) printf '%s\n' "$line" ;;
     esac
   done < "$src"
-} > "$outf.tmp" && chmod 755 "$outf.tmp" && mv "$outf.tmp" "$outf"
+}
+body=$(render; printf x)
+body=${body%x}
+rm -f "$outf.tmp"
+/usr/bin/printf '%s' "$body" > "$outf.tmp" && /usr/bin/printf '%s' "$body" | /usr/bin/cmp -s - "$outf.tmp" && chmod 755 "$outf.tmp" && mv "$outf.tmp" "$outf" \
+  || { rm -f "$outf.tmp"; echo "render-install: cannot write $outf" >&2; exit 1; }

@@ -195,6 +195,26 @@ rm -f "$FX/spctl.ran"; mk signed false; ncc; r=$?
   && pass "r15b P4-1: npm-check, stapler refuses and spctl would too: content, stapler's words, spctl not run" \
   || fail "r15b P4-1 (npm-check): rc=$r '$(cls)' spctl ran: $( [ -e "$FX/spctl.ran" ] && echo yes || echo no); $(tail -1 "$FX/o" | cut -c1-200)"
 cp "$FX/rt.keep3" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep3" "$REPO/scripts/lib/archive.sh" || exit 3
+# r17b F1: npm-check's stamp write that lands nothing (/usr/bin/printf exits 0 on a full disk: measured,
+# notes/builder/i17/wprobe.out): here a link to /dev/null at NPM-CHECKED, planted by the last real-tool
+# stand-in, after npm-check removed the old stamp. npm-check stops: exit 1, "cannot write", class fix
+# (a full disk is no finding about the bytes), and no stamp is left (no link, no file). Control: the same
+# stand-ins with no link: the stamp is written (the stamp rows above)
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep5" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep5" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { return 0; }
+rt_spctl_ok() { [ -e "$FX/nullstamp" ] && ln -s /dev/null "$D/NPM-CHECKED"; return 0; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+mk signed false; : > "$FX/nullstamp"; ncc; r=$?; rm -f "$FX/nullstamp"
+[ $r = 1 ] && [ "$(cls)" = fix ] && grep -q "cannot write $D/NPM-CHECKED" "$FX/o" && [ ! -e "$D/NPM-CHECKED" ] && [ ! -L "$D/NPM-CHECKED" ] \
+  && pass "r17b F1: npm-check's stamp write that lands nothing: exit 1, 'cannot write', class fix, no stamp left" \
+  || fail "r17b F1 (npm-check's stamp): rc=$r '$(cls)' stamp: $( [ -L "$D/NPM-CHECKED" ] && echo link || { [ -e "$D/NPM-CHECKED" ] && echo file || echo none; })"
+mk signed false; ncc; r=$?
+[ $r = 0 ] && [ "$(cat "$D/NPM-CHECKED" 2>/dev/null)" = "v0.1.0 $(shasum -a 256 "$D/MANIFEST.json" | cut -d' ' -f1)" ] \
+  && pass "  control: the same stand-ins, no link: the stamp is written" || fail "  control (stamp): rc=$r '$(cat "$D/NPM-CHECKED" 2>/dev/null)'"
+cp "$FX/rt.keep5" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep5" "$REPO/scripts/lib/archive.sh" || exit 3
 # gkrun FILE ARCHIVE: the two Gatekeeper lines of a spctl stop (FILE) run as printed, from / in sh and
 # in an interactive zsh -f, with a stub spctl first on PATH and TMPDIR under $FX (the line's mktemp names
 # TMPDIR: macOS's mktemp -d with no template ignores it): `spctl --status`, and
