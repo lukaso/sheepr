@@ -2197,6 +2197,32 @@ printf '[ -f "%s" ] && [ ! -p "%s" ] && { rm -f "%s"; mkfifo "%s"; }\n' "$REC" "
   && pass "r20b F1, the class: a FIFO at ship's record before a stop: the stop text does not open it; the stop ends, the lock freed" \
   || fail "r20b F1 (the record): readers blocked on it '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
 rm -f "${REC:?}" "$FX/run.done" "$FX/w.res" "${FX:?}/fwatch.pl"; world_reset; rm -rf "${OUTR:?}"
+# r20a F6 (PLAN-ship.md REV 12e rule 43; npm_dok's "a link, or a file" at the end): as the push starts, D
+# (with ship's live P) is moved aside and a regular file put at D; the push is refused. The end keeps that
+# file (it is not ship's) and says the session could not be ended. Then r20a N5 (REV 12d rule 37: D a
+# link): D replaced by a link to a directory whose npmrc holds a live token: no logout through it, that
+# file byte-identical, its token not ended, nothing says ended. Control: every completed row (D ship's own)
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+mv "$PD" "$PD.aside"; echo "not ship's" > "$PD"
+EOF
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+[ $r = 1 ] && [ -f "$PD" ] && [ "$(cat "$PD")" = "not ship's" ] && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" && ! grep -q '^DELETE' "$FX/tokops" \
+  && pass "r20a F6: a file at D at the end: kept; no logout; the end says the session could not be ended" \
+  || fail "r20a F6: rc=$r the file at D $( [ -f "$PD" ] && echo kept || echo REMOVED), tokops [$(tr '\n' ' ' < "$FX/tokops")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-160)"
+rm -f "${PD:?}"; rm -rf "${PD:?}.aside"; world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; rm -f "$FX/onpush.done"; mkdir -p "$FX/elsewhere" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_elsewhere\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+mv "$PD" "$PD.aside"; ln -s "$FX/elsewhere" "$PD"
+EOF
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+[ $r = 1 ] && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q 'DELETE token=npm_elsewhere' "$FX/tokops" && ! grep -q 'session is ended' "$FX/o" && grep -q 'could not be ended' "$FX/o" \
+  && pass "r20a N5: D a link at the end: no logout through it, the other file untouched, nothing says ended" \
+  || fail "r20a N5: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file $( [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && echo same || echo CHANGED); $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-160)"
+rm -f "${PD:?}"; rm -rf "${PD:?}.aside" "${FX:?}/elsewhere"; world_reset; rm -rf "${OUTR:?}"
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3

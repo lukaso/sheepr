@@ -1591,12 +1591,13 @@ npm_login() {
 # next ship or publish-npm run of this tag, with this out dir, logs out of it first)
 npm_out() {
   d_=${out%/}/.$tag.npm
-  # (D or P not as ship's mkdir and npm's login made them, npm_dok's shapes: a link, P not a regular file,
-  # P with a second name: a logout would go through it into another file, and end that file's token while
-  # ship's own stays live; so none, D is kept, and the end says the session could not be ended (REV 12d
-  # rule 37; r19a F3: a hard link made after the push)
-  if [ -L "$d_" ] || [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
-    /usr/bin/printf '%s\n' "none: $d_/npmrc is not the file ship's login wrote (a link, a second name of another file, or not a file), so ship did not log out through it" > "$1/out.err" 2>/dev/null
+  # (D or P not as ship's mkdir and npm's login made them, npm_dok's shapes: a link, D a file, P not a
+  # regular file, P with a second name: a logout would go through it into another file, and end that
+  # file's token while ship's own stays live, and a file at D is not ship's to remove; so none, D is kept,
+  # and the end says the session could not be ended (REV 12d rule 37; r19a F3: a hard link made after the
+  # push; REV 12e rule 43, r20a F6: a file at D)
+  if [ -L "$d_" ] || { [ -e "$d_" ] && [ ! -d "$d_" ]; } || [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
+    /usr/bin/printf '%s\n' "none: $d_/npmrc is not the file ship's login wrote, or $d_ is not the directory ship made (a link, a file, a second name of another file), so ship did not log out through it" > "$1/out.err" 2>/dev/null
     return 1
   fi
   # (only a P with a token line: one without holds nothing of ship's to end, and its logout would end
