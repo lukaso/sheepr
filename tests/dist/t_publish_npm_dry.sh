@@ -96,6 +96,7 @@ case \$1 in
   login) [ -f "$FX/loginfail" ] && exit 1; u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done; [ -n "\$u_" ] || exit 1
     grep -v '^//registry.npmjs.org/:_authToken=' "\$u_" > "\$u_.n" 2>/dev/null; echo '//registry.npmjs.org/:_authToken=npm_pn' >> "\$u_.n"; mv "\$u_.n" "\$u_"; echo "LOGIN \$u_" >> "$FX/tokops"; exit 0 ;;
   logout) u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done
+    if [ -d "$FX/out/.ship.lock" ]; then echo held >> "$FX/lockatlogout"; else echo free >> "$FX/lockatlogout"; fi   # (r17a P4-g: the lock through the logout)
     [ -f "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
     grep -q '^//registry.npmjs.org/:_authToken=' "\$u_" 2>/dev/null || { echo "npm error code ENEEDAUTH" >&2; exit 1; }
     echo "DELETE \$(sed -n 's|^//registry.npmjs.org/:_authToken=||p' "\$u_" | tail -1) \$u_" >> "$FX/tokops"; grep -v '^//registry.npmjs.org/:_authToken=' "\$u_" > "\$u_.n"; mv "\$u_.n" "\$u_"; exit 0 ;;
@@ -151,6 +152,11 @@ mkout "$D" v0.1.0
 mkout "$FX/out/v0.1.0-unsigned" v0.1.0
 pub v0.1.0; r=$?
 [ $r = 0 ] && pass "a dry publish-npm: done" || fail "dry publish-npm: rc=$r $(tail -2 "$FX/o" | tr '\n' ' ')"
+# r17a P4-g (MLOCKFIRST): publish-npm holds ship's lock through its own logout (npm_end: the logout, then
+# the lock), and releases it after
+[ "$(sort -u "$FX/lockatlogout" 2>/dev/null)" = held ] && [ ! -e "$FX/out/.ship.lock" ] \
+  && pass "r17a P4-g: publish-npm's logout runs while it holds ship's lock; the lock is gone after" || fail "r17a P4-g, the lock at the logout: '$(sort -u "$FX/lockatlogout" 2>/dev/null | tr '\n' ' ')'"
+rm -f "$FX/lockatlogout"
 [ "$(order)" = "view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr," ] \
   && pass "the order: each package asked for, then published; platform packages first, the main one last" || fail "the order: $(order)"
 # each publish: the registry pinned, no --tag (a final), and a private copy of <out>/v0.1.0's file
@@ -425,6 +431,12 @@ npm_config_workspaces=false'
 # nothing at all without the stamp, with a stamp for another manifest, or with a control manifest
 rm "$D/NPM-CHECKED"; pub v0.1.0; r=$?
 [ $r = 1 ] && [ ! -e "$FX/calls" ] && grep -q npm-check "$FX/o" && pass "no npm-check stamp: refused, npm never called" || fail "no stamp: rc=$r $(order)"
+# r17b P4 (REV 11a rule 6): that npm-check step is a line of its own
+grep -q 'npm-check has not passed on .*\. Run npm-check first:$' "$FX/o" && grep -qxF "  sh '$(cd "$REPO" && pwd -P)/scripts/release.sh' npm-check --out '$(cd "$FX/out" && pwd -P)' v0.1.0" "$FX/o" \
+  && pass "r17b P4: publish-npm, no stamp: 'Run npm-check first:', then the npm-check line of its own" || fail "r17b P4 (publish-npm): $(grep -A1 'npm-check has not passed' "$FX/o" | tr '\n' '|' | cut -c1-240)"
+mkout "$D" v0.1.0; echo x >> "$D/sheepr-linux-x64-0.1.0.tgz"; pub v0.1.0; r=$?; mkout "$D" v0.1.0
+[ $r = 1 ] && grep -q 'has changed since (above); this step uploaded nothing\. Run npm-check again:$' "$FX/o" && grep -qxF "  sh '$(cd "$REPO" && pwd -P)/scripts/release.sh' npm-check --out '$(cd "$FX/out" && pwd -P)' v0.1.0" "$FX/o" \
+  && pass "r17b P4: publish-npm, a file changed since npm-check: 'Run npm-check again:', then the line of its own" || fail "r17b P4 (publish-npm, again): rc=$r $(grep -A1 'changed since' "$FX/o" | tr '\n' '|' | cut -c1-240)"
 mkout "$D" v0.1.0; echo ' ' >> "$D/MANIFEST.json"; pub v0.1.0; r=$?
 [ $r = 1 ] && [ ! -e "$FX/calls" ] && pass "a stamp for another manifest: refused, npm never called" || fail "stale stamp: rc=$r $(order)"
 mkout "$D" v0.1.0 true; pub v0.1.0; r=$?

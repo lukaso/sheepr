@@ -57,10 +57,11 @@ where="in $nf"; [ -n "$nf" ] || where="in the terminal: its next file could not 
 case $key in
   password) text="$tag: type the notary keychain password in the terminal" ;;
   password-again) text="$tag: Apple did not accept the submission. Type the notary keychain password again in the terminal, to fetch Apple's log" ;;
-  npm-login) text="$tag: log in to npm in the browser" ;;
-  npm-approve) text="$tag: approve the npm upload in the browser (tick skip for 5 minutes)" ;;
-  npm-approve-next) text="$tag: npm may ask again: approve the next npm upload in the browser" ;;
-  npm-approve-again) text="$tag: npm may ask again: approve the upload of the main package in the browser" ;;
+  # (npm opens the browser only once ENTER is pressed in the terminal: npm 11.6.0's open-url.js; r17a P4-e)
+  npm-login) text="$tag: log in to npm: press ENTER in the terminal (npm opens the browser), then log in there" ;;
+  npm-approve) text="$tag: approve the npm upload: press ENTER in the terminal (npm opens the browser), then approve it there (tick skip for 5 minutes)" ;;
+  npm-approve-next) text="$tag: npm may ask again: press ENTER in the terminal, then approve the next npm upload in the browser" ;;
+  npm-approve-again) text="$tag: npm may ask again: press ENTER in the terminal, then approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
   logout-failed) text="$tag: ship's npm session could not be ended; it ends by itself, and the next run of $tag logs out of it first. More is $where" ;;
   failed-*)

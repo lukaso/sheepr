@@ -629,8 +629,10 @@ publish_check() { # dir
   drydir "$pt"
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
-  stamp_ok "$d" || { stopclass fix; die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"; }   # (the stamp is npm-check's record, not the build's bytes: REV 12b rule 22)
-  files_ok "$d" || { stopclass content; die "a file npm-check checked has changed since (above)$(next_hint "; run release.sh npm-check $tag again")"; }
+  stamp_ok "$d" || { stopclass fix; die "npm-check has not passed on $d for this manifest$(next_hint ". Run npm-check first:
+  sh $(dq "$root/scripts/release.sh") npm-check --out $(dq "$out") $tag")"; }   # (the stamp is npm-check's record, not the build's bytes: REV 12b rule 22)
+  files_ok "$d" || { stopclass content; die "a file npm-check checked has changed since (above)$(next_hint ". Run npm-check again:
+  sh $(dq "$root/scripts/release.sh") npm-check --out $(dq "$out") $tag")"; }
   [ "$shipping" = no ] || [ "$verified" = yes ] || die "verify has not judged the archive in this run; this step uploaded nothing"
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
     || { stopclass content; die "the archive verify judged is not the stamped manifest's (it changed since); this step uploaded nothing"; }
@@ -958,14 +960,16 @@ publish_npm_exec() { # dir
   trap 'trap "" $SIGS; npm_end "$pc"; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; [ "$npm_endrc" = 0 ] || exit 1' EXIT; trap 'npm_end "$pc"; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   chmod 700 "$pc" || die "cannot make $pc private"
   private_manifest "$d" "$pc"; m=$MAN
-  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint "; run release.sh npm-check $tag first")"
+  stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint ". Run npm-check first:
+  sh $(dq "$root/scripts/release.sh") npm-check --out $(dq "$out") $tag")"
   mf() { sed -n "s/^ *\"$1\": *\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}$/\1/p" "$m" | head -1; }
   [ "$(mf tag)" = "$tag" ] && [ "$(mf mode)" = signed ] && [ "$(mf control)" = false ] \
     || die "the manifest is not $tag's signed build, or it is a control build"
   lc=$(git -C "$root" rev-parse -q --verify "refs/tags/$tag^{commit}") || die "no local tag $tag"
   [ "$(mf commit)" = "$lc" ] || die "the manifest's commit $(mf commit) is not $tag's ($lc)"
   # every file npm-check checked, before the first npm call (each is checked again just before its upload)
-  files_ok "$d" || die "a file npm-check checked has changed since (above); this step uploaded nothing.$(next_hint " Run release.sh npm-check $tag again")"
+  files_ok "$d" || die "a file npm-check checked has changed since (above); this step uploaded nothing.$(next_hint " Run npm-check again:
+  sh $(dq "$root/scripts/release.sh") npm-check --out $(dq "$out") $tag")"
   # (on its own: the archive verify judged, bound to this manifest, as publish binds it; REV 12b rule 23)
   [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
     || die "the archive verify judged is not the manifest's (it changed since); this step uploaded nothing"
@@ -1493,6 +1497,9 @@ npm_login() {
     1) stopclass fix; die "$d_ is on a volume that ignores file ownership (an external drive mounted noowners?): any account on this Mac could read ship's npm session there. Use an --out on a volume that keeps ownership, such as this Mac's own disk; $3" ;;
     *) stopclass fix; die "cannot tell whether the volume of $d_ keeps file ownership ($(errcut "$1/own.err" 200)); $3" ;;
   esac
+  # an end time from before this login goes first (r17a P4-c): with it left, a KILL between the login and
+  # the new end's write let the next run take this live session as ended by itself, and remove P
+  rm -f "$d_/end" 2>/dev/null; [ ! -e "$d_/end" ] || die "cannot remove $d_/end; $3"
   tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "the login to npm failed, or was not answered; $3"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);

@@ -251,6 +251,14 @@ mkout "$FX/out/v0.1.0" v0.1.0 "$C"
 # npm-check comes first: without its stamp for this manifest, nothing reaches GitHub
 rm "$FX/out/v0.1.0/NPM-CHECKED"; pub v0.1.0 v0.1.0; r=$?
 [ $r = 1 ] && [ ! -s "$FX/calls" ] && grep -q 'npm-check' "$FX/o" && pass "no npm-check stamp: refused before any call, npm-check named" || fail "no stamp: rc=$r calls=$(seq)"
+# r17b P4 (REV 11a rule 6): that npm-check step is a line of its own, as printed it names the checkout's
+# release.sh and the out dir; and so after a file changed since npm-check ("again")
+NCL="  sh '$(cd "$REPO" && pwd -P)/scripts/release.sh' npm-check --out '$(cd "$FX/out" && pwd -P)' v0.1.0"
+grep -q '^release: npm-check has not passed on .*\. Run npm-check first:$' "$FX/o" && grep -qxF "$NCL" "$FX/o" \
+  && pass "r17b P4: no stamp: 'Run npm-check first:', then the npm-check line of its own" || fail "r17b P4, the npm-check line: $(grep -A1 'npm-check has not passed' "$FX/o" | tr '\n' '|' | cut -c1-240)"
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; echo x >> "$FX/out/v0.1.0/sheepr-linux-aarch64"; pub v0.1.0 v0.1.0; r=$?; mkout "$FX/out/v0.1.0" v0.1.0 "$C"
+[ $r = 1 ] && grep -q 'has changed since (above)\. Run npm-check again:$' "$FX/o" && grep -qxF "$NCL" "$FX/o" \
+  && pass "r17b P4: a file changed since npm-check: 'Run npm-check again:', then the line of its own" || fail "r17b P4, again: rc=$r $(grep -A1 'changed since' "$FX/o" | tr '\n' '|' | cut -c1-240)"
 mkout "$FX/out/v0.1.0" v0.1.0 "$C"; echo ' ' >> "$FX/out/v0.1.0/MANIFEST.json"; pub v0.1.0 v0.1.0; r=$?
 [ $r = 1 ] && [ ! -s "$FX/calls" ] && pass "a stamp for another manifest (changed after npm-check): refused before any call" || fail "stale stamp: rc=$r calls=$(seq)"
 mkout "$FX/out/v0.1.0" v0.1.0 "$C"; sed 's/^v0.1.0 /v0.1.0-rc.9 /' "$FX/out/v0.1.0/NPM-CHECKED" > "$FX/s" && mv "$FX/s" "$FX/out/v0.1.0/NPM-CHECKED"; pub v0.1.0 v0.1.0; r=$?

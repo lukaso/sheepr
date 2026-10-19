@@ -1812,7 +1812,9 @@ exec /bin/date "\$@"
 EOD
 chmod +x "$B/date"
 E_=$(/bin/date +%s); echo "$E_" > "$FX/epoch"; printf 'echo %s > "%s/epoch"\n' "$((E_ + 600))" "$FX" > "$FX/onlogin"
-echo ETIMEDOUT > "$FX/logoutcode"; rm -rf "${OUTR:?}"; SETX=TZ=UTC; ship; r=$?; SETX=; rm -f "${FX:?}/logoutcode" "${FX:?}/onlogin" "${FX:?}/epoch" "${FX:?}/npmrc" "${B:?}/date"
+echo ETIMEDOUT > "$FX/logoutcode"; rm -rf "${OUTR:?}"; SETX=TZ=UTC; KEEPP=1; ship; r=$?; KEEPP=; SETX=; rm -f "${FX:?}/logoutcode" "${FX:?}/onlogin" "${FX:?}/epoch" "${FX:?}/npmrc" "${B:?}/date"
+de_=$(cat "$PD/end" 2>/dev/null); rm -rf "${PD:?}"
+[ "$de_" = "$((E_ + 600 + 7200))" ] && pass "r17a P4-g: D/end holds the login's return + 2 hours (the login took 10 minutes)" || fail "r17a P4-g, D/end: '$de_', want $((E_ + 600 + 7200))"
 w_=$(TZ=UTC /bin/date -r "$((E_ + 600 + 7200))" '+%H:%M %Z on %Y-%m-%d'); g_=$(grep "could not be ended" "$FX/o" | grep -o 'ends by itself at [^(]*' | head -1)
 [ "$g_" = "ends by itself at $w_ " ] && pass "r13a X3: a login that takes 10 minutes: the end time is 2 hours after the login returned" \
   || fail "r13a X3: '$g_', want 'ends by itself at $w_' (2 hours after the login returned)"
@@ -1962,6 +1964,21 @@ for k_ in ok E401 ENEEDAUTH passed live; do
 done
 [ -z "$b2_" ] && pass "REV 12 rule 2: an earlier P is logged out of before the login: exit 0, E401, ENEEDAUTH, or a failure past its end time: P removed, the run completes; a failure before its end time: a stop (fix), npm's words, the end time, run ship again, P kept" \
   || fail "REV 12 rule 2:$b2_"
+# r17a P4-c (REV 12b rule 29): an earlier run's end time left in D (no P): gone when npm's login starts,
+# and D is mode 0700 then (r17a P4-g: MMODE); the release completes. (A KILL after the login, before the
+# new end was written, let the next run take that live session as ended by itself)
+rm -rf "${OUTR:?}"; mkdir -p "$PD" && echo 1000 > "$PD/end" || exit 3
+printf '{ [ -e "%s/end" ] && echo end-there || echo end-gone; stat -f %%Lp "%s"; } > "%s/atlogin"\n' "$PD" "$PD" "$FX" > "$FX/onlogin"
+KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/onlogin"
+completed && [ "$(tr '\n' ' ' < "$FX/atlogin" 2>/dev/null)" = "end-gone 700 " ] \
+  && pass "r17a P4-c: an earlier end time in D is gone when the login starts; D is 0700 then; the release completes" || fail "r17a P4-c: rc=$r at the login: [$(tr '\n' ' ' < "$FX/atlogin" 2>/dev/null)]"
+rm -f "$FX/atlogin"; world_reset
+# r17a P4-g (MGARBLE): an earlier P whose end time cannot be read (garbled), its logout failing: P kept,
+# a stop (fix) naming no time; never taken as ended. Control: rule 2's "passed" case (a past end: removed)
+rm -rf "${OUTR:?}"; pplant "$EL" 3600; echo garbled > "$PD/end"; echo ETIMEDOUT > "$FX/logoutonce"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutonce"
+[ $r = 1 ] && grep -qx "$EL" "$PP" && grep -q 'could not be ended' "$NF" && grep -q 'That session ends by itself; run ship again' "$NF" && ! grep -q '^npm login' "$FX/calls" && endsfix "$NF" \
+  && pass "r17a P4-g: an earlier P with a garbled end time, its logout failing: P kept, a stop naming no time" || fail "r17a P4-g, garbled end: rc=$r P $( [ -e "$PP" ] && echo kept || echo gone); $(grep -m1 'could not be ended' "$NF" 2>/dev/null | cut -c1-240)"
+world_reset
 # rule 2, before ship's first npm call: an earlier P whose token is dead (every npm call that sends it
 # answers E401, A4's views among them): ship logs out of it before A4 (E401: P removed), and completes
 rm -rf "${OUTR:?}"; pplant '//registry.npmjs.org/:_authToken=npm_dead1' 3600; KEEP=1; ship; r=$?; KEEP=; r12keep
