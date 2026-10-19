@@ -39,7 +39,8 @@
 # one, an -rc sorting before its final).
 #
 # `build --sign`, `publish`, `publish-cask`, `publish-npm` and `ship` refuse under the test environment (any SHEEPR_TEST_* variable) and
-# without a terminal (stdin and /dev/tty); `publish`, `publish-cask`, `publish-npm` and `ship` also read the typed tag from
+# without a terminal (stdin and /dev/tty; `ship` and `publish-npm` stdout too, as npm's browser login and
+# the upload's approval need it); `publish`, `publish-cask`, `publish-npm` and `ship` also read the typed tag from
 # /dev/tty, their human confirmation before anything goes public (`publish` asks twice, `ship` once). That is a guard against mistakes
 # only: a pty passes it (PHASE3.md §1.2). `build --sign` asks for no tag, and its Developer ID
 # signing runs with no prompt in both modes: the gate against an unattended Apple submission is the
@@ -189,6 +190,13 @@ if { [ "$sub" = build ] && [ $sign = yes ]; } || [ "$sub" = publish ] || [ "$sub
   fi
   if ! [ -t 0 ] || ! (: < /dev/tty) 2>/dev/null; then
     echo "release: refused: $sub$( [ $sign = yes ] && echo ' --sign') needs a terminal" >&2; exit 4
+  fi
+  # ship and publish-npm, stdout too (PLAN-ship.md REV 12c rule 31; r18b F2): npm offers its browser login
+  # and the upload's approval only when its stdin and its stdout are both terminals (npm 9.6.7, 10.9.2,
+  # 11.6.0: open-url.js, auth.js); with a pipe or a file (`ship | tee`) the login prints only its URL and
+  # every upload fails with EOTP at once. No log line is offered: a log holds npm's login URL
+  if { [ "$sub" = ship ] || [ "$sub" = publish-npm ]; } && ! [ -t 1 ]; then
+    echo "release: refused: $sub needs a terminal on its stdout too (not a pipe, not a file): npm asks for its browser login and the upload's approval only at a terminal.$( [ "$sub" = ship ] && echo " After a stop, ship writes what to run next into $out/$tag.ship-next.txt.")" >&2; exit 4
   fi
   # publish, publish-cask and publish-npm make a release public: the typed tag is their human confirmation. A
   # signed build asks for nothing here: the notary keychain's own password, typed at the terminal,
