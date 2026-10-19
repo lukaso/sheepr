@@ -244,6 +244,31 @@ rm -f "${FX:?}/out/v0.1.0.ship-next.txt"; rm -rf "${PN:?}"
   && pass "r19a F5: publish-npm's login failed and wrote nothing: no logout, no text says its session is ended" \
   || fail "r19a F5 (publish-npm): rc=$r logouts $(grep -c '^npm logout' "$FX/calls") [$(tr '\n' ' ' < "$FX/tokops")] $(grep -m1 'session is ended' "$FX/o" | cut -c1-160)"
 rm -rf "${PN:?}"
+# r20b F1 (REV 12e rule 41; r20a F1): publish-npm on its own; right after the main package's upload P
+# becomes a FIFO (the stand-in's later views read no P): npm_end (the EXIT trap, its signals ignored) must
+# not open it: the end says the session could not be ended, the lock goes, the FIFO stays. fwatch.pl
+# counts the readers that block on it (each released). Control: rule 2's rows (a regular P)
+cat > "$FX/fwatch.pl" <<'EOF'
+use strict; use warnings; use Fcntl; use Time::HiRes qw(time sleep);
+# fwatch.pl FIFO LOCK DONE RES: the readers that block on FIFO until DONE exists (60 s at most), each
+# released (a writer's open, then its close: the reader reads EOF), and counted once while LOCK (the run's
+# lock, which its exit handler removes last) exists: the cell's own reads after the run do not count; the
+# count into RES
+my ($fifo, $lock, $done, $res) = @ARGV; my ($n, $in, $t0) = (0, 0, time);
+while (time - $t0 < 60) {
+  if (-p $fifo && sysopen(my $w, $fifo, O_WRONLY|O_NONBLOCK)) { close $w; $n++ unless $in || ! -e $lock; $in = 1 } else { $in = 0; last if -e $done }
+  sleep 0.2;
+}
+open(my $o, '>', $res) or die; print $o "$n\n";
+EOF
+rm -rf "${PN:?}"; rm -f "$FX/run.done" "$FX/w.res"
+printf 'rm -f "%s"; mkfifo "%s"\n' "$PN/npmrc" "$PN/npmrc" > "$FX/onpublish.sheepr"
+/usr/bin/perl "$FX/fwatch.pl" "$PN/npmrc" "$FX/out/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?; : > "$FX/run.done"; wait $wp_; rm -f "$FX/onpublish.sheepr"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && [ ! -e "$FX/out/.ship.lock" ] && [ -p "$PN/npmrc" ] \
+  && pass "r20b F1: publish-npm, a FIFO at P after the last upload: its end does not open it; it says the session could not be ended, frees the lock" \
+  || fail "r20b F1 (publish-npm): readers blocked on P '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$FX/out/.ship.lock" ] && echo left || echo gone); $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160)"
+rm -f "$FX/run.done" "$FX/w.res" "${FX:?}/fwatch.pl"; rm -rf "${PN:?}"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \

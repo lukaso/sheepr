@@ -2130,6 +2130,49 @@ for k_ in sym hard; do
     || fail "r19a F3 ($k_): rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
   rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
 done
+# r20b F1 (PLAN-ship.md REV 12e rule 41; r20a F1): a FIFO at P after the login, made as the push starts
+# (the remote's pre-receive then refuses the push: no npm call follows). ship's exit handler, its signals
+# ignored, must not open it (line 2's ptok read it, and only SIGKILL ended the run): the end says the
+# session could not be ended, the next file is written, the lock goes, the FIFO stays. Then the class: a
+# FIFO at ship's record, made during the start's logout of an earlier P (A1 then refuses the checkout: no
+# step reads the record before the stop text): the stop text must not open it. fwatch.pl counts the
+# readers that block on the FIFO while the run holds its lock (each released, so a red row ends; the
+# cell's own read of the record after the run is not ship's). Control: G1 (a FIFO at P before the
+# run: refused before any npm call), r19a F5's control (P a regular file: "logged in", then "ended")
+cat > "$FX/fwatch.pl" <<'EOF'
+use strict; use warnings; use Fcntl; use Time::HiRes qw(time sleep);
+# fwatch.pl FIFO LOCK DONE RES: the readers that block on FIFO until DONE exists (60 s at most), each
+# released (a writer's open, then its close: the reader reads EOF), and counted once while LOCK (the run's
+# lock, which its exit handler removes last) exists: the cell's own reads after the run do not count; the
+# count into RES
+my ($fifo, $lock, $done, $res) = @ARGV; my ($n, $in, $t0) = (0, 0, time);
+while (time - $t0 < 60) {
+  if (-p $fifo && sysopen(my $w, $fifo, O_WRONLY|O_NONBLOCK)) { close $w; $n++ unless $in || ! -e $lock; $in = 1 } else { $in = 0; last if -e $done }
+  sleep 0.2;
+}
+open(my $o, '>', $res) or die; print $o "$n\n";
+EOF
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done" "$FX/run.done" "$FX/w.res"
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+rm -f "$PP"; mkfifo "$PP"
+EOF
+/usr/bin/perl "$FX/fwatch.pl" "$PP" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_
+rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && [ -s "$NF" ] && [ -p "$PP" ] \
+  && pass "r20b F1: a FIFO at P after the login (the push refused): the end does not open it; it says the session could not be ended, writes the next file, frees the lock" \
+  || fail "r20b F1 (ship): readers blocked on P '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone), next file $( [ -s "$NF" ] && echo written || echo none); $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160)"
+rm -f "${PP:?}" "$FX/run.done" "$FX/w.res"; rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
+REC=$OUTR/.v0.1.0.ship-progress
+rm -rf "${OUTR:?}"; pplant '//registry.npmjs.org/:_authToken=npm_earlier' 3600
+printf '[ -f "%s" ] && [ ! -p "%s" ] && { rm -f "%s"; mkfifo "%s"; }\n' "$REC" "$REC" "$REC" "$REC" > "$FX/onlogout"
+/usr/bin/perl "$FX/fwatch.pl" "$REC" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+: > "$REPO/x20-untracked"; KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_; rm -f "${REPO:?}/x20-untracked" "${FX:?}/onlogout"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'the tree is not clean' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && [ -p "$REC" ] \
+  && pass "r20b F1, the class: a FIFO at ship's record before a stop: the stop text does not open it; the stop ends, the lock freed" \
+  || fail "r20b F1 (the record): readers blocked on it '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
+rm -f "${REC:?}" "$FX/run.done" "$FX/w.res" "${FX:?}/fwatch.pl"; world_reset; rm -rf "${OUTR:?}"
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3

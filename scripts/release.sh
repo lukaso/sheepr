@@ -1482,8 +1482,11 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
 # second its session ends by itself (2 hours after the login, REV 9). D is a sibling of $out/$tag:
 # nothing ship uploads, archives or hashes lies in it
 # ptok FILE: FILE holds a registry.npmjs.org token line (the line npm's login writes). A logout of P runs
-# only then: with none, npm logout ends a token of another layer it reads (r17a F1; REV 12b rule 25)
-ptok() { grep -q '^//registry\.npmjs\.org/:_authToken=.' "$1" 2>/dev/null; }
+# only then: with none, npm logout ends a token of another layer it reads (r17a F1; REV 12b rule 25).
+# FILE is read only as a regular file that is not a link: the exit handlers call ptok with their signals
+# ignored, and grep waits for good on a FIFO there, or on a link to one, /dev/tty or /dev/zero (REV 12e
+# rule 41; r20b F1)
+ptok() { [ -f "$1" ] && [ ! -L "$1" ] && grep -q '^//registry\.npmjs\.org/:_authToken=.' "$1" 2>/dev/null; }
 # npm_dok WHO TAIL: before any npm call names P (REV 12b rule 25; r17a P4-a): D absent or a directory
 # (not a link), P absent or a regular file with one name (not a link, not a hard link), as ship's mkdir and
 # npm's login make them; else a stop (fix): npm would log out, or log in, through a link into another file
@@ -1856,7 +1859,9 @@ nfsaid() {
 # ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started
 # or finished), the stop's class and its cause; no network read. Every command names --out
 ship_stoptext() {
-  rec_=$(cat "$shipprog" 2>/dev/null)
+  # (the record only as a regular file: the exit handler ignores its signals, and cat waits for good on a
+  # FIFO there; else "ship cannot read its own record": REV 12e rule 41)
+  rec_=""; [ ! -f "$shipprog" ] || rec_=$(cat "$shipprog" 2>/dev/null)
   # only this run's record (its run line names this pid; REV 12c rule 35, r18b F4): an earlier run's, which
   # this run could not replace (a mode, a full disk at its first write), says how far that run got
   case $rec_ in "run $$ "*) ;; *) rec_="" ;; esac
