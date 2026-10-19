@@ -209,6 +209,19 @@ for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ npm" >> "$FX/fds"
 echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
 echo "\$1 \$UC" >> "$FX/npmucs"   # (the userconfig each call loads: REV 11b rule 19)
+# npm's global config (r17a F1): NPM_CONFIG_GLOBALCONFIG or npm_config_globalconfig, else the prefix's
+# etc/npmrc (here \$FX/globaldefault); its token is sent when the userconfig has none (each such request in
+# \$FX/reqs), and a logout with none in the userconfig ends it and rewrites that file without it, mode 0666
+# (npm 10.9.2, 11.6.0: notes/r17a/np/t1-v*.txt part G); each call's global file in \$FX/npmgcs
+GC=\${NPM_CONFIG_GLOBALCONFIG:-\${npm_config_globalconfig:-$FX/globaldefault}}
+echo "\$1 \$GC" >> "$FX/npmgcs"
+gt_=\$(sed -n 's|^//registry.npmjs.org/:_authToken=||p' "\$GC" 2>/dev/null | tail -1)
+if [ -n "\$gt_" ] && ! grep -q '^//registry.npmjs.org/:_authToken=' "\$UC" 2>/dev/null; then
+  case \$1 in
+    view|owner|whoami|publish|login) echo "REQ A \$1 global=\$gt_" >> "$FX/reqs" ;;
+    logout) echo "DELETE global token=\$gt_" >> "$FX/tokops"; grep -v '^//registry.npmjs.org/:_authToken=' "\$GC" > "\$GC.n"; mv "\$GC.n" "\$GC"; chmod 666 "\$GC"; exit 0 ;;
+  esac
+fi
 last=""; for a; do case \$a in --userconfig=*) ;; *) last=\$a ;; esac; done   # (--userconfig=P comes last: REV 12)
 TOK='//registry.npmjs.org/:_authToken='
 # (a dead token, npm_dead*: every npm call that sends it answers E401, its logout too, and the line stays)
@@ -296,7 +309,9 @@ case \$1 in
     # (the root line replaced, as npm 9 to 11 do: notes/r15a/np/t6)
     [ -f "\$UC" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; }
     if [ -s "$FX/logintoken" ]; then echo "\${TOK}\$(cat "$FX/logintoken")" >> "\$UC"; else echo "\${TOK}npm_dry" >> "\$UC"; fi
-    [ ! -e "$FX/loginfailw" ] || exit 1; exit 0 ;;   # (\$FX/loginfailw: the login writes its line, then fails)
+    [ ! -e "$FX/loginfailw" ] || exit 1
+    [ ! -e "$FX/loginempty" ] || : > "\$UC"   # (\$FX/loginempty: the login leaves P with no token line, exit 0)
+    exit 0 ;;   # (\$FX/loginfailw: the login writes its line, then fails)
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     # (\$FX/logoutonce CODE: the next logout fails with that npm error code, once, and the line stays)
     if [ -s "$FX/logoutonce" ]; then c_=\$(cat "$FX/logoutonce"); rm -f "$FX/logoutonce"; echo "npm error code \$c_" >&2; exit 1; fi
@@ -1895,7 +1910,7 @@ done
 [ -z "$bd_" ] && pass "REV 12 rule 1: a dry ship (done; stopped at the login, a platform upload, the main upload, GitHub): NPM_CONFIG_USERCONFIG's, npm_config_userconfig's and the HOME's npmrc, each with a live line, byte-identical; every npm call loads and names ship's own P" \
   || fail "REV 12 rule 1:$bd_"
 # rule 2: an earlier P (a KILL, a logout that failed): ship logs out of it before its login. Exit 0,
-# E401 or ENEEDAUTH (no token line): P removed, the run goes on. Another failure (ETIMEDOUT): P removed
+# E401 or ENEEDAUTH: P removed, the run goes on (a P with no token line: no logout, removed; r17a F1's row). Another failure (ETIMEDOUT): P removed
 # when its end time has passed; before it, a stop (fix) with npm's words, the end time, run ship again
 pplant() { # LINE OFFSET: an earlier run's P (LINE, or empty), its end time now + OFFSET s
   mkdir -p "$PD" && chmod 700 "$PD" && { [ -z "$1" ] || printf '%s\n' "$1"; } > "$PP" && echo $(( $(/bin/date +%s) + $2 )) > "$PD/end"
@@ -1906,7 +1921,7 @@ for k_ in ok E401 ENEEDAUTH passed live; do
   case $k_ in
     ok) pplant "$EL" 3600 ;;
     E401) pplant "$EL" 3600; echo E401 > "$FX/logoutonce" ;;
-    ENEEDAUTH) pplant '' 3600 ;;
+    ENEEDAUTH) pplant "$EL" 3600; echo ENEEDAUTH > "$FX/logoutonce" ;;   # (a P with no token line gets no logout: REV 12b rule 25)
     passed) pplant "$EL" -60; echo ETIMEDOUT > "$FX/logoutonce" ;;
     live) pplant "$EL" 3600; echo ETIMEDOUT > "$FX/logoutonce" ;;
   esac
@@ -1931,6 +1946,45 @@ completed && [ -n "$lo1_" ] && [ -n "$v1_" ] && [ "$lo1_" -lt "$v1_" ] && [ ! -e
   && pass "REV 12 rule 2: an earlier P with a dead token: logged out of before ship's first npm call (A4's views), P removed; the run completes" \
   || fail "REV 12 rule 2, before A4: rc=$r logout at '$lo1_', first view at '$v1_'; $(lastline | cut -c1-160)"
 world_reset
+# r17a F1 (REV 12b rule 25): a token in npm's default global file (the prefix's etc/npmrc) and an earlier
+# P with no token line: a done ship names its own D/global on every npm call, sends no global token, never
+# logs out of that P (it is removed: nothing of ship's is in it), and leaves the global file as it was,
+# its mode too. (Before: A4's views sent the global token, and npm_pre's logout ended it and rewrote the
+# file, mode 0666.) Control: rule 2's rows above (a P with a token line is logged out of)
+printf '//registry.npmjs.org/:_authToken=npm_global\n' > "$FX/globaldefault" && chmod 644 "$FX/globaldefault" || exit 3
+gs0_=$(cksum < "$FX/globaldefault"); gm0_=$(stat -f %Lp "$FX/globaldefault")
+rm -rf "${OUTR:?}"; pplant 'heading=npm' 3600; : > "$FX/tokops"; rm -f "$FX/reqs" "$FX/npmgcs"; KEEP=1; ship; r=$?; KEEP=; r12keep
+li_=$(grep -n '^npm login' "$FX/calls" | head -1 | cut -d: -f1); lo1_=$(grep -n '^npm logout' "$FX/calls" | head -1 | cut -d: -f1)
+completed && [ "$(awk '{print $2}' "$FX/npmgcs" | sort -u)" = "$PD/global" ] && ! grep -q npm_global "$FX/reqs" 2>/dev/null && ! grep -q 'DELETE global' "$FX/tokops" \
+  && [ -n "$li_" ] && [ -n "$lo1_" ] && [ "$lo1_" -gt "$li_" ] && [ "$(cksum < "$FX/globaldefault")" = "$gs0_" ] && [ "$(stat -f %Lp "$FX/globaldefault")" = "$gm0_" ] \
+  && pass "r17a F1: npm's global file holding a token, an earlier P with none: every npm call names D/global, no global token sent, no logout of that P, the global file and its mode as they were" \
+  || fail "r17a F1, the global layer: rc=$r global files [$(awk '{print $2}' "$FX/npmgcs" 2>/dev/null | sort -u | tr '\n' ' ')] reqs [$(grep -c npm_global "$FX/reqs" 2>/dev/null)] tokops [$(tr '\n' ' ' < "$FX/tokops")] logout at '$lo1_', login at '$li_'"
+rm -f "${FX:?}/globaldefault"; world_reset
+# r17a P4-a (REV 12b rule 25): before any npm call names P, D must be a directory (not a link) and P a
+# regular file (not a link): D a link, P a link, P a directory: each a stop (fix) before any npm call,
+# the link's target untouched. Control: rule 2's rows above (a plain P)
+for k_ in dlink plink pdir; do
+  rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$OUTR" "$FX/elsewhere" || exit 3
+  printf '//registry.npmjs.org/:_authToken=npm_elsewhere\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+  case $k_ in
+    dlink) ln -s "$FX/elsewhere" "$PD" ;;
+    plink) mkdir -m 700 "$PD" && ln -s "$FX/elsewhere/npmrc" "$PP" ;;
+    pdir) mkdir -m 700 "$PD" "$PP" ;;
+  esac
+  : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=
+  case $k_ in dlink) w_="is not the directory ship makes" ;; *) w_="is not the file ship's login writes" ;; esac
+  [ $r = 1 ] && grep -q "$w_" "$FX/o" && ! grep -q '^npm ' "$FX/calls" && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && [ ! -s "$FX/tokops" ] && endsfix "$NF" \
+    && pass "r17a P4-a: $k_: a stop (fix) before any npm call; the link's target untouched" \
+    || fail "r17a P4-a, $k_: rc=$r npm calls $(grep -c '^npm ' "$FX/calls") tokops [$(tr '\n' ' ' < "$FX/tokops")] $(grep -m1 'stopped at' "$FX/o" | cut -c1-200)"
+  rm -rf "${PD:?}"; world_reset
+done
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"
+# r17a F1 (REV 12b rule 25), the logout at the end: a P with no token line (the login left none; whoami
+# then answers ENEEDAUTH): no logout of it, D removed, no "could not be ended". (A logout of it ended
+# another layer's token.) Control: rule 4's rows (a P with a token line is logged out of at the end)
+: > "$FX/loginempty"; : > "$FX/tokops"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/loginempty"
+[ $r = 1 ] && grep -q 'npm whoami failed after the login' "$NF" && [ "$(grep -c '^npm logout' "$FX/calls")" = 0 ] && [ "$(cat "$FX/pd.after")" = gone ] && ! grep -q 'could not be ended' "$FX/o" \
+  && pass "r17a F1: at the end, a P with no token line: no logout of it, D removed" || fail "r17a F1, the end's P with no line: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") D $(cat "$FX/pd.after"); $(grep -m1 'could not be ended' "$FX/o" | cut -c1-160)"
 # rule 3: the login names another account: the logout of P, P removed, a stop that says to log in as
 # SR_NPM_USER in the browser when ship asks; nothing public
 rm -rf "${OUTR:?}"; : > "$FX/tokops"; echo stranger > "$FX/whoami"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/whoami"; r12keep

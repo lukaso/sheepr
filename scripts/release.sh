@@ -284,7 +284,10 @@ npm_env() { # HOME command...: base, the proxies and a CA npm may need, never th
   # npm runs from /: npm's project config (the .npmrc beside the nearest package.json or node_modules
   # above its cwd) wins over the userconfig, and / holds none (only root may write there). So npm
   # reads the builtin config, the userconfig, the global config and the env, and the userconfig wins
-  # over all of them but the env, which holds no token, and --userconfig names P.
+  # over all of them but the env, which holds no token, and --userconfig names P. The global config is
+  # D/global (G: P's directory's), which ship never makes, so npm reads none: a token in the operator's
+  # <prefix>/etc/npmrc was sent on every call before the login, and a logout of a P with no token line
+  # ended it and rewrote that file (r17a F1; PLAN-ship.md REV 12b rule 25)
   # The npm_config_ pins: npm's default for every setting that changes what ship reads from npm (an
   # answer, an exit status, npm's error code, what reaches the registry), whatever the npmrc says (an
   # environment setting wins over it). The list is a census of npm 11.6.0's own config definitions,
@@ -300,7 +303,7 @@ npm_env() { # HOME command...: base, the proxies and a CA npm may need, never th
   # And logs-max=0 (REV 11a rule 10): npm's debug log, under its cache's _logs, is not written (npm
   # 10.9.2 writes the token of a failed logout's request into it; notes/r14a/np/t5;
   # notes/builder/np14/t14m5-*: npm 9.6.7, 10.5.2, 10.9.2 and 11.6.0 write no log file with it)
-  ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" NPM_CONFIG_USERCONFIG="$u" \
+  ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" NPM_CONFIG_USERCONFIG="$u" NPM_CONFIG_GLOBALCONFIG="${u%/*}/global" \
     npm_config_color=false npm_config_loglevel=notice npm_config_heading=npm npm_config_json=false npm_config_usage=false \
     npm_config_dry_run=false npm_config_tag=latest npm_config_offline=false npm_config_prefer_offline=false \
     npm_config_workspaces=false npm_config_provenance=false npm_config_update_notifier=false npm_config_logs_max=0 \
@@ -1439,13 +1442,28 @@ ship_tap() { # A5: the tap's cask has one version line, below this version; this
 # = D/npmrc is the one npm file ship, publish-npm and their dry entries name; D/end holds the epoch
 # second its session ends by itself (2 hours after the login, REV 9). D is a sibling of $out/$tag:
 # nothing ship uploads, archives or hashes lies in it
-# npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): when P exists (an earlier run's: a KILL, a
-# logout that failed), the logout of P first. Exit 0, E401 or ENEEDAUTH: P removed. Any other
+# ptok FILE: FILE holds a registry.npmjs.org token line (the line npm's login writes). A logout of P runs
+# only then: with none, npm logout ends a token of another layer it reads (r17a F1; REV 12b rule 25)
+ptok() { grep -q '^//registry\.npmjs\.org/:_authToken=.' "$1" 2>/dev/null; }
+# npm_dok WHO TAIL: before any npm call names P (REV 12b rule 25; r17a P4-a): D absent or a directory
+# (not a link), P absent or a regular file (not a link), as ship's mkdir and npm's login make them; else a
+# stop (fix): npm would log out, or log in, through a link into another file, and a directory at P takes
+# a login's token nowhere
+npm_dok() {
+  d_=${out%/}/.$tag.npm
+  if [ -L "$d_" ] || { [ -e "$d_" ] && [ ! -d "$d_" ]; }; then stopclass fix; die "$d_ is not the directory ship makes (a link, or a file): remove it, then run $1 again; $2"; fi
+  if [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; }; then stopclass fix; die "$d_/npmrc is not the file ship's login writes (a link, or a directory): remove it, then run $1 again; $2"; fi
+}
+# npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): D's and P's shapes (npm_dok); when P exists (an
+# earlier run's: a KILL, a logout that failed) and holds a token line (ptok; else it is removed), the
+# logout of P first. Exit 0, E401 or ENEEDAUTH: P removed. Any other
 # failure: P removed when its end time has passed (that session ended by itself); else a stop (fix)
 # with npm's words, the end time, and "run WHO again". DIR holds npm's stderr
 npm_pre() {
+  npm_dok "$2" "$3"
   pp_=${out%/}/.$tag.npm/npmrc
-  [ -e "$pp_" ] || [ -L "$pp_" ] || return 0
+  [ -e "$pp_" ] || return 0
+  ptok "$pp_" || { rm -f "$pp_"; return 0; }   # (no token line: nothing of ship's to end, and a logout would end another layer's)
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/pre.err"; r_=$?
   c_=$(npmcode "$1/pre.err")
   if [ $r_ = 0 ] || [ "$c_" = E401 ] || [ "$c_" = ENEEDAUTH ]; then rm -f "$pp_"; return 0; fi
@@ -1457,8 +1475,7 @@ npm_pre() {
 # login (the operator's browser), the end time recorded in D; whoami must name SR_NPM_USER, else the
 # logout of P, P removed, and a stop that says how to log in when WHO asks
 npm_login() {
-  d_=${out%/}/.$tag.npm
-  [ ! -L "$d_" ] || die "$d_ is a symbolic link; ship makes that directory itself: remove the link, then run $2 again; $3"
+  d_=${out%/}/.$tag.npm   # (npm_pre ran first: D is absent or a directory, not a link)
   { [ -d "$d_" ] || mkdir -m 700 "$d_"; } 2>/dev/null && chmod 700 "$d_" 2>/dev/null || die "cannot make $d_ (ship's own npm directory); $3"
   tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "the login to npm failed, or was not answered; $3"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
@@ -1471,11 +1488,13 @@ npm_login() {
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"
   die "the login to npm was as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; $3. When $2 asks you to log in to npm, log in as ${SR_NPM_USER:-the owner} in the browser, then run $2 again"
 }
-# npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P): D removed (0). A
+# npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line): D removed (0). A
 # failure: P kept (1); npm's words in DIR/out.err (the next ship or publish-npm run logs out of it first)
 npm_out() {
   d_=${out%/}/.$tag.npm
-  if [ -e "$d_/npmrc" ] || [ -L "$d_/npmrc" ]; then
+  # (only a regular P with a token line: a link, a directory or a P without one holds nothing of ship's
+  # to end, and its logout would end another file's token or another layer's: REV 12b rule 25)
+  if [ -f "$d_/npmrc" ] && [ ! -L "$d_/npmrc" ] && ptok "$d_/npmrc"; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/out.err" || return 1
   fi
   rm -rf "${d_:?}"; return 0
