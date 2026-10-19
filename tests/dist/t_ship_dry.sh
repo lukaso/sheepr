@@ -1283,8 +1283,8 @@ hasblk() { # FILE TEXT: FILE (its clock times normalized) holds TEXT's lines, wh
   f_=$(printf '\001'; hm < "$1" | tr '\n' '\001'); b_=$(printf '\001%s\001' "$2" | tr '\n' '\001')
   case $f_ in *"$b_"*) return 0 ;; esac; return 1
 }
-PL_TEXT="ship logged in to npm in this run, with its own file ($PP), and logs out as it ends. If that logout fails, the session ends by itself at HH:MM ZONE on DATE (2 hours after its login), and the next ship or publish-npm run logs out of it first."
-LEFT_TEXT="ship's npm session (its own file, $PP) could not be ended. It ends by itself at HH:MM ZONE on DATE (2 hours after its login), and the next ship or publish-npm run logs out of it first: there is nothing to run by hand"
+PL_TEXT="ship logged in to npm in this run, with its own file ($PP), and logs out as it ends. If that logout fails, the session ends by itself at HH:MM ZONE on DATE (2 hours after its login), and the next ship or publish-npm run of v0.1.0 with this out dir logs out of it first."
+LEFT_TEXT="ship's npm session (its own file, $PP) could not be ended. It ends by itself at HH:MM ZONE on DATE (2 hours after its login). The next ship or publish-npm run of v0.1.0 with this out dir logs out of it first; a run of another version does not. There is nothing to run by hand"
 : > "$FX/logoutfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/logoutfail"
 [ $r = 1 ] && grep -q 'is public on GitHub, Homebrew and npm' "$FX/o" && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && hasblk "$FX/o" "release: $LEFT_TEXT" \
   && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:" ] && [ "$(sed 1d "$NF" | hm)" = "$LEFT_TEXT" ] && [ "$(grep -c . "$NF")" = 2 ] \
@@ -1359,7 +1359,7 @@ grep -q refused "$FX/nerr" && pass "control: an upper-case phase is refused by n
 for lc in ETIMEDOUT E401; do
   echo "$lc" > "$FX/logoutcode"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/logoutcode"
   [ $r = 1 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again logout-failed " ] && grep -q "ship's npm session (its own file, $PP) could not be ended (the logout's answer: npm error code $lc" "$FX/o" \
-    && grep -qE "It ends by itself at [0-9]{2}:[0-9]{2}" "$FX/o" && grep -q 'the next ship or publish-npm run logs out of it first' "$FX/o" && ! grep -Eq "$NPMCMD" "$FX/o" "$NF" \
+    && grep -qE "It ends by itself at [0-9]{2}:[0-9]{2}" "$FX/o" && grep -qi 'the next ship or publish-npm run of v0.1.0 with this out dir logs out of it first' "$FX/o" && ! grep -Eq "$NPMCMD" "$FX/o" "$NF" \
     && grep -q '_authToken=npm_dry$' "$FX/npmrc.after" \
     && pass "ship's logout failing with $lc: P kept; npm's words, the session's own end, the next run's logout; no npm command" \
     || fail "logout ${lc}: rc=$r '$(nots)' $(grep 'could not be ended' "$FX/o" | head -1 | cut -c1-240)"
@@ -2000,7 +2000,7 @@ rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r=$?; KEEP=
 w_=$(grep -c "ship's npm session (its own file, $PP) could not be ended" "$FX/o"); g_=$(grep -cE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o")
 r4p_=$( [ -f "$PP" ] && grep -q '_authToken=npm_dry' "$PP" && echo kept || echo gone)
 KEEPP=1; world_reset; KEEPP=; : > "$FX/tokops"; ship; r2_=$?; r=$r2_; r12keep
-[ "$w_" -ge 1 ] && [ "$g_" -ge 1 ] && [ $r4p_ = kept ] && grep -q 'the next ship or publish-npm run logs out of it first' "$FX/r12out" \
+[ "$w_" -ge 1 ] && [ "$g_" -ge 1 ] && [ $r4p_ = kept ] && grep -qi 'the next ship or publish-npm run of v0.1.0 with this out dir logs out of it first' "$FX/r12out" \
   && completed && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PD" ] \
   && pass "REV 12 rule 4: ship's logout failing: P kept, the text names the end time and that the next run logs out of it first; the next run does, and completes (D removed)" \
   || fail "REV 12 rule 4: text $w_ $g_, P $r4p_; the next run: rc=$r2_ first [$(head -1 "$FX/tokops")], D $( [ -e "$PD" ] && echo left || echo gone)"

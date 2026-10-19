@@ -223,7 +223,7 @@ mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r
 # run logs out of it first (the uploads done)
 mkout "$D" v0.1.0; echo ETIMEDOUT > "$FX/logoutcode"; pub v0.1.0; r=$?; rm -f "$FX/logoutcode"
 [ $r = 1 ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 4 ] && grep -q '_authToken=npm_pn' "$PN/npmrc" && grep -q "could not be ended (the logout's answer: npm error code ETIMEDOUT" "$FX/o" \
-  && grep -qE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o" && grep -q 'the next ship or publish-npm run logs out of it first' "$FX/o" \
+  && grep -qE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o" && grep -qi 'the next ship or publish-npm run of v0.1.0 with this out dir logs out of it first' "$FX/o" \
   && pass "  REV 12 rule 4: publish-npm's logout failing at the end: exit 1, P kept, the end time and the next run's logout named" || fail "  rule 4 (publish-npm): rc=$r $(tail -2 "$FX/o" | tr '\n' '|' | cut -c1-240)"
 rm -rf "${PN:?}"
 # the lock: publish-npm alone holds ship's lock while it uses D: a held lock refuses it before any npm call

@@ -1489,7 +1489,8 @@ npm_login() {
   die "the login to npm was as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; $3. When $2 asks you to log in to npm, log in as ${SR_NPM_USER:-the owner} in the browser, then run $2 again"
 }
 # npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line): D removed (0). A
-# failure: P kept (1); npm's words in DIR/out.err (the next ship or publish-npm run logs out of it first)
+# failure: P kept (1); npm's words in DIR/out.err (the next ship or publish-npm run of this tag, with this
+# out dir, logs out of it first)
 npm_out() {
   d_=${out%/}/.$tag.npm
   # (only a regular P with a token line: a link, a directory or a P without one holds nothing of ship's
@@ -1500,10 +1501,11 @@ npm_out() {
   rm -rf "${d_:?}"; return 0
 }
 # npm_left WORDS: what stdout says when ship's own session could not be ended (no npm command: REV 12
-# rule 4): its end time, and that the next run logs out of it first
+# rule 4): its end time, and that the next run of this tag with this out dir logs out of it first (a run
+# of another version reads only its own D: REV 12b rule 26)
 npm_left() {
   a_=""; [ -z "${1:-}" ] || a_=" (the logout's answer: $1)"
-  printf '%s' "ship's npm session (its own file, ${out%/}/.$tag.npm/npmrc) could not be ended$a_. It ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run logs out of it first: there is nothing to run by hand"
+  printf '%s' "ship's npm session (its own file, ${out%/}/.$tag.npm/npmrc) could not be ended$a_. It ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login). The next ship or publish-npm run of $tag with this out dir logs out of it first; a run of another version does not. There is nothing to run by hand"
 }
 # npm_lock WHO: publish-npm on its own takes ship's lock while it uses D (P is in the out dir: one ship
 # or publish-npm per out dir at a time); npm_end releases it. Never taken over
@@ -1639,7 +1641,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # leaves it in place. A release done has a file then too, that line alone
   txt="" keep=no lo="" pl=""
   if [ "$logged_in" = yes ]; then
-    pl="ship logged in to npm in this run, with its own file (${out%/}/.$tag.npm/npmrc), and logs out as it ends. If that logout fails, the session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run logs out of it first."
+    pl="ship logged in to npm in this run, with its own file (${out%/}/.$tag.npm/npmrc), and logs out as it ends. If that logout fails, the session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run of $tag with this out dir logs out of it first."
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
     txt=$(ship_stoptext)
