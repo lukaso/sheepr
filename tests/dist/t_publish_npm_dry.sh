@@ -132,6 +132,18 @@ pub() { # tag -> rc; output in $FX/o. PART: SR_PUBLISH_DRY_NPM_PART; NOTI: the n
 order() { sed -En 's/^npm (view|publish) (.* |.*\/)(sheepr(-[a-z][a-z0-9]*)*)[-@][0-9].*$/\1 \3/p' "$FX/calls" 2>/dev/null | tr '\n' ','; }
 D=$FX/out/v0.1.0
 TODAY="view sheepr-linux-arm64,publish sheepr-linux-arm64,view sheepr-linux-arm64,view sheepr-linux-x64,publish sheepr-linux-x64,view sheepr-linux-x64,view sheepr-darwin-universal,publish sheepr-darwin-universal,view sheepr-darwin-universal,view sheepr,publish sheepr,view sheepr,"
+# r17b F5 (REV 12b rule 23): on its own, publish-npm binds the archive verify judged to the manifest
+# (SR_PUBLISH_DRY_VERIFIED stands in for verify): another archive is refused before any npm call;
+# control: the manifest's own archive, the run completes
+mkout "$D" v0.1.0; echo arc > "$D/sheepr-macos-universal.tar.gz"; ah_=$(shasum -a 256 "$D/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)
+awk -v h="$ah_" '{ print } /"files": \[$/ { printf "    {\"name\": \"sheepr-macos-universal.tar.gz\", \"sha256\": \"%s\"},\n", h }' "$D/MANIFEST.json" > "$D/m.n" && mv "$D/m.n" "$D/MANIFEST.json" \
+  && printf 'v0.1.0 %s\n' "$(shasum -a 256 "$D/MANIFEST.json" | cut -d' ' -f1)" > "$D/NPM-CHECKED" || exit 3
+PUBX="SR_PUBLISH_DRY_VERIFIED=$(printf '%064d' 0)"; pub v0.1.0; r=$?; PUBX=
+[ $r = 1 ] && grep -q "the archive verify judged is not the manifest's" "$FX/o" && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && ! grep -q '^notify ' "$FX/calls" 2>/dev/null \
+  && pass "r17b F5: publish-npm on its own, an archive verify judged that is not the manifest's: refused before any npm call" || fail "r17b F5, the binding: rc=$r $(tail -1 "$FX/o")"
+PUBX="SR_PUBLISH_DRY_VERIFIED=$ah_"; pub v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && pass "  control: the manifest's own archive verify judged: the run completes" || fail "  control, the binding: rc=$r $(tail -2 "$FX/o" | tr '\n' '|')"
+rm -rf "${FX:?}/out/.v0.1.0.npm" "$FX/pub."* "$FX/tokops"
 mkout "$D" v0.1.0
 mkout "$FX/out/v0.1.0-unsigned" v0.1.0
 pub v0.1.0; r=$?
@@ -518,7 +530,7 @@ integrity "$D/sheepr-0.1.0.tgz" > "$FX/view.sheepr"; PART=main; pub v0.1.0; r=$?
   && pass "main: the main package already on npm (this file): skipped, no notification (0)" || fail "main, main there: rc=$r $(order)"
 # the real entry, which no dry run reaches: its body exactly, defined once, and its dispatch arm
 # (NPMC too: the class of publish-npm's own login, whoami and logout)
-want='publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'
+want='publish_npm() { verify "$out/$tag"; NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }'   # (verify first: REV 12b rule 23)
 [ "$(grep -c '^publish_npm() ' "$SR_ROOT/scripts/release.sh")" = 1 ] && grep -qxF "$want" "$SR_ROOT/scripts/release.sh" \
   && pass "publish_npm: exactly its pinned body (the real notify.sh), defined once" || fail "publish_npm's body: $(grep '^publish_npm() ' "$SR_ROOT/scripts/release.sh")"
 grep -qxF '  publish-npm) publish_npm ;;' "$SR_ROOT/scripts/release.sh" && pass "the dispatch: '  publish-npm) publish_npm ;;'" || fail "the publish-npm dispatch arm"

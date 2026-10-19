@@ -135,8 +135,8 @@ done
 # verdict, spctl not run (the order of the checks decides, not spctl's words)
 mkt cs 0 ''; mkt xc 0 ''; mkt sp 3 "$AP: rejected
 source=Notarized Developer ID"; rtset; vc; rc=$?
-[ $rc = 1 ] && [ "$(cls)" = fix ] && grep -qF 'source=Notarized Developer ID' "$FX/o" && grep -q 'Gatekeeper rejects' "$FX/o" && grep -q '^-a -vv -t exec ' "$FX/a_sp" \
-  && pass "REV 11a rule 11: spctl -a -vv refusing (exit 3) a bundle codesign and stapler accepted: class fix, its words (source=) in the cause" \
+[ $rc = 1 ] && [ "$(cls)" = gatekeeper ] && grep -qF 'source=Notarized Developer ID' "$FX/o" && grep -q 'Gatekeeper rejects' "$FX/o" && grep -q '^-a -vv -t exec ' "$FX/a_sp" \
+  && pass "REV 11a rule 11, REV 12b rule 23: spctl -a -vv refusing (exit 3) a bundle codesign and stapler accepted: class gatekeeper (a fix class), its words (source=) in the cause" \
   || fail "rule 11: rc=$rc '$(cls)' spctl got '$(cat "$FX/a_sp" 2>/dev/null)'; $(grep '^release: ' "$FX/o" | grep -v '(class)' | tail -1 | cut -c1-250)"
 mkt cs 3 'test-requirement: code failed to satisfy specified code requirement(s)'; mkt xc 0 ''; mkt sp 3 "$AP: rejected
 source=no usable signature"; rtset; vc; rc=$?
@@ -184,11 +184,11 @@ gkrun() {
 # certificate's remedy (move the build aside, rebuild with a valid one). The class stays fix
 mkt cs 0 ''; mkt xc 0 ''; mkt sp 3 "$AP: rejected
 source=Notarized Developer ID"; rtset; vc; rc=$?
-[ $rc = 1 ] && [ "$(cls)" = fix ] && ! grep -qi 'cannot change' "$FX/o" && grep -q '^A rerun stops here again until Gatekeeper accepts the bundle' "$FX/o" \
+[ $rc = 1 ] && [ "$(cls)" = gatekeeper ] && ! grep -qi 'cannot change' "$FX/o" && grep -q '^A rerun stops here again until Gatekeeper accepts the bundle' "$FX/o" \
   && grep -qx "  git -C '$(cd "$REPO" && pwd -P)' ls-remote origin refs/tags/v0.1.0" "$FX/o" && grep -qxF "If that prints nothing, v0.1.0 is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, v0.1.0 is pushed: never rebuild v0.1.0; release a new version." "$FX/o" \
   && ! grep -qxF "When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one." "$FX/o" && ! grep -qi 'expired' "$FX/o" \
   && gkrun "$FX/o" "$D/sheepr-macos-universal.tar.gz" \
-  && pass "REV 11b rule 16, REV 12a: the spctl stop: no 'cannot change'; a rerun stops here again; spctl --status and spctl -a -vv on the bundle, each a line that runs as printed; the certificate's rebuild only if v0.1.0 is not pushed (an ls-remote line; a standalone verify cannot know), never 'expired'; class fix" \
+  && pass "REV 11b rule 16, REV 12a: the spctl stop: no 'cannot change'; a rerun stops here again; spctl --status and spctl -a -vv on the bundle, each a line that runs as printed; the certificate's rebuild only if v0.1.0 is not pushed (an ls-remote line; a standalone verify cannot know), never 'expired'; class gatekeeper (REV 12b rule 23)" \
   || fail "rule 16: rc=$rc '$(cls)'; $(grep -e 'cannot change' -e 'spctl' "$FX/o" | grep -v '(class)' | tr '\n' '|' | cut -c1-300)"
 cp "$FX/rt.real0" "$REPO/scripts/lib/realtools.sh" || exit 3
 # the census: every rt_* call in release.sh hands its status to rtfail (content only for a verdict)
@@ -196,8 +196,8 @@ n_rt=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_(meets|staple
 n_ok=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok|spctl_ok) "' | grep -cE '\|\| rtfail \$\? (codesign|stapler|spctl) "')
 [ "$n_rt" -ge 6 ] && [ "$n_rt" = "$n_ok" ] && pass "every Apple tool call in release.sh ($n_rt lines) hands its status to rtfail" || fail "rt_* calls: $n_rt lines, $n_ok through rtfail"
 n_sp=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -cE 'rt_spctl_ok "')
-n_spf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_spctl_ok "' | grep -cE '\|\| rtfail \$\? spctl "[^"]*" fix( |$)')
+n_spf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_spctl_ok "' | grep -cE '\|\| rtfail \$\? spctl "[^"]*" gatekeeper( |$)')
 n_xf=$(grep -v '^ *#' "$SR_ROOT/scripts/release.sh" | grep -E 'rt_(meets|staple_ok) "' | grep -cE '" fix( |$)')
-[ "$n_sp" -ge 2 ] && [ "$n_sp" = "$n_spf" ] && [ "$n_xf" = 0 ] && pass "  REV 11a rule 11: each spctl call ($n_sp lines: verify, npm-check) makes its refusal class fix; no codesign or stapler call does" \
-  || fail "  spctl calls: $n_sp lines, $n_spf with class fix; $n_xf codesign or stapler calls with fix"
+[ "$n_sp" -ge 2 ] && [ "$n_sp" = "$n_spf" ] && [ "$n_xf" = 0 ] && pass "  REV 11a rule 11, REV 12b rule 23: each spctl call ($n_sp lines: verify, npm-check) makes its refusal class gatekeeper (a fix class); no codesign or stapler call makes it fix" \
+  || fail "  spctl calls: $n_sp lines, $n_spf with class gatekeeper; $n_xf codesign or stapler calls with fix"
 finish

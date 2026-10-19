@@ -2411,6 +2411,17 @@ world_reset
   && pass "REV 12a: Gatekeeper's refusal at C7 (after the push): no rebuild but on the condition that v0.1.0 is not pushed, in stdout or the next file; the ls-remote line runs as printed (it lists the pushed tag)" \
   || fail "REV 12a at C7: rc=$r '$(lastprog)' ls-remote line '$gl_' ($gk7_); $(grep -e 'rebuild' "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-300)"
 ! grep -qi 'expired' "$NF" "$FX/o" && pass "REV 12a: at C7, no 'expired'" || fail "REV 12a at C7: $(grep -i 'expired' "$NF" | head -1 | cut -c1-200)"
+# r17b F5 (REV 12b rule 23): at C7 that refusal (class gatekeeper) names no publish step: no publish,
+# publish-cask or publish-npm line in stdout or the next file; publish-npm refuses it too; release a new
+# version. Control: a C7 stop of another kind (the release still a draft) still lists publish-npm
+grep -q "Gatekeeper rejects this build (above): it is not published on GitHub, and publish-npm refuses it too (it runs verify first). Release a new version." "$NF" \
+  && ! grep -q -e "release.sh' publish --out" -e "release.sh' publish-cask --out" -e "release.sh' publish-npm --out" "$NF" "$FX/o" \
+  && pass "r17b F5: Gatekeeper's refusal after the push names no publish step (publish-npm refuses it too); release a new version" \
+  || fail "r17b F5: $(grep -e 'publish' -e 'Gatekeeper rejects this' "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-300)"
+rm -rf "${OUTR:?}"; : > "$FX/stilldraft"; ship; r=$?; rm -f "$FX/stilldraft"
+[ $r = 1 ] && [ "$(lastprog)" = "start github" ] && grep -q "release.sh' publish-npm --out" "$NF" && ! grep -q 'Gatekeeper rejects this build' "$NF" \
+  && pass "  control: a C7 stop of another kind (the release still a draft) still lists publish-npm" || fail "  control, C7 draft: rc=$r '$(lastprog)' $(grep publish "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-200)"
+rm -rf "${OUTR:?}"
 rm -f "${FX:?}/gk7"
 
 # --- next_hint: under ship, no message but the stop text names an entry to run next; the remedies stay

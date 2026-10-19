@@ -10,7 +10,7 @@
 #                                                     Homebrew cask (a final tag; the operator)
 #   release.sh publish-cask [--out DIR] vTAG          the Homebrew cask alone, for a release that is
 #                                                     public (a retry after exit 5; the operator)
-#   release.sh publish-npm [--out DIR] vTAG           publish the four npm packages (the operator)
+#   release.sh publish-npm [--out DIR] vTAG           verify, then publish the four npm packages (the operator)
 #   release.sh verify [--out DIR] vTAG                the release's facts from its archive (read-only)
 #   release.sh ship [--out DIR] vTAG                  the whole release of a final tag in one run, the
 #                                                     human steps grouped (the operator; the ship plan)
@@ -542,8 +542,9 @@ judged() { [ "$1" = 1 ] && grep -q "^$3" "$2" 2>/dev/null; }
 # CLASS (content: a verdict on the bytes), TEXT, the tool's words, then TAIL. No verdict (2): no class,
 # and the cause says TOOL gave none, never TEXT (a fixed verdict sentence there sent the build aside
 # anyway; r13b F2). The tool's words ($RT_OUT, read here, before the check's temp dir goes) in the
-# cause either way. spctl's refusal is fix (REV 11a rule 11): it judges only a bundle codesign's
-# release requirement and stapler accepted; its TAIL (gkhint) says what to check (REV 11b rule 16)
+# cause either way. spctl's refusal is class gatekeeper, a fix class (REV 11a rule 11, REV 12b rule 23):
+# it judges only a bundle codesign's release requirement and stapler accepted, and after the push ship's
+# stop text for it names no publish step; its TAIL (gkhint) says what to check (REV 11b rule 16)
 rtfail() {
   w_=$(errcut "${RT_OUT:-/dev/null}" 300)
   if [ "$1" = 1 ]; then stopclass "${4:-content}"; die "$3 ($2: $w_)${5:-}"
@@ -857,7 +858,9 @@ publish_cask_dry() { # the cells' entry: stand-ins by path only, never the real 
 # npm is skipped when its integrity is this file's (a resumed run) and refused otherwise. An rc goes
 # under the `next` dist-tag: npm makes a version without a tag `latest`. npm's login is publish-npm's
 # own (ship's, under ship), in its own file (REV 12), never the operator's and never a token from the
-# environment.
+# environment. On its own it runs verify first, as publish and publish-cask do, and refuses a manifest
+# whose archive is not the one verify judged (REV 12b rule 23: after ship stopped at Gatekeeper's refusal,
+# publish-npm must not publish the main package of a build Gatekeeper rejects).
 NPMREG=https://registry.npmjs.org/   # pinned on the command line: an npmrc's registry or scope registry never applies
 # npm_visible NAME VERSION INTEGRITY [WHOSE]: wait until npm serves this version with this file
 # (WHOSE names that file in a refusal; default: the one just published). npm scans
@@ -950,6 +953,9 @@ publish_npm_exec() { # dir
   [ "$(mf commit)" = "$lc" ] || die "the manifest's commit $(mf commit) is not $tag's ($lc)"
   # every file npm-check checked, before the first npm call (each is checked again just before its upload)
   files_ok "$d" || die "a file npm-check checked has changed since (above); this step uploaded nothing.$(next_hint " Run release.sh npm-check $tag again")"
+  # (on its own: the archive verify judged, bound to this manifest, as publish binds it; REV 12b rule 23)
+  [ "$verified" = no ] || [ "$verified_ah" = "$(man_hash "$d" "$ARCHIVE")" ] \
+    || die "the archive verify judged is not the manifest's (it changed since); this step uploaded nothing"
   # who may publish, before any view or upload: npm must say the user is release.conf's (measured,
   # npm 11.6.0: `whoami` prints the user, or exits 1 with ENEEDAUTH), and that user must own every name
   npm_list
@@ -1020,7 +1026,7 @@ publish_npm_exec() { # dir
 # the entries set their tools with plain assignments: an assignment before a function call is
 # exported, and stays, under the system's sh (measured). NPMC with NETC: the logins and logouts of P
 # (npm_pre, npm_login, npm_end) run through NPMC
-publish_npm() { NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
+publish_npm() { verify "$out/$tag"; NPM=npm NETC=npm NPMC=npm NOTIFY=$root/scripts/lib/notify.sh; publish_npm_exec "$out/$tag"; }
 publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the real one
   dryentry=yes
   standins SR_PUBLISH_DRY_NPM
@@ -1038,6 +1044,7 @@ publish_npm_dry() { # the cells' entry: a stand-in npm by path only, never the r
   # the cells' choice of the sub-mode, only when they make one (ship sets npm_part itself); otherwise
   # release.sh's own empty one, as in the real entry. publish_npm_exec checks the value
   [ -z "${SR_PUBLISH_DRY_NPM_PART+set}" ] || npm_part=$SR_PUBLISH_DRY_NPM_PART
+  [ -z "${SR_PUBLISH_DRY_VERIFIED:-}" ] || verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED   # (verify's stand-in, as in __publish-dry)
   NPM=$SR_PUBLISH_DRY_NPM NETC=npmdry NPMC=npmdry
   publish_npm_exec "$out/$tag"
   rm -rf "$DRYHOME"
@@ -1088,7 +1095,7 @@ npm_check() { # dir
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$b/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the darwin package holds a control build (SheeprControlBuild in its Info.plist)"; }
   rt_meets "$b" && rt_meets "$b/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the darwin package's bundle does not meet the release requirement"
   rt_staple_ok "$b" || rtfail $? stapler "stapler: the darwin package's bundle has no valid staple ticket"
-  rt_spctl_ok "$b" || rtfail $? spctl "spctl: Gatekeeper rejects the darwin package's bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$dt" package/Sheepr.app)"
+  rt_spctl_ok "$b" || rtfail $? spctl "spctl: Gatekeeper rejects the darwin package's bundle, which codesign's release requirement and stapler accepted" gatekeeper "$(gkhint "$dt" package/Sheepr.app)"
   # the release archive: its own check (only files and directories, the bundle signed and
   # stapled), then the same files as the package, read raw: path, mode and content (a CDHash is
   # read from the embedded signature, not recomputed, so equal CDHashes prove nothing)
@@ -1125,7 +1132,7 @@ verify() { # dir -> exit 1 naming the tool that refused
   /usr/bin/plutil -extract SheeprControlBuild raw -o - "$a/Contents/Info.plist" >/dev/null 2>&1 && { stopclass content; die "the archive holds a control build (SheeprControlBuild in its Info.plist)"; }
   rt_meets "$a" && rt_meets "$a/Contents/MacOS/sheepr" || rtfail $? codesign "codesign: the bundle does not meet the release requirement"
   rt_staple_ok "$a" || rtfail $? stapler "stapler: no valid staple ticket"
-  rt_spctl_ok "$a" || rtfail $? spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$arc" Sheepr.app)"
+  rt_spctl_ok "$a" || rtfail $? spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" gatekeeper "$(gkhint "$arc" Sheepr.app)"
   rm -rf "$vt"; trap - EXIT
   verified=yes
   echo "release: $d: signed, notarized and stapled (checked from the archive)"
@@ -1177,7 +1184,7 @@ ship_dry_verify() { # dir: verify's stand-in in __ship-dry (verify runs the real
   case $ship_gk:$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1) in
     C3:|'C7:start github')
       RT_OUT=$st/gk.out rt_rc=3; fput "$RT_OUT" '%s\n' "$1/Sheepr.app: rejected" "source=Notarized Developer ID" || die "cannot write $RT_OUT"
-      rtfail 1 spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" fix "$(gkhint "$1/sheepr-macos-universal.tar.gz" Sheepr.app)" ;;
+      rtfail 1 spctl "spctl: Gatekeeper rejects the bundle, which codesign's release requirement and stapler accepted" gatekeeper "$(gkhint "$1/sheepr-macos-universal.tar.gz" Sheepr.app)" ;;
   esac
   verified=yes verified_ah=$SR_PUBLISH_DRY_VERIFIED
 }
@@ -1808,6 +1815,13 @@ ship_stoptext() {
       echo "$tag is pushed, and npm may hold a part of it; GitHub has no release of it. Run in order:"
       echo "$run publish $o"; echo "$run publish-npm $o" ;;
     'start github')
+      # Gatekeeper rejected the build at C7 (verify, before any GitHub call): no publish step is named;
+      # publish and publish-npm both run verify, and refuse it (REV 12b rule 23)
+      if [ "$cls" = gatekeeper ]; then
+        echo "$tag is pushed, and npm holds its platform packages (uploaded before this check); GitHub has no release of it."
+        echo "Gatekeeper rejects this build (above): it is not published on GitHub, and publish-npm refuses it too (it runs verify first). Release a new version."
+        return 0
+      fi
       echo "$tag is pushed, and npm may hold a part of it; the GitHub publish stopped. Check GitHub's releases for $tag:"
       echo "  a draft is not public: delete it on GitHub, then run:"; echo "  $run publish $o"
       echo "  a public release: run:"; echo "  $run publish-cask $o"
