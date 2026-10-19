@@ -106,12 +106,18 @@ urluser() {
 }
 # errcut FILE BYTES: a tool's stderr as one line of a cause, at most BYTES: its error lines first
 # (npm's `npm error` and `npm ERR!`, git's and gh's `error:` and `fatal:`), then its other lines in
-# order, so no warning ahead of them pushes them out of the cut; npm's ANSI colour dropped
+# order, so no warning ahead of them pushes them out of the cut; npm's ANSI colour dropped; and npm's
+# advice to run a credential command dropped (npmadv)
 errcut() {
   e_=$(printf '\033') ep_='^(npm error|npm ERR!|error:|fatal:)'
-  ec_=$(sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null); [ -n "$ec_" ] || return 0
+  ec_=$(sed -e "s/$e_\[[0-9;]*[A-Za-z]//g" "$1" 2>/dev/null | npmadv); [ -n "$ec_" ] || return 0
   { printf '%s\n' "$ec_" | grep -E "$ep_"; printf '%s\n' "$ec_" | grep -vE "$ep_"; } | head -c "$2" | tr '\n' ' '
 }
+# npmadv: stdin without npm's advice to run a credential command: a line naming npm login, adduser,
+# logout, token or config, or "logging in again" (npm's E401 and ENEEDAUTH words: notes/r17a/np/t2, t3).
+# Following it, npm login writes the operator's ~/.npmrc (REV 12b rule 27); ship and publish-npm log in
+# with their own file
+npmadv() { grep -vE 'npm (login|adduser|logout|token|config)|logging in again'; }
 die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || fput "$shipcause" '%s\n' "$m_" || rm -f "$shipcause"; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
@@ -1018,7 +1024,7 @@ publish_npm_exec() { # dir
     # a refused upload stops at once, whatever npm says: its answer to a second upload while it still
     # scans the first one is not measured, so the run does not guess which refusal is which
     tool "$NETC" "$NPM" publish --access public --registry="$NPMREG" --scope= "$@" "$pc/$f" \
-      || die "npm refused the upload of $f, or its login step failed (above).$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out$(next_hint ": run publish-npm again (it skips a version already there with this file)" " may be the cause"). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}$(next_hint ", wait, then run publish-npm again"). A blocked version needs a new version number. $(notafter "$p" | sed 's/^t/T/')"
+      || die "npm refused the upload of $f, or its login step failed (above); npm's own advice there to log in again does not apply: $( [ "$shipping" = yes ] && echo ship || echo publish-npm) logs in with its own file.$( [ "$npm_part" = platform ] && echo " These uploads go back to back: npm may also refuse an upload while it still scans an earlier package of the batch (not measured).") A browser login or 2FA approval that failed or timed out$(next_hint ": run publish-npm again (it skips a version already there with this file)" " may be the cause"). If this run or an earlier one uploaded $p@$nv, npm may still be scanning it (about five minutes, up to 15 or more), or it held it for review or blocked it: look at https://www.npmjs.com/package/$p and npm's email to ${SR_NPM_USER:-the owner}$(next_hint ", wait, then run publish-npm again"). A blocked version needs a new version number. $(notafter "$p" | sed 's/^t/T/')"
     if [ "$npm_part" = platform ]; then
       progress "done npm-platform $p"
       echo "release: $p@$nv uploaded (npm scans it before it shows it; not waited for here)"
@@ -1668,7 +1674,7 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   if [ "$logged_in" = yes ]; then
     drain; npm_out "$st" || n=1
     # (npm's words only through redact: its URL names the token it sends; REV 11 rule 5)
-    drain; lw=$(errcut "$st/out.err" 200); [ "$n" = 0 ] || [ -z "$lw" ] || { redact "$(cat "$st/out.err")"; echo; } >&2
+    drain; lw=$(errcut "$st/out.err" 200); [ "$n" = 0 ] || [ -z "$lw" ] || { redact "$(npmadv < "$st/out.err")"; echo; } >&2
   fi
   if [ "$n" != 0 ]; then
     rc=1

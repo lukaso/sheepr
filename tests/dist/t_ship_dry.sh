@@ -188,6 +188,15 @@ cat > "$S/npm" <<EOF
 # command line (--scope= empties it), else the userconfig's scope= line; the scope's registry SR, when
 # it is not registry.npmjs.org (npm routes login, logout, view, owner and publish to it: notes/builder/np13)
 UC=""; SC=""; scset=no
+# ncode CODE: npm's words for CODE on stderr, as npm 11.6.0 writes them (r17a F3: E401 and ENEEDAUTH advise
+# a credential command: notes/r17a/np/t2-v24.9.0.txt, t3-v24.9.0.txt); any other code, its code line
+ncode() {
+  case \$1 in
+    E401) printf 'npm error code E401\nnpm error Unable to authenticate, your authentication token seems to be invalid.\nnpm error To correct this please try logging in again with:\nnpm error   npm login\n' >&2 ;;
+    ENEEDAUTH) printf 'npm error code ENEEDAUTH\nnpm error need auth This command requires you to be logged in.\nnpm error need auth You need to authorize this machine using \`npm adduser\`\n' >&2 ;;
+    *) echo "npm error code \$1" >&2 ;;
+  esac
+}
 for a_; do case \$a_ in --userconfig=*) UC=\${a_#--userconfig=} ;; --scope=*) SC=\${a_#--scope=}; scset=yes ;; esac; done
 [ -n "\$UC" ] || UC=\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-}}
 ucdef=no; [ -n "\$UC" ] || { UC=\$HOME/.npmrc; ucdef=yes; }
@@ -225,7 +234,7 @@ fi
 last=""; for a; do case \$a in --userconfig=*) ;; *) last=\$a ;; esac; done   # (--userconfig=P comes last: REV 12)
 TOK='//registry.npmjs.org/:_authToken='
 # (a dead token, npm_dead*: every npm call that sends it answers E401, its logout too, and the line stays)
-case \$(sed -n "s|^\$TOK||p" "\$UC" 2>/dev/null | tail -1) in npm_dead*) case \$1 in view|owner|whoami|publish|logout) echo "npm error code E401" >&2; exit 1 ;; esac ;; esac
+case \$(sed -n "s|^\$TOK||p" "\$UC" 2>/dev/null | tail -1) in npm_dead*) case \$1 in view|owner|whoami|publish|logout) ncode E401; exit 1 ;; esac ;; esac
 # (\$FX/npmall: every npm command that reaches the registry writes this text on stderr and fails)
 case \$1 in view|owner|whoami|login|publish) [ -e "$FX/npmall" ] && { cat "$FX/npmall" >&2; exit 1; } ;; esac
 # npm's project config, as npm finds it: the .npmrc in the first dir up from the cwd that holds a
@@ -252,7 +261,7 @@ case \$1 in
     [ -e "$FX/owner404json.\$p" ] && { printf '{\n  "error": {\n    "code": "E404",\n    "summary": "Not Found"\n  }\n}\n'; exit 1; }   # the same, said only in --json's stdout
     [ -e "$FX/viewfail.\$p" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     # (\$FX/viewcode.FIELD: the view of FIELD, time or dist-tags.latest, answers that npm error code)
-    [ -e "$FX/viewcode.\$last" ] && { echo "npm error code \$(cat "$FX/viewcode.\$last")" >&2; echo "npm error the view of \$p \$last (stand-in)" >&2; exit 1; }
+    [ -e "$FX/viewcode.\$last" ] && { ncode "\$(cat "$FX/viewcode.\$last")"; echo "npm error the view of \$p \$last (stand-in)" >&2; exit 1; }
     case \$last in
       time) cat "$FX/time.\$p" 2>/dev/null || printf '{\n  "created": "2026-10-01T00:00:00.000Z",\n  "0.0.9": "2026-10-02T00:00:00.000Z"\n}\n'; exit 0 ;;
       dist-tags.latest) printf '"%s"\n' "\$(cat "$FX/latest.\$p" 2>/dev/null || echo 0.0.9)"; exit 0 ;;
@@ -283,9 +292,9 @@ case \$1 in
   whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     # (\$FX/whoamiansi: the code it answers, in npm's colours, as color=always writes it)
     [ -e "$FX/whoamiansi" ] && { printf '\033[1mnpm\033[22m \033[31merror\033[39m \033[94mcode\033[39m %s\n' "\$(cat "$FX/whoamiansi")" >&2; exit 1; }
-    [ -e "$FX/whoamicode" ] && { echo "npm error code \$(cat "$FX/whoamicode")" >&2; exit 1; }   # (\$FX/whoamicode: the code it answers)
+    [ -e "$FX/whoamicode" ] && { ncode "\$(cat "$FX/whoamicode")"; exit 1; }   # (\$FX/whoamicode: the code it answers)
     # (\$FX/whoamipostlogin: the code it answers once npm login ran: C4's whoami, not A6's)
-    [ -e "$FX/whoamipostlogin" ] && grep -q '^npm login' "$FX/calls" && { echo "npm error code \$(cat "$FX/whoamipostlogin")" >&2; exit 1; }
+    [ -e "$FX/whoamipostlogin" ] && grep -q '^npm login' "$FX/calls" && { ncode "\$(cat "$FX/whoamipostlogin")"; exit 1; }
     # (\$FX/whoamibadmain: fails once three uploads are recorded, i.e. at C8)
     [ -e "$FX/whoamibadmain" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     # (a username and _password pair: whoami answers the user name, as npm does)
@@ -294,12 +303,12 @@ case \$1 in
     grep -q '^//registry.npmjs.org/:_auth=' "\$UC" 2>/dev/null && { cat "$FX/whoami" 2>/dev/null || echo lukasco; exit 0; }
     if grep -q "^\$TOK" "\$UC" 2>/dev/null; then
       [ -e "$FX/whoamibad2" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
-      [ -e "$FX/expired" ] && { echo "npm error code E401" >&2; exit 1; }
+      [ -e "$FX/expired" ] && { ncode E401; exit 1; }
       case \$(sed -n "s|^\$TOK||p" "\$UC" | tail -1) in npm_stranger*) echo stranger; exit 0 ;; esac   # (the other account's token)
       cat "$FX/whoami" 2>/dev/null || echo lukasco; exit 0
     fi
     # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
-    if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else echo "npm error code ENEEDAUTH" >&2; fi; exit 1 ;;
+    if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else ncode ENEEDAUTH; fi; exit 1 ;;
   login) [ -e "$FX/onlogin" ] && sh "$FX/onlogin"   # (\$FX/onlogin: a hook at C4's npm login)
     [ -e "$FX/loginfail" ] && exit 1
     # (with a scope, npm login writes <scope>:registry=<--registry>: the scope's routing is rewritten)
@@ -314,7 +323,7 @@ case \$1 in
     exit 0 ;;   # (\$FX/loginfailw: the login writes its line, then fails)
   logout) [ -e "$FX/onlogout" ] && sh "$FX/onlogout"   # (\$FX/onlogout: a hook as ship's logout starts)
     # (\$FX/logoutonce CODE: the next logout fails with that npm error code, once, and the line stays)
-    if [ -s "$FX/logoutonce" ]; then c_=\$(cat "$FX/logoutonce"); rm -f "$FX/logoutonce"; echo "npm error code \$c_" >&2; exit 1; fi
+    if [ -s "$FX/logoutonce" ]; then c_=\$(cat "$FX/logoutonce"); rm -f "$FX/logoutonce"; ncode "\$c_"; exit 1; fi
     # (\$FX/logoutoncetext: the next logout fails with the file's text on stderr, once, and the line stays)
     if [ -s "$FX/logoutoncetext" ]; then cat "$FX/logoutoncetext" >&2; rm -f "$FX/logoutoncetext"; exit 1; fi
     [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
@@ -323,24 +332,24 @@ case \$1 in
     if [ -s "$FX/logoutmsg" ]; then
       t_=\$(sed -n "s|^\$TOK||p" "\$UC" | tail -1); case \$t_ in npm_*) t_='npm_***' ;; esac
       case \$(cat "$FX/logoutmsg") in
-        E401) printf 'npm error code E401\nnpm error 401 Unauthorized - DELETE https://registry.npmjs.org/-/user/token/%s - token expired or revoked\n' "\$t_" >&2 ;;
+        E401) printf 'npm error code E401\nnpm error 401 Unauthorized - DELETE https://registry.npmjs.org/-/user/token/%s - token expired or revoked\nnpm error To correct this please try logging in again with:\nnpm error   npm login\n' "\$t_" >&2 ;;
         E503) printf 'npm error code E503\nnpm error 503 Service Unavailable - DELETE https://registry.npmjs.org/-/user/token/%s - down\n' "\$t_" >&2 ;;
         *) printf 'npm error code FETCH_ERROR\nnpm error errno FETCH_ERROR\nnpm error network timeout at: https://registry.npmjs.org/-/user/token/%s\n' "\$t_" >&2 ;;
       esac; exit 1
     fi
     # (\$FX/logoutcode: the logout fails with that npm error code, and the line stays)
-    [ -e "$FX/logoutcode" ] && { echo "npm error code \$(cat "$FX/logoutcode")" >&2; exit 1; }
+    [ -e "$FX/logoutcode" ] && { ncode "\$(cat "$FX/logoutcode")"; exit 1; }
     # (a username and _password pair and no token line: npm logout removes the pair, as npm does)
     if grep -q '^//registry.npmjs.org/:username=' "\$UC" 2>/dev/null && ! grep -q "^\$TOK" "\$UC"; then
       grep -v -e '^//registry.npmjs.org/:username=' -e '^//registry.npmjs.org/:_password=' "\$UC" > "\$UC.n"; mv "\$UC.n" "\$UC"; exit 0
     fi
     # (an _auth line and no token line: npm logout answers ENEEDAUTH and leaves the line)
-    grep -q '^//registry.npmjs.org/:_auth=' "\$UC" 2>/dev/null && ! grep -q "^\$TOK" "\$UC" && { echo "npm error code ENEEDAUTH" >&2; exit 1; }
+    grep -q '^//registry.npmjs.org/:_auth=' "\$UC" 2>/dev/null && ! grep -q "^\$TOK" "\$UC" && { ncode ENEEDAUTH; exit 1; }
     [ -e "$FX/logoutfail" ] && exit 1; [ -e "$FX/logoutstays" ] && exit 0; [ -e "$FX/logoutrm" ] && { rm -f "\$UC"; exit 0; }
     [ -e "$FX/logoutlies" ] && { grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; exit 1; }
     # (\$FX/logoutleaves: a line it leaves in the userconfig, as npm logout leaves any but the root line)
     # (no token line: npm logout answers ENEEDAUTH, exit 1, as real npm does: notes/r16a/np/t4)
-    grep -q "^\$TOK" "\$UC" 2>/dev/null || { echo "npm error code ENEEDAUTH" >&2; exit 1; }
+    grep -q "^\$TOK" "\$UC" 2>/dev/null || { ncode ENEEDAUTH; exit 1; }
     t_=\$(sed -n "s|^\$TOK||p" "\$UC" 2>/dev/null | tail -1); [ -z "\$t_" ] || echo "DELETE token=\$t_" >> "$FX/tokops"   # (the token it ends)
     grep -v "^\$TOK" "\$UC" > "\$UC.n" 2>/dev/null; mv "\$UC.n" "\$UC"; [ ! -e "$FX/logoutleaves" ] || cat "$FX/logoutleaves" >> "\$UC"; exit 0 ;;
   publish) p=\$(basename "\$last" | sed 's/^\(.*\)-[0-9][0-9.a-z-]*\.tgz\$/\1/')
@@ -888,7 +897,7 @@ a6row() { # label code want-text: npm owner ls answering CODE: refused before th
 for c in E401 E403 FETCH_ERROR E429 ETIMEDOUT ERR_INVALID_AUTH; do a6row "npm owner ls $c" $c "cannot read the owners of"; done
 # every npm command that reaches the registry answering E401 (A4's views fail first), and answering
 # ERR_INVALID_AUTH with npm's warning first: npm's words in the next file, no npm command, the fix ending
-printf 'npm error code E401\nnpm error 401 Unauthorized - GET https://registry.npmjs.org/sheepr - stand-in\n' > "$FX/npmall"
+printf 'npm error code E401\nnpm error 401 Unauthorized - GET https://registry.npmjs.org/sheepr - stand-in\nnpm error To correct this please try logging in again with:\nnpm error   npm login\n' > "$FX/npmall"   # (npm's own words, its advice among them: r17a F3)
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmall"
 pre_row "every npm command answering E401 (A4 first)" "cannot tell whether anything is public"
 grep -q 'npm error code E401' "$A6NF" && ! grep -Eq "$NPMCMD" "$A6NF" && endsfix "$A6NF" && pass "  the next file: npm's words; no npm command; when the cause is fixed, run ship again" \
@@ -956,7 +965,7 @@ done
 # the stand-in honours the npmrc line when the environment sets no heading, and the pin when it does
 echo "heading=xyz" > "$FX/npmrc"
 hx=$(env -i PATH=/usr/bin:/bin HOME="$FX/ghome" NPM_CONFIG_USERCONFIG="$FX/npmrc" "$S/npm" whoami 2>&1 >/dev/null); hn=$(env -i PATH=/usr/bin:/bin HOME="$FX/ghome" NPM_CONFIG_USERCONFIG="$FX/npmrc" npm_config_heading=npm "$S/npm" whoami 2>&1 >/dev/null)
-[ "$hx" = "xyz error code ENEEDAUTH" ] && [ "$hn" = "npm error code ENEEDAUTH" ] && pass "control: the npm stand-in writes the npmrc's heading, and the environment's over it" || fail "control: the stand-in's heading: '$hx' '$hn'"
+[ "$(printf '%s\n' "$hx" | head -1)" = "xyz error code ENEEDAUTH" ] && ! printf '%s\n' "$hx" | grep -q '^npm ' && [ "$(printf '%s\n' "$hn" | head -1)" = "npm error code ENEEDAUTH" ] && pass "control: the npm stand-in writes the npmrc's heading, and the environment's over it" || fail "control: the stand-in's heading: '$hx' '$hn'"
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/npmrc"
 completed && pass "A6, an npmrc with heading=xyz (no token line): npm's heading pinned, the clean state passes, the run completes" || fail "npmrc heading=xyz: $(head -1 "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | cut -c1-200)"
 # A4's time and dist-tags.latest views answering E401: stopped before the build; npm's words, no npm command
@@ -967,10 +976,17 @@ for vf in time dist-tags.latest; do
     && pass "A4's $vf view answering E401: stopped before the build; npm's words, no npm command" || fail "A4 $vf E401: rc=$r $(head -1 "$A6NF" 2>/dev/null | cut -c1-240)"
 done
 : > "$FX/tokops"; echo E401 > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamipostlogin"
-[ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code E401' "$A6NF" && ! grep -Eq "$NPMCMD" "$A6NF" && ! grep -q '^npm publish' "$FX/calls" \
+[ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code E401' "$A6NF" && ! grep -Eq "$NPMCMD" "$A6NF" && ! grep -q 'logging in again' "$A6NF" && ! grep -q '^npm publish' "$FX/calls" \
   && [ "$(grep -c '^DELETE token=npm_dry' "$FX/tokops")" = 1 ] && [ "$(cat "$FX/pd.after")" = gone ] \
   && pass "C4's whoami after the login answering E401: nothing published; npm's words, no npm command; P logged out, D removed" \
   || fail "C4 whoami E401: rc=$r $(head -1 "$A6NF" 2>/dev/null | cut -c1-240)"
+# r17a F3 (REV 12b rule 27): C4's whoami answering ENEEDAUTH in npm's words, whose last line advises
+# `npm adduser`: the stop quotes npm's code and words without that line, in stdout and the next file
+: > "$FX/tokops"; echo ENEEDAUTH > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamipostlogin"
+[ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code ENEEDAUTH npm error need auth This command requires you to be logged in.' "$A6NF" \
+  && ! grep -Eq "$NPMCMD" "$A6NF" && ! grep '^release:' "$FX/o" | grep -Eq "$NPMCMD" && ! grep -q 'logging in again' "$A6NF" \
+  && pass "r17a F3: C4's whoami answering ENEEDAUTH: npm's code and words quoted, its adduser advice not" \
+  || fail "r17a F3, ENEEDAUTH: rc=$r $(grep -m1 'whoami failed' "$A6NF" 2>/dev/null | cut -c1-260)"
 # REV 12 rule 1: the operator's userconfig variable in any spelling (~, a relative path, an absolute one,
 # one holding a $; before REV 12 A1 refused the odd ones): npm never sees it; the run completes, every npm
 # call loads and names P
@@ -2530,6 +2546,9 @@ printf 'echo x >> "%s/v0.1.0/sheepr-linux-x86_64"\n' "$OUTR" > "$FX/afterpush"; 
 printf ': > "%s/whoamibad2"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoamibad2"; hint_row "C6's whoami failing" "npm whoami failed; this step uploaded nothing"
 printf 'echo other > "%s/whoami"\n' "$FX" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush" "$FX/whoami"; hint_row "C6's whoami another user" "but the packages belong to lukasco; this step uploaded nothing"
 : > "$FX/pubfail.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"; hint_row "an upload refused" "A browser login or 2FA approval that failed or timed out may be the cause"
+# r17a F3 (REV 12b rule 27): npm's own words on the terminal advise a new login; the refusal says it does not apply
+grep -q "npm's own advice there to log in again does not apply: ship logs in with its own file" "$FX/o" \
+  && pass "r17a F3: an upload refused: npm's own advice to log in again does not apply (ship logs in with its own file)" || fail "r17a F3, the upload's refusal: $(grep -m1 'npm refused the upload' "$FX/o" | cut -c1-240)"
 rm -rf "${OUTR:?}"; ship; r=$?
 completed && hint_free && pass "under ship, a success names no next entry (no 'Next:')" || fail "success hints: $(head -2 "$FX/hints" | tr '\n' '|')"
 # npm-check runs only in the real ship (its dry stand-in stands in): its last line, by text
