@@ -194,6 +194,8 @@ ncode() {
   case \$1 in
     E401) printf 'npm error code E401\nnpm error Unable to authenticate, your authentication token seems to be invalid.\nnpm error To correct this please try logging in again with:\nnpm error   npm login\n' >&2 ;;
     ENEEDAUTH) printf 'npm error code ENEEDAUTH\nnpm error need auth This command requires you to be logged in.\nnpm error need auth You need to authorize this machine using \`npm adduser\`\n' >&2 ;;
+    # (npm 9 to 11 advise --otp=<code>, a flag ship does not take: notes/r18a/np/t3-v*.txt; r18b F8)
+    EOTP) printf 'npm error code EOTP\nnpm error This operation requires a one-time password from your authenticator.\nnpm error You can provide a one-time password by passing --otp=<code> to the command you ran.\nnpm error If you already provided a one-time password then it is likely that you either typoed\nnpm error it, or it timed out. Please try again.\n' >&2 ;;
     *) echo "npm error code \$1" >&2 ;;
   esac
 }
@@ -1002,6 +1004,14 @@ done
   && ! grep -Eq "$NPMCMD" "$A6NF" && ! grep '^release:' "$FX/o" | grep -Eq "$NPMCMD" && ! grep -q 'logging in again' "$A6NF" \
   && pass "r17a F3: C4's whoami answering ENEEDAUTH: npm's code and words quoted, its adduser advice not" \
   || fail "r17a F3, ENEEDAUTH: rc=$r $(grep -m1 'whoami failed' "$A6NF" 2>/dev/null | cut -c1-260)"
+# r18b F8, r18a (PLAN-ship.md REV 12c rule 35): C4's whoami answering EOTP in npm's words, which advise
+# `--otp=<code>` (a flag ship does not take): the stop quotes npm's code and words without that line, in
+# stdout and the next file. Control: the ENEEDAUTH row above
+: > "$FX/tokops"; echo EOTP > "$FX/whoamipostlogin"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "${FX:?}/whoamipostlogin"
+[ $r = 1 ] && grep -q 'npm whoami failed after the login (npm error code EOTP npm error This operation requires a one-time password' "$A6NF" \
+  && ! grep -q -e '--otp' "$A6NF" && ! grep '^release:' "$FX/o" | grep -q -e '--otp' \
+  && pass "r18b F8: C4's whoami answering EOTP: npm's code and words quoted, its --otp advice not" \
+  || fail "r18b F8, EOTP: rc=$r $(grep -m1 'whoami failed' "$A6NF" 2>/dev/null | cut -c1-300)"
 # REV 12 rule 1: the operator's userconfig variable in any spelling (~, a relative path, an absolute one,
 # one holding a $; before REV 12 A1 refused the odd ones): npm never sees it; the run completes, every npm
 # call loads and names P
@@ -2118,6 +2128,28 @@ f2_=$(grep '^npm ' "$FX/calls" 2>/dev/null | head -1)
   && pass "r18a F3: after a done ship whose logout failed, the next ship of v0.1.0 (the tag public) logs out of the kept session first, then refuses" \
   || fail "r18a F3: first rc=$r1_ P $pk1_ text $t1_; next rc=$r2_ first npm call [$(printf '%s' "$f2_" | cut -c1-60)] tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && echo left || echo gone); $(grep -m1 'stopped at\|refused' "$FX/o" | cut -c1-200)"
 world_reset; rm -rf "${OUTR:?}"
+# r18b F3 (PLAN-ship.md REV 12c rule 35): the lock's pid cannot be written (here the out dir's inheritable
+# ACL denies adding a file in a new subdirectory, so .ship.lock is made and its pid refused; a full disk does
+# the same): a stop that names the pid file and removes its own lock, so the next run is not refused for a
+# lock that no run holds. Control: every completed row (the pid written; the lock gone at the end)
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && /bin/chmod +a "user:$(id -un) deny add_file,only_inherit,directory_inherit" "$OUTR" || exit 3
+ship; r=$?; /bin/chmod -N "$OUTR"
+[ $r = 1 ] && grep -q 'cannot write .*/\.ship\.lock/pid' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] \
+  && pass "r18b F3: the lock's pid cannot be written: a stop that removes its own lock" \
+  || fail "r18b F3: rc=$r lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 'cannot write' "$FX/o" | cut -c1-200)"
+rm -rf "${OUTR:?}"
+# r18b F4 (REV 12c rule 35): an earlier run's record that this run cannot replace (mode 0444: the first
+# write's open fails) is that run's, not this one's: the stop names the record it cannot write and prints
+# no route of it (here a record of the platform uploads, whose route would send the operator to publish;
+# it holds no `start push`, which the post-push scan reads as this run's); it says this run made nothing
+# public. Control: rule 21's rows (this run's own record, unreadable)
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && printf 'run 1 2026-01-01T00:00:00Z\nstart npm-platform sheepr-linux-arm64\n' > "$OUTR/.v0.1.0.ship-progress" \
+  && chmod 444 "$OUTR/.v0.1.0.ship-progress" || exit 3
+ship; r=$?; chmod 644 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
+[ $r = 1 ] && grep -q 'cannot write .*/\.v0\.1\.0\.ship-progress' "$FX/o" && ! grep -q -e 'is pushed' -e ' publish --out' -e 'publish-npm --out' "$FX/o" && grep -qx 'This run made nothing public.' "$FX/o" \
+  && pass "r18b F4: an earlier run's record this run cannot replace: no route of it; this run made nothing public" \
+  || fail "r18b F4: rc=$r $(grep -v -e '(dry)' -e 'a temp HOME' "$FX/o" | head -6 | tr '\n' '|' | cut -c1-400)"
+rm -rf "${OUTR:?}"
 # rule 4: no npm command is printed: no stop text, next file or stdout above, and no notification text,
 # holds "npm login", "npm logout" or "npm config" (release.sh's and notify.sh's own texts: no such words
 # outside comments)
@@ -2216,7 +2248,10 @@ for s_ in "|public|m" "|public|" "|lost|" "|unreadable|" "|fix|" "|network|" "|c
   la_=${s_%%|*} r_=${s_#*|}; cl_=${r_%%|*} mf_=${r_#*|}
   { echo "run 1 2026-10-17T00:00:00Z"; [ -z "$la_" ] || echo "$la_"; } > "$SW/prog"; echo "$cl_" > "$SW/cls"; echo "a cause" > "$SW/cause"
   [ -n "$mf_" ] && cm_=c0ffee || cm_=other
-  sh -c '. "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes
+  # (the record's run line names the shell that calls ship_stoptext: it reads only its own run's record,
+  # REV 12c rule 35)
+  sh -c '{ printf "run %s 2026-10-17T00:00:00Z\n" $$; sed 1d "$1/prog"; } > "$1/prog.n" && mv "$1/prog.n" "$1/prog"
+    . "$1/fns.sh"; shipprog=$1/prog shipcls=$1/cls shipcause=$1/cause phase=push tag=v0.1.0 out="$1/o ut" oroot="$1/st ate/repo" pubok=yes
     SR_NPM_PKGS="sheepr-linux-arm64 sheepr" SR_NPM_USER=lukasco commit=$2 NPMC= NPMREG=https://registry.npmjs.org/ NPM_CONFIG_USERCONFIG="$1/u rc/npmrc"; export NPM_CONFIG_USERCONFIG
     ship_stoptext' sh "$SW" "$cm_" > "$SW/text" 2> "$SW/text.err" || bad_="$bad_ [${la_:-$cl_}: ship_stoptext failed: $(head -c 120 "$SW/text.err")]"
   while IFS= read -r l_; do

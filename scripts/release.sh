@@ -125,10 +125,11 @@ errcut() {
   { printf '%s\n' "$ec_" | grep -E "$ep_"; printf '%s\n' "$ec_" | grep -vE "$ep_"; } | head -c "$2" | tr '\n' ' '
 }
 # npmadv: stdin without npm's advice to run a credential command: a line naming npm login, adduser,
-# logout, token or config, or "logging in again" (npm's E401 and ENEEDAUTH words: notes/r17a/np/t2, t3).
+# logout, token or config, or "logging in again" (npm's E401 and ENEEDAUTH words: notes/r17a/np/t2, t3), or
+# EOTP's `--otp=<code>`, a flag ship does not take (npm 9 to 11: notes/r18a/np/t3-v*.txt; r18b F8).
 # Following it, npm login writes the operator's ~/.npmrc (REV 12b rule 27); ship and publish-npm log in
 # with their own file
-npmadv() { grep -vE 'npm (login|adduser|logout|token|config)|logging in again'; }
+npmadv() { grep -vE 'npm (login|adduser|logout|token|config)|logging in again|--otp'; }
 die() { printf '\n' > /dev/null 2>&1; m_=$(redact "$*"); echo "release: $m_" >&2; [ -z "$shipcause" ] || [ -s "$shipcause" ] || fput "$shipcause" '%s\n' "$m_" || rm -f "$shipcause"; exit 1; }   # under ship the first cause is kept (a phase subshell's own, not the parent's summary); the drain first: see ship_exit
 # next_hint TEXT [UNDER-SHIP]: a clause that names the entry to run next; under ship it is left out
 # (or replaced by UNDER-SHIP: ship's stop text names what to run, from the run's own record), never
@@ -1254,8 +1255,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   trap 'exit 1' $SIGS PIPE
   # one ship per out dir: a held lock is never taken over, and never removed by a ship that did not make it
   mkdir "$out/.ship.lock" 2>/dev/null || die "another ship or publish-npm holds $out/.ship.lock (its pid: $(cat "$out/.ship.lock/pid" 2>/dev/null || echo unknown)); when none runs, remove that directory, then run ship again"
+  locked=yes   # (this run's from its mkdir: a pid that cannot be written still removes it as the run stops; r18b F3)
   fput "$out/.ship.lock/pid" '%s\n' "$$" || die "cannot write $out/.ship.lock/pid"
-  locked=yes
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
   rm -f "$shipprog.tmp" 2>/dev/null
@@ -1814,6 +1815,9 @@ nfsaid() {
 # or finished), the stop's class and its cause; no network read. Every command names --out
 ship_stoptext() {
   rec_=$(cat "$shipprog" 2>/dev/null)
+  # only this run's record (its run line names this pid; REV 12c rule 35, r18b F4): an earlier run's, which
+  # this run could not replace (a mode, a full disk at its first write), says how far that run got
+  case $rec_ in "run $$ "*) ;; *) rec_="" ;; esac
   last=$(printf '%s\n' "$rec_" | grep -v '^run ' | tail -1)
   cls=$(cat "$shipcls" 2>/dev/null) cause=$(cat "$shipcause" 2>/dev/null)
   [ -n "$cause" ] || cause="a signal, or a step that named no cause"

@@ -63,13 +63,13 @@ case $key in
   npm-approve-next) text="$tag: npm may ask again: press ENTER in the terminal, then approve the next npm upload in the browser" ;;
   npm-approve-again) text="$tag: npm may ask again: press ENTER in the terminal, then approve the upload of the main package in the browser" ;;
   done) text="$tag is public on GitHub, Homebrew and npm" ;;
-  logout-failed) text="$tag: ship's npm session could not be ended; it ends by itself, and the next run of $tag logs out of it first. More is $where" ;;
+  logout-failed) text="$tag: ship's npm session could not be ended; it ends by itself, and the next ship or publish-npm run of $tag with this out dir logs out of it first. More is $where" ;;
   failed-*)
     phase=${key#failed-}; phase_ok "$phase" "$key"
     text="$tag stopped at $phase. What to run next is $where" ;;
   logout-failed-*)
     phase=${key#logout-failed-}; phase_ok "$phase" "$key"
-    text="$tag stopped at $phase, and ship's npm session could not be ended (it ends by itself, and the next run of $tag logs out of it first). What to run next is $where" ;;
+    text="$tag stopped at $phase, and ship's npm session could not be ended (it ends by itself, and the next ship or publish-npm run of $tag with this out dir logs out of it first). What to run next is $where" ;;
   *) refuse "the key '$key' is not in the table" ;;
 esac
 
