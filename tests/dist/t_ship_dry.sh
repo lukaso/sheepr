@@ -2365,7 +2365,7 @@ st_=$(grep -h -e 'could not be ended' -e 'session is left' -e 'logs out of it fi
 [ $r1_ = 1 ] && [ "$n1_" -ge 1 ] && [ $r2_ = 1 ] && case $f2_ in "npm logout "*) true ;; *) false ;; esac \
   && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PD" ] \
   && grep -qF "release: an earlier npm session of ship's own file ($PP) is ended." "$FX/o" && [ -z "$st_" ] \
-  && grep -qx "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is ended." "$NF" \
+  && grep -qx "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is ended." "$NF" && [ "$(grep -c '' "$NF")" = 1 ] \
   && pass "r19a F1: a ship after a done ship whose logout failed: its logout ends that session, stdout says so, D gone; no text says it is left" \
   || fail "r19a F1: first rc=$r1_ (file lines $n1_); next rc=$r2_ first npm call [$(printf '%s' "$f2_" | cut -c1-60)] tokops [$(tr '\n' ' ' < "$FX/tokops")] D $( [ -e "$PD" ] && echo left || echo gone); stale [$st_]; file [$(head -2 "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-200)]"
 world_reset; rm -rf "${OUTR:?}"
@@ -2376,6 +2376,17 @@ KEEP=1; ship; r2_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; r12keep
   && pass "  control: that second logout fails too: a stop, P and the earlier next file kept as they were, nothing says ended" \
   || fail "  control, the second logout fails: rc $r1_ $r2_ P $( [ -e "$PP" ] && echo kept || echo gone) file $( [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && echo same || echo changed); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
 world_reset; rm -rf "${OUTR:?}"
+# r20b F7, r20a N10 (PLAN-ship.md REV 12e rule 44; REV 12d rule 36's "a rewrite that fails says so"): the
+# two runs of r19a F1's row, the temp name beside the next file taken by a directory before the second: its
+# rewrite fails, stdout says so, and the file is as the first run wrote it. Control: r19a F1's row (the
+# rewrite lands, the file's one line says ended)
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; f1_=$(cksum < "$NF" 2>/dev/null)
+mkdir -p "$OUTR/.v0.1.0.ship-next.tmp/x" || exit 3; KEEP=1; ship; r2_=$?; KEEP=
+[ $r1_ = 1 ] && [ $r2_ = 1 ] && grep -qF "release: an earlier npm session of ship's own file ($PP) is ended." "$FX/o" \
+  && grep -qF "release: (the next file, $NF, could not be rewritten: it still says that session is left)" "$FX/o" && [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] \
+  && pass "r20b F7: the rewrite of the earlier next file fails (its temp name a directory): stdout says so; the file as the first run wrote it" \
+  || fail "r20b F7: rc $r1_ $r2_; $(grep -m1 -e 'could not be rewritten' -e 'earlier npm session' "$FX/o" | cut -c1-200); file $( [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && echo same || echo changed)"
+rm -rf "${OUTR:?}/.v0.1.0.ship-next.tmp"; world_reset; rm -rf "${OUTR:?}"
 # r19a X2 (PLAN-ship.md REV 12d rule 40; REV 12c rule 34: never while another run holds the lock): the
 # lock is held (pid 99999) and P holds that run's live session: no npm call, P byte-identical, the lock
 # untouched. Control: rule 2's rows (no lock: the logout of P first)
@@ -2383,6 +2394,7 @@ rm -rf "${OUTR:?}"; mkdir -p "$PD" "$OUTR/.ship.lock" && chmod 700 "$PD" && echo
   && printf '//registry.npmjs.org/:_authToken=npm_live_other_run\n' > "$PP" || exit 3; p0_=$(cksum < "$PP")
 : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=
 [ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && [ "$(cksum < "$PP" 2>/dev/null)" = "$p0_" ] && [ ! -s "$FX/tokops" ] && [ "$(cat "$OUTR/.ship.lock/pid")" = 99999 ] \
+  && grep -q 'another ship or publish-npm holds' "$FX/o" \
   && pass "r19a X2: another run holds the lock: no npm call, its P byte-identical" \
   || fail "r19a X2: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ -e "$PP" ] && cat "$PP" || echo gone)"
 rm -rf "${OUTR:?}"; world_reset
