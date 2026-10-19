@@ -1155,6 +1155,16 @@ echo other > "$FX/whoami"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoami"
 : > "$FX/loginfailw"; : > "$FX/tokops"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/loginfailw"
 [ $r = 1 ] && grep -q 'the login to npm failed' "$FX/o" && nopub && [ "$(grep -c '^npm logout' "$FX/calls")" = 1 ] && grep -q '^DELETE token=npm_dry' "$FX/tokops" && [ "$(cat "$FX/pd.after")" = gone ] \
   && pass "  a login that wrote P, then failed: one logout of P (logged in from the attempt on), D removed" || fail "  login wrote, then failed: rc=$r logouts $(grep -c '^npm logout' "$FX/calls") [$(tr '\n' ' ' < "$FX/tokops")] D $(cat "$FX/pd.after")"
+# r19a F5 (PLAN-ship.md REV 12d rule 38): a login that fails and writes nothing: neither stdout nor the next
+# file says ship logged in or that its session is ended. Control: the login that writes P, then fails: its
+# logout, and stdout says both
+: > "$FX/loginfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/loginfail"
+a_=$(cat "$FX/o" "$OUTR/v0.1.0.ship-next.txt" 2>/dev/null | grep -c -e 'logged in to npm in this run' -e 'session is ended')
+: > "$FX/loginfailw"; : > "$FX/tokops"; rm -rf "${OUTR:?}"; ship; r2_=$?; rm -f "$FX/loginfailw"
+[ $r = 1 ] && [ "$a_" = 0 ] && grep -q 'the login to npm failed' "$FX/o" && [ $r2_ = 1 ] && grep -q 'logged in to npm in this run' "$FX/o" && grep -q "ship's npm session is ended" "$FX/o" \
+  && grep -q '^DELETE token=npm_dry' "$FX/tokops" \
+  && pass "r19a F5: a login that failed and wrote nothing claims no login and no ended session; control: one that wrote P says both" \
+  || fail "r19a F5: rc=$r claims $a_; control rc=$r2_ [$(tr '\n' ' ' < "$FX/tokops")] $(grep -m1 -e 'logged in to npm' -e 'session is ended' "$FX/o" | cut -c1-160)"
 : > "$FX/whoamibad2"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/whoamibad2"
 [ $r = 1 ] && grep -q 'npm whoami failed after the login' "$FX/o" && nopub && pass "whoami failing after the login: stopped, nothing public" || fail "whoami after login: rc=$r $(lastline)"
 cat > "$FX/onbuild" <<EOF

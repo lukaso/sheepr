@@ -237,6 +237,13 @@ mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?
   && pass "r19a F1: publish-npm ends an earlier P: stdout says so; the next file's line now says it is ended, its steps stay" \
   || fail "r19a F1 (publish-npm): rc=$r [$(head -1 "$FX/tokops")] $(grep -m1 'earlier npm session' "$FX/o" | cut -c1-120); file [$(tr '\n' '|' < "$FX/out/v0.1.0.ship-next.txt" | cut -c1-240)]"
 rm -f "${FX:?}/out/v0.1.0.ship-next.txt"; rm -rf "${PN:?}"
+# r19a F5 (REV 12d rule 38): publish-npm's login fails and writes nothing: no text says its session is
+# ended, and no logout runs. Control: rules 1 and 5's row above (a full run says it is ended)
+: > "$FX/loginfail"; mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?; rm -f "${FX:?}/loginfail"
+[ $r = 1 ] && ! grep -q "session is ended" "$FX/o" && ! grep -q '^npm logout' "$FX/calls" && [ ! -s "$FX/tokops" ] \
+  && pass "r19a F5: publish-npm's login failed and wrote nothing: no logout, no text says its session is ended" \
+  || fail "r19a F5 (publish-npm): rc=$r logouts $(grep -c '^npm logout' "$FX/calls") [$(tr '\n' ' ' < "$FX/tokops")] $(grep -m1 'session is ended' "$FX/o" | cut -c1-160)"
+rm -rf "${PN:?}"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \

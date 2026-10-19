@@ -1611,7 +1611,10 @@ npm_lock() {
 npm_end() {
   if [ "${pnin:-no}" = yes ]; then
     pnin=no
-    if npm_out "$1"; then [ "$npm_try" != yes ] || echo "release: publish-npm's npm session is ended (its own file removed)"   # (a stop before the login: no session; r18a F6)
+    # (a session only once npm's login ran and P holds a token line: a stop before the login (r18a F6), or a
+    # login that failed and wrote nothing (REV 12d rule 38; r19a F5), ended none)
+    pt_=no; [ "$npm_try" != yes ] || ! ptok "${out%/}/.$tag.npm/npmrc" || pt_=yes
+    if npm_out "$1"; then [ "$pt_" != yes ] || echo "release: publish-npm's npm session is ended (its own file removed)"
     else npm_endrc=1; echo "release: $(redact "$(npm_left "$(errcut "$1/out.err" 200)")")" >&2; fi
   fi
   [ "${pnlock:-no}" != yes ] || { pnlock=no; rm -rf "${out:?}/.ship.lock"; }
@@ -1733,8 +1736,9 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # ends (REV 12 rule 4: no npm command), in the file before the logout runs: a KILL during the logout
   # leaves it in place. A release done has a file then too, that line alone
   txt="" keep=no lo="" pl=""
-  # (only once npm's login was attempted: a stop before it, the noowners one, logged nothing in; r18a F6)
-  if [ "$logged_in" = yes ] && [ "$npm_try" = yes ]; then
+  # (only once npm's login was attempted, and P holds a token line: a stop before it, the noowners one,
+  # logged nothing in (r18a F6), nor did a login that failed and wrote nothing (REV 12d rule 38; r19a F5))
+  if [ "$logged_in" = yes ] && [ "$npm_try" = yes ] && ptok "${out%/}/.$tag.npm/npmrc"; then
     pl="ship logged in to npm in this run, with its own file (${out%/}/.$tag.npm/npmrc), and logs out as it ends. If that logout fails, the session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run of $tag with this out dir logs out of it first."
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then
