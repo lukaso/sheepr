@@ -553,7 +553,8 @@ rtfail() {
 # accepted (REV 11b rule 16): a rerun stops here again until Gatekeeper accepts it; what to check, each
 # on a line of its own (the second unpacks ARCHIVE into a new temp dir, asks Gatekeeper about PATH
 # there, ship's own copy being gone by then, and removes that dir: r16b F5); and the signing certificate's remedy (REV 12a): a rebuild
-# only while ship knows nothing of the tag is public (under ship, before its push); after the push,
+# only while ship knows nothing of the tag is public (under ship, before its push: its own phase, set by
+# ship_run, never read from the record, which a full disk or a mode can hide: REV 12b rule 21); after the push,
 # and in a standalone verify, npm-check or publish, only once a runnable ls-remote line shows the tag
 # is not pushed (a pushed tag is never rebuilt: a new version). Never "expired": an expired
 # certificate does not make Gatekeeper reject a notarized, timestamped build
@@ -562,7 +563,7 @@ gkhint() {
 A rerun stops here again until Gatekeeper accepts the bundle. See what Gatekeeper says on this Mac with these (the second unpacks $(basename "$1") into a new temp dir, asks Gatekeeper about its bundle, and removes that dir):
   spctl --status
   d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf $(dq "$1") -C \"\$d\" && spctl -a -vv -t exec \"\$d/$2\"; rm -rf \"\${d:?}\""
-  if [ "$shipping" = yes ] && [ -n "$shipprog" ] && ! grep -qx 'start push' "$shipprog" 2>/dev/null; then
+  if [ "$shipping" = yes ] && case ${phase:-} in preflight|build|checks|npm-check|npm-login) true ;; *) false ;; esac; then
     printf '%s' "
 When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one."
   else
@@ -1187,8 +1188,8 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   mkdir -p "$out" || die "cannot make $out"
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   drydir "$st"
-  shipcause=$st/cause shipcls=$st/class; stopclass fix
-  locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt=""
+  shipcause=$st/cause shipcls=$st/class; stopclass fix || die "cannot write $shipcls"
+  locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt="" progok=no
   # ship's own stdout and stderr, kept on fds 8 and 9 before the handler is set and before the first
   # call with redirections: bash 3.2 runs a trap, and so this handler, with the redirections of the
   # function call it interrupted still on (a signal during `tool ... > "$st/push"` sent the whole stop
@@ -1208,6 +1209,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   shipprog=$out/.$tag.ship-progress
   rm -f "$shipprog.tmp" 2>/dev/null
   fput "$shipprog" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || die "cannot write $shipprog"
+  progok=yes   # (ship_stoptext: from here a record it cannot read is never "nothing started")
   # the Mac stays awake until ship ends (-w: caffeinate ends with this process)
   shipcall "$CAFFEINATE" -i -w $$ > /dev/null 2>&1 &
   # A1 (on). The checks in the operator's checkout (HEAD the tag's commit, the tree clean), and this
@@ -1721,17 +1723,41 @@ nfsaid() {
 # ship_stoptext: what to run after a stop, from this run's progress file (the last phase it started
 # or finished), the stop's class and its cause; no network read. Every command names --out
 ship_stoptext() {
-  last=$(grep -v '^run ' "$shipprog" 2>/dev/null | tail -1)
+  rec_=$(cat "$shipprog" 2>/dev/null)
+  last=$(printf '%s\n' "$rec_" | grep -v '^run ' | tail -1)
   cls=$(cat "$shipcls" 2>/dev/null) cause=$(cat "$shipcause" 2>/dev/null)
   [ -n "$cause" ] || cause="a signal, or a step that named no cause"
   # each runnable line names the operator's checkout by its absolute path (oroot: root is the frozen
   # tree by now), so it runs as printed from any directory (a new terminal window opens in ~)
   run="  sh $(dq "$oroot/scripts/release.sh")" o="--out $(dq "$out") $tag"
   mainp=""; for p_ in ${SR_NPM_PKGS:-}; do mainp=$p_; done
-  up=$(sed -n 's/^start npm-platform //p' "$shipprog" 2>/dev/null); grep -qx 'start npm-main' "$shipprog" 2>/dev/null && up="$up $mainp"
+  up=$(printf '%s\n' "$rec_" | sed -n 's/^start npm-platform //p'); printf '%s\n' "$rec_" | grep -qx 'start npm-main' && up="$up $mainp"
   echo "release: ship $tag stopped at $phase: $cause"
+  # a record ship wrote and cannot read back (no run line: removed, cut short, a mode): it cannot tell how
+  # far this run got, so the route that holds after any step, never "nothing is public" (REV 12b rule 21)
+  case $rec_ in
+    "run "*) ;;
+    *) if [ "${progok:-no}" = yes ]; then
+         echo "ship cannot read its own record ($shipprog): it cannot tell how far this run got. Check whether $tag is on GitHub:"
+         echo "  git -C $(dq "$oroot") ls-remote origin refs/tags/$tag"
+         echo "If that prints nothing: run ship again. If it prints a line, check GitHub's releases for $tag:"
+         echo "  a draft is not public: delete it on GitHub, then run:"; echo "  $run publish $o"
+         echo "  a public release: run:"; echo "  $run publish-cask $o"
+         echo "  neither: run:"; echo "  $run publish $o"
+         echo "Then:"; echo "$run publish-npm $o"
+         echo "publish-npm skips a version npm already shows with this file."
+         return 0
+       fi ;;
+  esac
   case $last in
     '')
+      # no readable class (its write did not land): nothing is said about what is public, and no
+      # remedy that a class decides (REV 12b rule 21)
+      if [ -z "$cls" ]; then
+        echo "ship cannot read this stop's class ($shipcls): it says nothing here about what is public."
+        echo "When the cause above is fixed, run ship again: it refuses when anything of $tag is public."
+        return 0
+      fi
       case $cls in
         public)
           echo "ship does not continue a release of which anything is public."

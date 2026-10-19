@@ -1121,6 +1121,45 @@ printf 'v0.0.9 false false\nv0.1.0 true false\n' > "$FX/rels"
 EOF
 rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/onbuild"; echo "v0.0.9 false false" > "$FX/rels"
 [ $r = 1 ] && grep -q 'GitHub has a release or a draft v0.1.0' "$FX/o" && nopub && pass "a draft of the version made during the build: C5's A4 refuses, before the push" || fail "public in the build: rc=$r $(lastline)"
+# r17b F4 (REV 12b rule 21): the control's text, read from the class: "ship does not continue"
+NF=$OUTR/v0.1.0.ship-next.txt   # (the next file, as the exit handler's rows below name it)
+grep -qx 'ship does not continue a release of which anything is public.' "$NF" && ! grep -qx 'Nothing is public.' "$NF" \
+  && pass "  control (REV 12b rule 21): with its class readable, C5's A4 refusal says ship does not continue" || fail "  control, C5's class: $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-240)"
+# r17b F4 (REV 12b rule 21): the class and the cause cannot be written (each a directory now, made during
+# the build), then C5's A4 finds a draft of the version: the stop text says nothing about what is public
+# (no "Nothing is public", no remedy a class decides)
+cat > "$FX/onbuild" <<EOF
+printf 'v0.0.9 false false\nv0.1.0 true false\n' > "$FX/rels"
+st_=\$(grep '/sr-ship\.' "$FX/made" | tail -1); rm -f "\$st_/class" "\$st_/cause"; mkdir "\$st_/class" "\$st_/cause"
+EOF
+rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/onbuild"; echo "v0.0.9 false false" > "$FX/rels"
+[ $r = 1 ] && grep -q 'GitHub has a release or a draft v0.1.0' "$FX/o" && nopub && grep -q "ship cannot read this stop's class" "$NF" && ! grep -qi 'nothing is public' "$NF" \
+  && ! grep -qi 'move .* aside' "$NF" \
+  && pass "r17b F4: no readable class (and no cause) at C5's A4 refusal: nothing said about what is public" \
+  || fail "r17b F4, no class: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-300)"
+# r17b F4 (REV 12b rule 21): ship's record made unreadable right after the push (a mode, as a full disk or
+# a removal can hide it): the next record write stops ship (C6), and its stop text, which cannot tell how
+# far the run got, gives the route that holds after any step: the ls-remote check, GitHub's three cases,
+# then publish-npm; never "nothing is public". Control: a C6 upload refused, the record readable: the
+# platform text
+printf 'chmod 000 "%s/.v0.1.0.ship-progress"\n' "$OUTR" > "$FX/afterpush"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/afterpush"; chmod 644 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
+[ $r = 1 ] && grep -q 'ship cannot read its own record' "$NF" && grep -qF 'ls-remote origin refs/tags/v0.1.0' "$NF" && grep -q 'publish-cask --out' "$NF" && grep -q 'publish-npm --out' "$NF" \
+  && ! grep -qi 'nothing is public' "$NF" && ! grep -qi 'nothing was public' "$NF" \
+  && pass "r17b F4: the record unreadable after the push: the route that holds after any step, never 'nothing is public'" \
+  || fail "r17b F4, the record: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-300)"
+: > "$FX/pubfail.sheepr-linux-x64"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/pubfail.sheepr-linux-x64"
+[ $r = 1 ] && grep -q 'is pushed, and npm may hold a part of it; GitHub has no release of it' "$NF" && ! grep -q 'ship cannot read its own record' "$NF" \
+  && pass "  control: the record readable, a C6 refusal: the platform text" || fail "  control, the record: rc=$r $(tr '\n' '|' < "$NF" 2>/dev/null | cut -c1-200)"
+rm -rf "${OUTR:?}"
+# r17b F4 (REV 12b rule 21): gkhint (release.sh's own) reads ship's phase, never the record: with the
+# record missing, after the push (phase github) the ls-remote route and no rebuild; control: before
+# the push (phase checks), the rebuild
+gk1_=$(shipping=yes tag=v0.1.0 root=$FX/frozen oroot=$REPO shipprog=$FX/no-such-record phase=github; eval "$(sed -n '/^dq() {/,/^}/p' "$RS")"; eval "$(sed -n '/^gkhint() {/,/^}/p' "$RS")"; gkhint /x/a.tar.gz Sheepr.app)
+gk2_=$(shipping=yes tag=v0.1.0 root=$FX/frozen oroot=$REPO shipprog=$FX/no-such-record phase=checks; eval "$(sed -n '/^dq() {/,/^}/p' "$RS")"; eval "$(sed -n '/^gkhint() {/,/^}/p' "$RS")"; gkhint /x/a.tar.gz Sheepr.app)
+printf '%s\n' "$gk1_" | grep -qF "ls-remote origin refs/tags/v0.1.0" && ! printf '%s\n' "$gk1_" | grep -qF 'move the build aside and rebuild it with a valid one.' \
+  && printf '%s\n' "$gk2_" | grep -qF 'move the build aside and rebuild it with a valid one.' && ! printf '%s\n' "$gk2_" | grep -qF 'ls-remote origin' \
+  && pass "r17b F4: gkhint with the record missing: after the push the ls-remote route, no rebuild; control: before the push the rebuild" \
+  || fail "r17b F4, gkhint: github: $(printf '%s' "$gk1_" | tail -2 | tr '\n' '|' | cut -c1-160); checks: $(printf '%s' "$gk2_" | tail -1 | cut -c1-120)"
 cat > "$FX/onbuild" <<EOF
 cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 /usr/bin/git push -q --no-follow-tags "file://$FX/origin.git" "$T:refs/tags/v0.1.0"
 EOF
