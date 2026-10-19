@@ -55,6 +55,16 @@ set -u
 # one collation and one message language for every sort and comparison (the operator's locale sorts
 # "SHA256SUMS" after "install.sh"; measured)
 LC_ALL=C; export LC_ALL
+# echo and printf: the builtin, and when its write fails, the same write again to /dev/null (PLAN-ship.md
+# REV 12c rule 30; r18b F1). A builtin write that fails (a full disk, a read-only or hung-up stdout) leaves
+# its bytes in bash 3.2's buffer, and the shell's next $( ) gets them first, or its next builtin write sends
+# them on (measured: notes/builder/r18/f1probe.sh): a check would read a stale line as a tool's answer. The
+# write to /dev/null empties that buffer, and its status is the call's: a lost line of text never stops a
+# step (a function's last line is often one), an argument the builtin refuses still does. Every write of
+# this script, its subshells and its release.sh children (the build, npm-check) goes through these two; no
+# other line names the builtin (the census row in t_ship_dry)
+echo() { command echo "$@" || command echo "$@" > /dev/null 2>&1; }
+printf() { command printf "$@" || command printf "$@" > /dev/null 2>&1; }
 DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, __publish-npm-dry); never inherited (their EXIT traps remove it)
 # release.sh's own, never inherited and never exported (unset first: a value from the environment
 # would stay exported): shipping (yes only under ship: publish_exec asks no second confirmation and

@@ -482,7 +482,12 @@ $a" ;; esac; done
       | { cat > "$FX/o"; tnow > "$FX/t.eof"; }
     cat "$FX/o.err" >> "$FX/o"; r_=$(cat "$FX/pipe.rc")
   elif [ -n "${CLOSEFD:-}" ]; then   # fd CLOSEFD closed at the start (the other to $FX/o); SHX: the shell
-    if [ "$CLOSEFD" = 1 ]; then
+    if [ "$CLOSEFD" = ro ]; then   # (ro: fd 1 open read-only, so every write to it fails, EBADF; stderr to $FX/o)
+      : > "$FX/ro"
+      (cd "$REPO" && IFS='
+'; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        $(cat "$FX/envs") ${SHX:-sh} scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") 1< "$FX/ro" 2> "$FX/o"; r_=$?
+    elif [ "$CLOSEFD" = 1 ]; then
       (cd "$REPO" && IFS='
 '; no_osascript "$@" env -i PATH="$B:/usr/bin:/bin" HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         $(cat "$FX/envs") ${SHX:-sh} scripts/release.sh __ship-dry --out "${OUT:-$OUTR}" "${TAG:-v0.1.0}") >&- 2> "$FX/o"; r_=$?
@@ -1554,6 +1559,41 @@ wp_=$(python3 -I "$FX/wcensus.py" "$FX/rs-planted.sh")
   && pass "r16b F2: no builtin printf or echo in release.sh or scripts/lib/*.sh writes to a file (all through /usr/bin/printf); control: a planted one is caught" \
   || fail "r16b F2, the builtin writes: $(printf '%s' "$wc_" | tr '\n' '|' | cut -c1-400); planted: $(printf '%s' "$wp_" | tail -1)"
 rm -f "${FX:?}/wcensus.py" "${FX:?}/rs-planted.sh"
+# r18b F1 (REV 12c rule 30): a failed builtin write (a full disk, a read-only or hung-up stdout) leaves its
+# bytes in bash 3.2's buffer, and the shell's next $( ) gets them first: release.sh's echo and printf are
+# the two wrappers (the builtin through `command`, and when its write fails, the same write to /dev/null,
+# which empties the buffer and gives the call's status), the first lines that name either; no other line
+# names the builtin. Controls: a copy with a planted
+# `command echo`, and one without the wrappers: each is caught
+wwrap() { # FILE: ok, or what is wrong
+  grep -v '^ *#' "$1" | grep -E '(^|[^A-Za-z0-9_./-])(echo|printf)([^A-Za-z0-9_.-]|$)' | head -2 > "$FX/ww.first"
+  printf '%s\n' 'echo() { command echo "$@" || command echo "$@" > /dev/null 2>&1; }' \
+    'printf() { command printf "$@" || command printf "$@" > /dev/null 2>&1; }' > "$FX/ww.want"
+  cmp -s "$FX/ww.first" "$FX/ww.want" || { echo "the first lines that name echo or printf are not the wrappers: $(tr '\n' '|' < "$FX/ww.first" | cut -c1-200)"; return 0; }
+  o_=$(grep -v '^ *#' "$1" | grep -E 'command +(echo|printf)|builtin ' | grep -vxF -f "$FX/ww.want" | head -1)
+  [ -z "$o_" ] || { echo "the builtin named outside the wrappers: $o_"; return 0; }
+  echo ok
+}
+awk '{ print } /^stopclass\(\) \{/ && !d { print "  command echo x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/ww-planted.sh"
+grep -v -e '^echo() {' -e '^printf() {' "$SR_ROOT/scripts/release.sh" > "$FX/ww-nowrap.sh"
+ww_=$(wwrap "$SR_ROOT/scripts/release.sh"); wp_=$(wwrap "$FX/ww-planted.sh"); wn_=$(wwrap "$FX/ww-nowrap.sh")
+[ "$ww_" = ok ] && [ "$wp_" != ok ] && [ "$wn_" != ok ] \
+  && pass "r18b F1: release.sh's echo and printf are the draining wrappers, the first lines that name either; no other line names the builtin; controls: a planted one, and none, each caught" \
+  || fail "r18b F1, the wrappers: '$ww_'; planted: '$wp_'; none: '$wn_'"
+rm -f "${FX:?}/ww.first" "${FX:?}/ww.want" "${FX:?}/ww-planted.sh" "${FX:?}/ww-nowrap.sh"
+# r18b F1: ship's stdout open read-only (every builtin write to it fails, EBADF, as on a full disk): a fresh
+# run, and a run on a finished build, complete as with a writable stdout: exit 0, the release's
+# notifications, no next file, its lock, tree and temp dirs gone, no "Move". (Before: a failed write's
+# bytes came first in the next $( ) that a check reads: a good build stopped as content, "Move aside",
+# and false causes at A1 and A2; r18b walk-leak2h L2b, probe/ro1.out)
+for k_ in fresh built; do
+  rm -rf "${OUTR:?}"; [ $k_ = fresh ] || mkbuild "$OUTR/v0.1.0" v0.1.0 "$C"
+  CLOSEFD=ro; ship; r=$?; CLOSEFD=
+  [ $r = 0 ] && [ "$(nots)" = "npm-login npm-approve npm-approve-again done " ] && [ ! -e "$NF" ] && gone && ! grep -q 'Move' "$FX/o" \
+    && pass "r18b F1: fd 1 read-only, a $k_ run: done (0), as with a writable stdout" \
+    || fail "r18b F1: fd 1 read-only, a $k_ run: rc=$r notifications [$(nots)] next file $( [ -e "$NF" ] && head -3 "$NF" | tr '\n' '|' | cut -c1-300); stderr: $(grep -v -e '(dry)' -e 'a temp HOME' "$FX/o" | head -3 | tr '\n' '|' | cut -c1-300)"
+done
+rm -f "${FX:?}/ro"
 # r17b F1, F2 (REV 12b rule 20): every redirection to a file in the release scripts (release.sh,
 # scripts/lib/*.sh, bundle.sh, release-plan.sh; a compound command's too: `done >`, `} >`) is a write that
 # proves its bytes (fput, fout, read back on its line) or one kept with its reason; each reason is used.
