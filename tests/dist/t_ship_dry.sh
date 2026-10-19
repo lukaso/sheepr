@@ -2006,6 +2006,22 @@ for k_ in ok E401 ENEEDAUTH passed live; do
 done
 [ -z "$b2_" ] && pass "REV 12 rule 2: an earlier P is logged out of before the login: exit 0, E401, ENEEDAUTH, or a failure past its end time: P removed, the run completes; a failure before its end time: a stop (fix), npm's words, the end time, run ship again, P kept" \
   || fail "REV 12 rule 2:$b2_"
+# r18a F2 (PLAN-ship.md REV 12c rule 33): --out under a directory with an inheritable ACL that lets every
+# account read (chmod +a ... file_inherit,directory_inherit; Finder's "apply to enclosed items" makes one):
+# D (ship's mkdir -m 700) and P (npm's login) inherited it, and macOS checks an ACL's allow before the
+# mode, so every account could read the session's token. Wanted: at the logout, neither D nor P holds an
+# ACL entry (ls -le's numbered lines), and the release completes. Control: the same parent with no ACL
+for k_ in plain acl; do
+  rm -rf "${FX:?}/ap"; mkdir -p "$FX/ap" || exit 3
+  [ $k_ = plain ] || /bin/chmod +a "group:everyone allow list,search,readattr,readextattr,readsecurity,read,file_inherit,directory_inherit" "$FX/ap" || exit 3
+  OD=$FX/ap/out; AHX=$(printf 'sheepr-macos-universal.tar.gz %s\n' "$OD/v0.1.0" | shasum -a 256 | cut -d' ' -f1)
+  printf '/bin/ls -led "%s/.v0.1.0.npm" > "%s/acl.d"; /bin/ls -le "%s/.v0.1.0.npm/npmrc" > "%s/acl.p"\n' "$OD" "$FX" "$OD" "$FX" > "$FX/onlogout"
+  rm -f "$FX/acl.d" "$FX/acl.p"; : > "$FX/tokops"; OUT=$OD; VERIFIED=$AHX; ship; r=$?; OUT=; VERIFIED=; rm -f "${FX:?}/onlogout"
+  [ $r = 0 ] && [ -s "$FX/acl.d" ] && [ -s "$FX/acl.p" ] && ! grep -q '^ *[0-9][0-9]*: ' "$FX/acl.d" "$FX/acl.p" && [ "$(tr '\n' ' ' < "$FX/tokops")" = "LOGIN DELETE token=npm_dry " ] \
+    && pass "r18a F2: --out under a parent $( [ $k_ = acl ] && echo 'with an inheritable read-for-everyone ACL' || echo 'with no ACL (control)'): D and P hold no ACL entry at the logout; done" \
+    || fail "r18a F2 ($k_): rc=$r D: [$(tr '\n' '|' < "$FX/acl.d" 2>/dev/null | sed "s|$FX|FX|g" | cut -c1-200)] P: [$(tr '\n' '|' < "$FX/acl.p" 2>/dev/null | sed "s|$FX|FX|g" | cut -c1-200)] tokops [$(tr '\n' ' ' < "$FX/tokops")]"
+done
+rm -rf "${FX:?}/ap"; rm -f "${FX:?}/acl.d" "${FX:?}/acl.p"
 # r17a P4-c (REV 12b rule 29): an earlier run's end time left in D (no P): gone when npm's login starts,
 # and D is mode 0700 then (r17a P4-g: MMODE); the release completes. (A KILL after the login, before the
 # new end was written, let the next run take that live session as ended by itself)

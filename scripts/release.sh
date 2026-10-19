@@ -1513,6 +1513,13 @@ npm_pre() {
 npm_login() {
   d_=${out%/}/.$tag.npm   # (npm_pre ran first: D is absent or a directory, not a link)
   { [ -d "$d_" ] || mkdir -m 700 "$d_"; } 2>/dev/null && chmod 700 "$d_" 2>/dev/null || die "cannot make $d_ (ship's own npm directory); $3"
+  # no ACL entry on D (PLAN-ship.md REV 12c rule 33; r18a F2): an inheritable entry above the out dir (chmod +a
+  # ... file_inherit,directory_inherit, or Finder's "apply to enclosed items") is copied onto D and onto the P
+  # npm's login makes in it, and macOS checks an ACL's allow before the mode, so its 0700 and P's 0600 would
+  # protect nothing. chmod -N removes them; ls -led must then list none (its numbered lines; the mode's +
+  # does not show beside an @)
+  /bin/chmod -N "$d_" 2>/dev/null; a_=$(/bin/ls -led "$d_" 2>/dev/null) && [ -n "$a_" ] && ! printf '%s\n' "$a_" | grep -q '^ *[0-9][0-9]*: ' \
+    || { stopclass fix; die "cannot remove the ACL entries of $d_ (ship's own npm directory: an entry there could let another account read ship's npm session); $3"; }
   # D's volume must keep file ownership (REV 12b rule 28; r17a F4): on one mounted noowners (an external
   # drive) every account reads D as its own, so its mode 0700 protects nothing. (The dry entry's seam:
   # SR_SHIP_DRY_NOOWNERS=yes answers that it ignores it; the check itself runs in every other dry run)
