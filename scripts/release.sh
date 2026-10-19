@@ -1498,8 +1498,8 @@ npm_dok() {
 }
 # npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): D's and P's shapes (npm_dok); when P exists (an
 # earlier run's: a KILL, a logout that failed) and holds a token line (ptok; else it is removed), the
-# logout of P first. Exit 0, E401 or ENEEDAUTH: P removed. Any other
-# failure: P removed when its end time has passed (that session ended by itself); else a stop (fix)
+# logout of P first. Exit 0, E401 or ENEEDAUTH: that session is ended (npm_preend). Any other
+# failure: ended too when its end time has passed (it ended by itself); else a stop (fix)
 # with npm's words, the end time, and "run WHO again". DIR holds npm's stderr
 npm_pre() {
   npm_dok "$2" "$3"
@@ -1508,10 +1508,30 @@ npm_pre() {
   ptok "$pp_" || { rm -f "$pp_"; return 0; }   # (no token line: nothing of ship's to end, and a logout would end another layer's)
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/pre.err"; r_=$?
   c_=$(npmcode "$1/pre.err")
-  if [ $r_ = 0 ] || [ "$c_" = E401 ] || [ "$c_" = ENEEDAUTH ]; then rm -f "$pp_"; return 0; fi
+  if [ $r_ = 0 ] || [ "$c_" = E401 ] || [ "$c_" = ENEEDAUTH ]; then npm_preend; return 0; fi
   e_=$(cat "${out%/}/.$tag.npm/end" 2>/dev/null) n_=$(date +%s 2>/dev/null)
-  case "$e_:$n_" in *[!0-9:]*|:*|*:) ;; *) [ "$n_" -lt "$e_" ] || { rm -f "$pp_"; return 0; } ;; esac
+  case "$e_:$n_" in *[!0-9:]*|:*|*:) ;; *) [ "$n_" -lt "$e_" ] || { npm_preend; return 0; } ;; esac
   stopclass fix; die "an earlier session of ship's own npm file ($pp_) could not be ended (the logout's answer: $(errcut "$1/pre.err" 200)); $3. That session ends by itself$(t_=$(ship_clock "$e_"); [ -z "$t_" ] || printf ' at %s' "$t_"); run $2 again then, or once npm answers"
+}
+# npm_preend: npm_pre found an earlier session of P ended (PLAN-ship.md REV 12d rule 36; r19a F1): D goes
+# whole (P and its end time), and stdout says so at once. An earlier run's next file (the lock is held: one
+# writer) said that session is left, and a run that stops now keeps that file and prints it: each line that
+# said so (npm_left's text, line 2's pl, a done release's "ship's npm session is left:") now says it is
+# ended (after a done line, the lines below it go: that line says it). A file that names no session stays
+# as it is; a rewrite that fails says so
+npm_preend() {
+  d_=${out%/}/.$tag.npm; rm -rf "${d_:?}" 2>/dev/null
+  echo "release: an earlier npm session of ship's own file ($d_/npmrc) is ended."
+  nf=$out/$tag.ship-next.txt
+  [ -f "$nf" ] && [ ! -L "$nf" ] || return 0
+  t_=$(SR_L="; ship's npm session is left:" SR_D="; ship's npm session is ended." SR_A="ship's npm session (its own file, " \
+    SR_B="ship logged in to npm in this run, with its own file (" SR_E="ship's npm session (its own file, $d_/npmrc) is ended." /usr/bin/awk '
+    BEGIN { L = ENVIRON["SR_L"]; A = ENVIRON["SR_A"]; B = ENVIRON["SR_B"] }
+    NR == 1 && length($0) >= length(L) && substr($0, length($0) - length(L) + 1) == L { print substr($0, 1, length($0) - length(L)) ENVIRON["SR_D"]; dn = 1; ch = 1; next }
+    index($0, A) == 1 || index($0, B) == 1 { ch = 1; if (!dn) print ENVIRON["SR_E"]; next }
+    { print }
+    END { exit ch ? 0 : 3 }' "$nf") || return 0
+  nfput "$t_" || echo "release: (the next file, $nf, could not be rewritten: it still says that session is left)"
 }
 # npm_login DIR WHO TAIL: ship's own login into P (REV 12 rule 3): D made (0700; never a link), npm's
 # login (the operator's browser), the end time recorded in D; whoami must name SR_NPM_USER, else the

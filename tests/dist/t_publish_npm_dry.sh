@@ -224,6 +224,19 @@ mkdir -p "$PN" && chmod 700 "$PN" && echo '//registry.npmjs.org/:_authToken=npm_
 mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?
 [ $r = 0 ] && [ "$(head -1 "$FX/tokops")" = "DELETE npm_earlier $PN/npmrc" ] && [ "$(grep '^npm ' "$FX/calls" | head -1)" = "npm logout --registry=https://registry.npmjs.org/ --scope=$PNU" ] && [ ! -e "$PN" ] \
   && pass "  REV 12 rule 2: an earlier P: logged out of first (its token ended), then publish-npm's own login" || fail "  rule 2 (publish-npm): rc=$r [$(head -1 "$FX/tokops")] '$(grep '^npm ' "$FX/calls" | head -1)'"
+# r19a F1 (REV 12d rule 36): publish-npm ends an earlier P while ship's next file says that session is left
+# (a stop at npm-main whose logout failed: line 2): stdout says the session is ended, and that line of the
+# file now says so; the file's other lines (the steps) stay. Control: rule 2's row above (no next file)
+mkdir -p "$PN" && chmod 700 "$PN" && echo '//registry.npmjs.org/:_authToken=npm_earlier' > "$PN/npmrc"
+printf '%s\n' 'release: ship v0.1.0 stopped at npm-main.' "ship's npm session (its own file, $PN/npmrc) could not be ended (the logout's answer: npm error code ETIMEDOUT). It ends by itself at 10:00 (2 hours after its login). The next ship or publish-npm run of v0.1.0 with this out dir logs out of it first; a run of another version does not. There is nothing to run by hand" \
+  'release: run these, in order:' "  sh 'x/scripts/release.sh' publish-npm --out '$FX/out' v0.1.0" > "$FX/out/v0.1.0.ship-next.txt"
+mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?
+[ $r = 0 ] && [ "$(head -1 "$FX/tokops")" = "DELETE npm_earlier $PN/npmrc" ] && grep -qF "release: an earlier npm session of ship's own file ($PN/npmrc) is ended." "$FX/o" \
+  && ! grep -q -e 'could not be ended' -e 'logs out of it first' "$FX/out/v0.1.0.ship-next.txt" && grep -qxF "ship's npm session (its own file, $PN/npmrc) is ended." "$FX/out/v0.1.0.ship-next.txt" \
+  && [ "$(sed -n 1p "$FX/out/v0.1.0.ship-next.txt")" = 'release: ship v0.1.0 stopped at npm-main.' ] && grep -qF "publish-npm --out '$FX/out' v0.1.0" "$FX/out/v0.1.0.ship-next.txt" \
+  && pass "r19a F1: publish-npm ends an earlier P: stdout says so; the next file's line now says it is ended, its steps stay" \
+  || fail "r19a F1 (publish-npm): rc=$r [$(head -1 "$FX/tokops")] $(grep -m1 'earlier npm session' "$FX/o" | cut -c1-120); file [$(tr '\n' '|' < "$FX/out/v0.1.0.ship-next.txt" | cut -c1-240)]"
+rm -f "${FX:?}/out/v0.1.0.ship-next.txt"; rm -rf "${PN:?}"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \

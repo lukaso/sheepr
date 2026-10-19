@@ -2223,6 +2223,31 @@ ship; r=$?; chmod 644 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
   && pass "r18b F4: an earlier run's record this run cannot replace: no route of it; this run made nothing public" \
   || fail "r18b F4: rc=$r $(grep -v -e '(dry)' -e 'a temp HOME' "$FX/o" | head -6 | tr '\n' '|' | cut -c1-400)"
 rm -rf "${OUTR:?}"
+# r19a F1 (PLAN-ship.md REV 12d rule 36): a done ship whose end logout fails (its next file: "ship's npm
+# session is left:", then that it could not be ended and that the next run logs out of it first), then ship
+# again (v0.1.0 public): its first npm call is the logout of P, stdout says that session is ended, D is gone,
+# and neither stdout nor the next file then says the session is left, could not be ended, or that a next run
+# logs out of it. Control: the second run's logout fails too, before the end time: the stop says the
+# earlier session could not be ended, P and the earlier file stay, and nothing says ended
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; r12keep
+n1_=$(grep -c -e 'could not be ended' -e 'session is left' "$NF" 2>/dev/null)
+: > "$FX/tokops"; KEEP=1; ship; r2_=$?; KEEP=; r12keep
+f2_=$(grep '^npm ' "$FX/calls" 2>/dev/null | head -1)
+st_=$(grep -h -e 'could not be ended' -e 'session is left' -e 'logs out of it first' "$FX/o" "$NF" 2>/dev/null | head -2 | tr '\n' '|' | cut -c1-240)
+[ $r1_ = 1 ] && [ "$n1_" -ge 1 ] && [ $r2_ = 1 ] && case $f2_ in "npm logout "*) true ;; *) false ;; esac \
+  && [ "$(head -1 "$FX/tokops")" = "DELETE token=npm_dry" ] && [ ! -e "$PD" ] \
+  && grep -qF "release: an earlier npm session of ship's own file ($PP) is ended." "$FX/o" && [ -z "$st_" ] \
+  && grep -qx "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is ended." "$NF" \
+  && pass "r19a F1: a ship after a done ship whose logout failed: its logout ends that session, stdout says so, D gone; no text says it is left" \
+  || fail "r19a F1: first rc=$r1_ (file lines $n1_); next rc=$r2_ first npm call [$(printf '%s' "$f2_" | cut -c1-60)] tokops [$(tr '\n' ' ' < "$FX/tokops")] D $( [ -e "$PD" ] && echo left || echo gone); stale [$st_]; file [$(head -2 "$NF" 2>/dev/null | tr '\n' '|' | cut -c1-200)]"
+world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; f1_=$(cksum < "$NF" 2>/dev/null)
+KEEP=1; ship; r2_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; r12keep
+[ $r1_ = 1 ] && [ $r2_ = 1 ] && grep -q "an earlier session of ship's own npm file ($PP) could not be ended" "$FX/o" && grep -q '_authToken=npm_dry' "$PP" \
+  && [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && ! grep -q 'is ended' "$FX/o" \
+  && pass "  control: that second logout fails too: a stop, P and the earlier next file kept as they were, nothing says ended" \
+  || fail "  control, the second logout fails: rc $r1_ $r2_ P $( [ -e "$PP" ] && echo kept || echo gone) file $( [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && echo same || echo changed); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
+world_reset; rm -rf "${OUTR:?}"
 # rule 4: no npm command is printed: no stop text, next file or stdout above, and no notification text,
 # holds "npm login", "npm logout" or "npm config" (release.sh's and notify.sh's own texts: no such words
 # outside comments)
