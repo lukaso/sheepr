@@ -2018,7 +2018,7 @@ for k_ in ok E401 ENEEDAUTH passed live; do
   rm -rf "${OUTR:?}"; : > "$FX/tokops"
   case $k_ in
     ok) pplant "$EL" 3600 ;;
-    E401) pplant "$EL" 3600; echo E401 > "$FX/logoutonce" ;;
+    E401) pplant '//registry.npmjs.org/:_authToken=npm_dead_earlier' 3600 ;;   # (a dead token: its logout and its whoami answer E401; REV 12e rule 42)
     ENEEDAUTH) pplant "$EL" 3600; echo ENEEDAUTH > "$FX/logoutonce" ;;   # (a P with no token line gets no logout: REV 12b rule 25)
     passed) pplant "$EL" -60; echo ETIMEDOUT > "$FX/logoutonce" ;;
     live) pplant "$EL" 3600; echo ETIMEDOUT > "$FX/logoutonce" ;;
@@ -2036,6 +2036,30 @@ for k_ in ok E401 ENEEDAUTH passed live; do
 done
 [ -z "$b2_" ] && pass "REV 12 rule 2: an earlier P is logged out of before the login: exit 0, E401, ENEEDAUTH, or a failure past its end time: P removed, the run completes; a failure before its end time: a stop (fix), npm's words, the end time, run ship again, P kept" \
   || fail "REV 12 rule 2:$b2_"
+# r20a F3 (PLAN-ship.md REV 12e rule 42): the start's logout of an earlier P answers E401 while that
+# session is live (npm gives E401 for any 401 to the logout's DELETE): P's whoami still answers, or fails
+# another way (ETIMEDOUT), so the logout failed, before the end time: a stop (fix) with npm's words and
+# what whoami answered, P kept, no login, nothing says ended. Control: a dead token (its logout and its
+# whoami answer E401), then A1 refuses the checkout: that session is ended, D gone whole, not only P
+# (r20a N4), and stdout says so
+b3_=""
+for k_ in answers timeout; do
+  rm -rf "${OUTR:?}"; pplant "$EL" 3600; echo E401 > "$FX/logoutonce"; [ $k_ = answers ] || : > "$FX/whoamibad2"
+  : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutonce" "${FX:?}/whoamibad2"; r12keep
+  lo1_=$(grep -n '^npm logout' "$FX/calls" | head -1 | cut -d: -f1); wh_=$(grep -n '^npm whoami' "$FX/calls" | head -1 | cut -d: -f1)
+  case $k_ in answers) w_='its whoami still answers' ;; *) w_='its whoami: npm error code ETIMEDOUT' ;; esac
+  [ $r = 1 ] && ! grep -q '^npm login' "$FX/calls" && [ -n "$lo1_" ] && [ -n "$wh_" ] && [ "$lo1_" -lt "$wh_" ] && grep -qx "$EL" "$PP" && [ -f "$PD/end" ] \
+    && grep -q 'npm error code E401' "$NF" && grep -q "$w_" "$NF" && grep -qE 'ends by itself at [0-9]{2}:[0-9]{2}' "$NF" && ! grep -q 'is ended' "$FX/o" && endsfix "$NF" \
+    || b3_="$b3_ [$k_: rc=$r logout at '$lo1_', whoami at '$wh_', logins $(grep -c '^npm login' "$FX/calls"), P $( [ -e "$PP" ] && echo kept || echo gone); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)]"
+  world_reset; rm -rf "${OUTR:?}"
+done
+[ -z "$b3_" ] && pass "r20a F3: the start's logout answering E401 while P's whoami answers (or fails another way): a stop before the end time, P kept, nothing says ended" \
+  || fail "r20a F3:$b3_"
+rm -rf "${OUTR:?}"; pplant '//registry.npmjs.org/:_authToken=npm_dead_earlier' 3600; : > "$REPO/x20-untracked"; KEEP=1; ship; r=$?; KEEP=; rm -f "${REPO:?}/x20-untracked"
+[ $r = 1 ] && grep -q 'the tree is not clean' "$FX/o" && [ ! -e "$PD" ] && grep -qF "release: an earlier npm session of ship's own file ($PP) is ended." "$FX/o" \
+  && pass "  control: a dead token (its logout and whoami answer E401), then A1's refusal: that session ended, D gone whole, stdout says so" \
+  || fail "  control, a dead token then A1: rc=$r D $( [ -e "$PD" ] && echo "left [$(ls -A "$PD" | tr '\n' ' ')]" || echo gone); $(grep -m1 -e 'is ended' -e 'stopped at' "$FX/o" | cut -c1-200)"
+world_reset; rm -rf "${OUTR:?}"
 # r18a F2 (PLAN-ship.md REV 12c rule 33): --out under a directory with an inheritable ACL that lets every
 # account read (chmod +a ... file_inherit,directory_inherit; Finder's "apply to enclosed items" makes one):
 # D (ship's mkdir -m 700) and P (npm's login) inherited it, and macOS checks an ACL's allow before the
