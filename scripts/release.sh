@@ -172,6 +172,12 @@ case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
 # path by its text, the kernel by its links, so out/lnk/.. would name two directories, ship's own npm file
 # in one and npm's in the other (r17a F5; PLAN-ship.md REV 12b rule 24)
 [ ! -d "$out" ] || out=$(cd -P -- "$out" && pwd -P) || exit 1
+# ... and no $ in it (PLAN-ship.md REV 12c rule 32; r18a F1): npm reads ${NAME} in a path as a variable before
+# it resolves it (`\${` too, and ${NAME?} in npm 11.6.0: notes/r18a/np/t1-v*.txt part E), so npm's P would be
+# another file than ship's own, and ship would remove its D and say its session is ended. Checked here, on
+# every entry, and again where ship_run resolves the dir it made
+outdollar() { case $out in *'$'*) die "the out dir $out holds a \$: npm reads \${NAME} in a path as a variable, so npm's own file and ship's would be two. Use an --out whose path holds no \$" ;; esac; }
+outdollar
 case $sub in
   check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class|__class-verify|__class-npm-check) ;;
   *) usage ;;
@@ -1230,6 +1236,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   case $tag in *-rc.*) die "$tag is an rc: ship releases a final tag; an rc, or a backport, uses the separate entries (PHASE3.md §5)" ;; esac
   mkdir -p "$out" || die "cannot make $out"
   out=$(cd -P -- "$out" && pwd -P) && [ -n "$out" ] || die "cannot resolve $out"   # (physical: REV 12b rule 24)
+  outdollar   # (a new dir under a link: its physical path is known only now; REV 12c rule 32)
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   drydir "$st"
   shipcause=$st/cause shipcls=$st/class; stopclass fix || die "cannot write $shipcls"

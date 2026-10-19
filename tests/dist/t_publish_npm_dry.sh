@@ -68,9 +68,12 @@ cat > "$FX/npm" <<EOF
 #!/bin/sh
 n=\$(ls "$FX" | grep -c '^env\\.npm\\.'); env > "$FX/env.npm.\$n"
 echo "npm \$*" >> "$FX/calls"
-# (--userconfig by its text, as npm reads it: each /NAME/.. dropped, path.resolve's rule; r17a F5)
+# (--userconfig by its text, as npm reads it: \${NAME} rewritten first, npm's env-replace (r18a F1,
+# tests/dist/envrep.pl), then each /NAME/.. dropped, path.resolve's rule; r17a F5)
 uc_=""; for a_; do case \$a_ in --userconfig=*) uc_=\${a_#--userconfig=} ;; esac; done
-case \$uc_ in */../*|*/..) n_=\$(printf '%s\n' "\$uc_" | sed -E -e ':u' -e 's#/[^/]+/\.\.(/|\$)#/#' -e 'tu'); for a_; do shift; case \$a_ in --userconfig=*) set -- "\$@" "--userconfig=\$n_" ;; *) set -- "\$@" "\$a_" ;; esac; done ;; esac
+n_=\$(/usr/bin/perl "$SR_ROOT/tests/dist/envrep.pl" "\$uc_")
+case \$n_ in */../*|*/..) n_=\$(printf '%s\n' "\$n_" | sed -E -e ':u' -e 's#/[^/]+/\.\.(/|\$)#/#' -e 'tu') ;; esac
+[ "\$n_" = "\$uc_" ] || for a_; do shift; case \$a_ in --userconfig=*) set -- "\$@" "--userconfig=\$n_" ;; *) set -- "\$@" "\$a_" ;; esac; done
 case \$1 in
   view) for a; do case \$a in sheepr*@*) p=\${a%@*} ;; esac; done
     [ -f "$FX/onview.\$p" ] && sh "$FX/onview.\$p"
@@ -94,6 +97,7 @@ case \$1 in
   # (login: the token line into --userconfig's file, the root line replaced, as npm does; logout: the
   # line out, ENEEDAUTH with no line, \$FX/logoutcode CODE: that code; each recorded in \$FX/tokops)
   login) [ -f "$FX/loginfail" ] && exit 1; u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done; [ -n "\$u_" ] || exit 1
+    mkdir -p "\$(dirname "\$u_")" 2>/dev/null   # (npm's config save makes P's directory, as mkdir -p: r18a F1)
     grep -v '^//registry.npmjs.org/:_authToken=' "\$u_" > "\$u_.n" 2>/dev/null; echo '//registry.npmjs.org/:_authToken=npm_pn' >> "\$u_.n"; mv "\$u_.n" "\$u_"; echo "LOGIN \$u_" >> "$FX/tokops"; exit 0 ;;
   logout) u_=""; for a_; do case \$a_ in --userconfig=*) u_=\${a_#--userconfig=} ;; esac; done
     if [ -d "$FX/out/.ship.lock" ]; then echo held >> "$FX/lockatlogout"; else echo free >> "$FX/lockatlogout"; fi   # (r17a P4-g: the lock through the logout)
@@ -608,6 +612,15 @@ mkout "$D" v0.1.0; : > "$FX/tokops"; PUBOUT=$FX/t/lnk/../out; pub v0.1.0; r=$?; 
   && pass "r17a F5: publish-npm, --out t/lnk/../out: resolved physically; P on every npm call, one login, one logout ending npm_pn; nothing in the text-spelt dir" \
   || fail "r17a F5, publish-npm lnk/../out: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] text-spelt: [$(ls -A "$FX/t/out/.v0.1.0.npm" | tr '\n' ' ')] $(tail -1 "$FX/o" | cut -c1-160)"
 rm -rf "${FX:?}/t" "${FX:?}/tx"
+# r18a F1 (REV 12c rule 32): publish-npm, --out whose path holds a $ (a dir named literally ${TMPDIR}, the
+# build in it; the stand-in reads --userconfig through npm's env-replace): refused before any npm call,
+# the text names the $, no token under the fixture. Control: the plain out (every other row)
+mkout "$FX/t/"'${TMPDIR}'/v0.1.0 v0.1.0; : > "$FX/tokops"; PUBOUT=$FX/t/'${TMPDIR}'; pub v0.1.0; r=$?; PUBOUT=
+left_=$(grep -rl '_authToken=npm_pn' "$FX/t" 2>/dev/null | tr '\n' ' ')
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && grep -qF 'holds a $' "$FX/o" && [ -z "$left_" ] \
+  && pass "r18a F1: publish-npm, --out with a \$: refused before any npm call, the text names the \$, no token anywhere" \
+  || fail "r18a F1, publish-npm --out with a \$: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_] $(grep -m1 '^release:' "$FX/o" | cut -c1-200)"
+rm -rf "${FX:?}/t"
 # this cell's own dry HOMEs (each run prints the one it made; other sessions may run these cells at
 # the same time, so the whole /private/tmp is not counted): at least ten seen, none left
 nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""

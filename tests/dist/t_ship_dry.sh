@@ -200,6 +200,7 @@ ncode() {
 for a_; do case \$a_ in --userconfig=*) UC=\${a_#--userconfig=} ;; --scope=*) SC=\${a_#--scope=}; scset=yes ;; esac; done
 [ -n "\$UC" ] || UC=\${NPM_CONFIG_USERCONFIG:-\${npm_config_userconfig:-}}
 ucdef=no; [ -n "\$UC" ] || { UC=\$HOME/.npmrc; ucdef=yes; }
+UC=\$(/usr/bin/perl "$SR_ROOT/tests/dist/envrep.pl" "\$UC")   # (npm rewrites \${NAME} in the path's text first: r18a F1, tests/dist/envrep.pl)
 case \$UC in *[[:space:]]|*//*|*/./*|*/../*|*/.|*/..|*/) UC=\$(printf '%s\n' "\$UC" | sed -E -e 's/[[:space:]]+\$//' -e 's#/+#/#g' -e ':d' -e 's#/\./#/#' -e 'td' -e 's#/\.\$##' -e ':u' -e 's#/[^/]+/\.\.(/|\$)#/#' -e 'tu' -e 's#(.)/\$#\1#') ;; esac
 [ \$scset = yes ] || SC=\$(sed -n 's/^scope=//p' "\$UC" 2>/dev/null | tail -1)
 SR=""; [ -z "\$SC" ] || SR=\$(sed -n "s|^\$SC:registry=||p" "\$UC" 2>/dev/null | tail -1)
@@ -310,6 +311,7 @@ case \$1 in
     # no token line: ENEEDAUTH (\$FX/whoamierr: npm's whole answer instead, e.g. coloured, or npm 9's)
     if [ -e "$FX/whoamierr" ]; then cat "$FX/whoamierr" >&2; else ncode ENEEDAUTH; fi; exit 1 ;;
   login) [ -e "$FX/onlogin" ] && sh "$FX/onlogin"   # (\$FX/onlogin: a hook at C4's npm login)
+    mkdir -p "\$(dirname "\$UC")" 2>/dev/null   # (npm's config save makes P's directory, as mkdir -p: r18a F1)
     [ -e "$FX/loginfail" ] && exit 1
     # (with a scope, npm login writes <scope>:registry=<--registry>: the scope's routing is rewritten)
     [ -n "\$SC" ] && { grep -v "^\$SC:registry=" "\$UC" > "\$UC.n" 2>/dev/null; echo "\$SC:registry=https://registry.npmjs.org/" >> "\$UC.n"; mv "\$UC.n" "\$UC"; echo "REQ A login rewrote \$SC:registry" >> "$FX/reqs"; }
@@ -2113,6 +2115,33 @@ for k_ in 2 3; do
     || fail "r17a F5, lnk/../out$k_: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] text-spelt: [$(ls -A "$FX/out$k_/.v0.1.0.npm" | tr '\n' ' ')] $(grep -m1 'stopped at' "$FX/o" | cut -c1-160)"
 done
 rm -rf "${FX:?}/sub" "${FX:?}/out2" "${FX:?}/out3" "${FX:?}/lnk"
+# r18a F1 (PLAN-ship.md REV 12c rule 32): --out whose path holds a $. npm reads ${NAME} in a path as a
+# variable before it resolves it (\${ too; ${NAME?} in 11.6.0: notes/r18a/np/t1-v*.txt part E; the npm
+# stand-in rewrites it so: tests/dist/envrep.pl), so npm's P would be another file than ship's D/npmrc, and
+# ship would remove its D and say its session is ended. Each spelling (a dir named literally ${TMPDIR},
+# \${TMPDIR}, ${X?}; a link to a dir named ${HOME}; a new dir under that link, which only ship_run's own
+# resolution sees) is refused before any npm call, its text names the $, and no file under the fixture
+# holds the session's token. Control: the plain out: one login, one logout ending it, none left
+for k_ in plain lit esc q link under; do
+  rm -rf "${FX:?}/d"; mkdir -p "$FX/d/"'${HOME}' && ln -s "$FX/d/"'${HOME}' "$FX/d/lnk" || exit 3   # (each case its own: no token of another)
+  case $k_ in
+    plain) OD=$FX/d/plain ;; lit) OD=$FX/d/'${TMPDIR}' ;; esc) OD=$FX/d/'\${TMPDIR}' ;; q) OD=$FX/d/'${X?}' ;;
+    link) OD=$FX/d/lnk ;; under) OD=$FX/d/lnk/sub ;;
+  esac
+  AHX=$(printf 'sheepr-macos-universal.tar.gz %s\n' "$OD/v0.1.0" | shasum -a 256 | cut -d' ' -f1)
+  : > "$FX/tokops"; OUT=$OD; VERIFIED=$AHX; ship; r=$?; OUT=; VERIFIED=
+  left_=$(grep -rl '_authToken=npm_dry' "$FX/d" 2>/dev/null | tr '\n' ' ')
+  if [ $k_ = plain ]; then
+    [ $r = 0 ] && [ "$(tr '\n' ' ' < "$FX/tokops")" = "LOGIN DELETE token=npm_dry " ] && [ -z "$left_" ] \
+      && pass "  control: a plain --out: one login, one logout ending the session's token, none left" \
+      || fail "  control, a plain --out: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_]"
+  else
+    [ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && grep -qF 'holds a $' "$FX/o" && [ -z "$left_" ] \
+      && pass "r18a F1: --out with a \$ ($k_): refused before any npm call, the text names the \$, no token anywhere" \
+      || fail "r18a F1: --out with a \$ ($k_): rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] left [$left_] $(grep -m1 '^release:' "$FX/o" | cut -c1-200)"
+  fi
+done
+rm -rf "${FX:?}/d"
 # --- REV 11 rule 2, npm routing (r13a F1): npm's scope setting routes logout, view, owner and publish
 # to the scope's registry B, and login rewrites <scope>:registry; every npm call ship makes has --scope=
 # (and --registry), and loads P only (REV 12). With scope=@acme, @acme:registry=B and B's token in the
