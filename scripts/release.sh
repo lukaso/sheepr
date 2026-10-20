@@ -77,9 +77,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners npm_try npmcache
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners npm_try npmcache npm_tok
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners="" npm_try=no npmcache=""
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners="" npm_try=no npmcache="" npm_tok=no
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -1504,6 +1504,9 @@ npm_dok() {
   if [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
     stopclass fix; die "$d_/npmrc is not the file ship's login writes (a link, a second name of another file, or a directory): remove it, then run $1 again; $2"
   fi
+  # (D/global: npm's global config, which ship names and never makes; npm reads what is there on every
+  # call, a token or a registry, and a FIFO there holds npm's config load: REV 12f rule 47; r21b F6)
+  if [ -e "$d_/global" ] || [ -L "$d_/global" ]; then stopclass fix; die "$d_/global is not ship's (ship never makes it; npm would read it as its global config): remove it, then run $1 again; $2"; fi
 }
 # npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): D's and P's shapes (npm_dok); when P exists (an
 # earlier run's: a KILL, a logout that failed) and holds a token line (ptok; else it is removed), the
@@ -1587,7 +1590,12 @@ npm_login() {
   # the new end's write let the next run take this live session as ended by itself, and remove P
   rm -f "$d_/end" 2>/dev/null; [ ! -e "$d_/end" ] || die "cannot remove $d_/end; $3"
   npm_try=yes   # (a login was attempted: from here the texts say this run logged in; r18a F6)
-  tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope= || die "the login to npm failed, or was not answered; $3"
+  # (npm_tok: the login wrote a session into P, known here in the main flow, while P is a regular file with a
+  # token line, a login that then failed too; from here the end says that session's fate whatever is at P
+  # then: REV 12f rule 47; r21b F1: a link at P after the login took the session line out of the next file)
+  tool "$NPMC" "$NPM" login --registry="$NPMREG" --scope=; lr_=$?
+  ! ptok "$d_/npmrc" || npm_tok=yes
+  [ $lr_ = 0 ] || die "the login to npm failed, or was not answered; $3"
   # the clock time this session ends by itself: 2 hours after the login (PLAN-ship.md REV 9), taken
   # once the login returned (so never before the session's real end), with its zone (REV 10 rule 7);
   # a time ship cannot compute is left out
@@ -1597,11 +1605,12 @@ npm_login() {
   [ "$who" = "${SR_NPM_USER:-}" ] && return 0
   # (only a P with a token line is logged out of: with none, npm logout ends a token of another layer it
   # reads; r18a F5, REV 12b rule 25)
-  if ptok "$d_/npmrc"; then tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc"; else rm -f "$d_/npmrc"; fi
+  if ptok "$d_/npmrc"; then tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/who.err" && rm -f "$d_/npmrc" && npm_tok=no; else rm -f "$d_/npmrc"; fi
   die "the login to npm was as $(printf '%s' "$who" | head -c 100 | tr '\n' ' '), but the packages belong to ${SR_NPM_USER:-nobody named in release.conf}; $3. When $2 asks you to log in to npm, log in as ${SR_NPM_USER:-the owner} in the browser, then run $2 again"
 }
-# npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line): D removed (0). A
-# failure, or D or P not of ship's shapes: P kept (1); npm's words, or what is wrong, in DIR/out.err (the
+# npm_out DIR: the logout of P at the end (REV 12 rule 4). Exit 0 (or no P, or none with a token line, when
+# this run's login wrote none: npm_tok): D removed (0). A failure, D or P not of ship's shapes, or P with no
+# token line after this run's login wrote one: P kept (1); npm's words, or what is wrong, in DIR/out.err (the
 # next ship or publish-npm run of this tag, with this out dir, logs out of it first)
 npm_out() {
   d_=${out%/}/.$tag.npm
@@ -1609,9 +1618,18 @@ npm_out() {
   # regular file, P with a second name: a logout would go through it into another file, and end that
   # file's token while ship's own stays live, and a file at D is not ship's to remove; so none, D is kept,
   # and the end says the session could not be ended (REV 12d rule 37; r19a F3: a hard link made after the
-  # push; REV 12e rule 43, r20a F6: a file at D)
-  if [ -L "$d_" ] || { [ -e "$d_" ] && [ ! -d "$d_" ]; } || [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; }; then
-    /usr/bin/printf '%s\n' "none: $d_/npmrc is not the file ship's login wrote, or $d_ is not the directory ship made (a link, a file, a second name of another file), so ship did not log out through it" > "$1/out.err" 2>/dev/null
+  # push; REV 12e rule 43, r20a F6: a file at D). And D/global, which ship never makes: npm would read it
+  # in the logout, and a FIFO there held the exit handler (REV 12f rule 47; r21b F6). The words fit
+  # errcut's 200 bytes with the default out (r21b F5 = r21a F8)
+  if [ -L "$d_" ] || { [ -e "$d_" ] && [ ! -d "$d_" ]; } || [ -L "$d_/npmrc" ] || { [ -e "$d_/npmrc" ] && [ ! -f "$d_/npmrc" ]; } || { [ -f "$d_/npmrc" ] && [ -z "$(find "$d_/npmrc" -prune -links 1 2>/dev/null)" ]; } \
+    || [ -e "$d_/global" ] || [ -L "$d_/global" ]; then
+    /usr/bin/printf '%s\n' "none: $d_ or a file in it is not as ship made them (a link, a file, a second name, a global file), so ship did not log out through it" > "$1/out.err" 2>/dev/null
+    return 1
+  fi
+  # (this run's login wrote a session into P (npm_tok) and P holds no token line now: gone, rewritten, or
+  # moved aside with D: a session ship could not end, never one ended (REV 12f rule 47; r21a F5, F6))
+  if [ "$npm_tok" = yes ] && ! ptok "$d_/npmrc"; then
+    /usr/bin/printf '%s\n' "none: $d_/npmrc no longer holds the token ship's login wrote (it is gone, or was rewritten), so ship did not log out" > "$1/out.err" 2>/dev/null
     return 1
   fi
   # (only a P with a token line: one without holds nothing of ship's to end, and its logout would end
@@ -1619,7 +1637,7 @@ npm_out() {
   if [ -f "$d_/npmrc" ] && ptok "$d_/npmrc"; then
     tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/out.err" || return 1
   fi
-  rm -rf "${d_:?}"; return 0
+  npm_tok=no; rm -rf "${d_:?}"; return 0
 }
 # npm_left WORDS: what stdout says when ship's own session could not be ended (no npm command: REV 12
 # rule 4): its end time, and that the next run of this tag with this out dir logs out of it first (a run
@@ -1639,9 +1657,10 @@ npm_lock() {
 npm_end() {
   if [ "${pnin:-no}" = yes ]; then
     pnin=no
-    # (a session only once npm's login ran and P holds a token line: a stop before the login (r18a F6), or a
-    # login that failed and wrote nothing (REV 12d rule 38; r19a F5), ended none)
-    pt_=no; [ "$npm_try" != yes ] || ! ptok "${out%/}/.$tag.npm/npmrc" || pt_=yes
+    # (a session only once npm's login ran and wrote one (npm_tok; P's token line read here only for a signal
+    # during the login: REV 12f rule 47): a stop before the login (r18a F6), or a login that failed and wrote
+    # nothing (REV 12d rule 38; r19a F5), ended none)
+    pt_=no; [ "$npm_try" != yes ] || { [ "$npm_tok" != yes ] && ! ptok "${out%/}/.$tag.npm/npmrc"; } || pt_=yes
     if npm_out "$1"; then [ "$pt_" != yes ] || echo "release: publish-npm's npm session is ended (its own file removed)"
     else npm_endrc=1; echo "release: $(redact "$(npm_left "$(errcut "$1/out.err" 200)")")" >&2; fi
   fi
@@ -1764,9 +1783,11 @@ ship_exit() { # rc: ship's one exit handler, set once by ship_run and never repl
   # ends (REV 12 rule 4: no npm command), in the file before the logout runs: a KILL during the logout
   # leaves it in place. A release done has a file then too, that line alone
   txt="" keep=no lo="" pl=""
-  # (only once npm's login was attempted, and P holds a token line: a stop before it, the noowners one,
-  # logged nothing in (r18a F6), nor did a login that failed and wrote nothing (REV 12d rule 38; r19a F5))
-  if [ "$logged_in" = yes ] && [ "$npm_try" = yes ] && ptok "${out%/}/.$tag.npm/npmrc"; then
+  # (only once npm's login was attempted and wrote a session into P (npm_tok, known from the login whatever
+  # is at P now: REV 12f rule 47; r21b F1; P's token line read here only for a signal during the login): a
+  # stop before it, the noowners one, logged nothing in (r18a F6), nor did a login that failed and wrote
+  # nothing (REV 12d rule 38; r19a F5))
+  if [ "$logged_in" = yes ] && [ "$npm_try" = yes ] && { [ "$npm_tok" = yes ] || ptok "${out%/}/.$tag.npm/npmrc"; }; then
     pl="ship logged in to npm in this run, with its own file (${out%/}/.$tag.npm/npmrc), and logs out as it ends. If that logout fails, the session ends by itself $( [ -n "${ship_end:-}" ] && printf 'at %s ' "$ship_end")(2 hours after its login), and the next ship or publish-npm run of $tag with this out dir logs out of it first."
   fi
   if [ "$locked" = yes ] && [ "$shipok" != yes ]; then

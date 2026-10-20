@@ -293,7 +293,8 @@ case \$1 in
     [ -e "$FX/ownerfailafter" ] && [ "\$(grep -c '^npm publish' "$FX/calls")" -ge 3 ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     [ -e "$FX/owner404.\$3" ] && { echo "npm error code E404" >&2; exit 1; }
     if [ -f "$FX/owner.\$3" ]; then echo "\$(cat "$FX/owner.\$3") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
-  whoami) [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
+  whoami) [ -e "$FX/onwhoami" ] && grep -q '^npm login' "$FX/calls" && sh "$FX/onwhoami"   # (\$FX/onwhoami: a hook at a whoami after the login)
+    [ -e "$FX/whoamibad" ] && { echo "npm error code ETIMEDOUT" >&2; exit 1; }
     # (\$FX/whoamiansi: the code it answers, in npm's colours, as color=always writes it)
     [ -e "$FX/whoamiansi" ] && { printf '\033[1mnpm\033[22m \033[31merror\033[39m \033[94mcode\033[39m %s\n' "\$(cat "$FX/whoamiansi")" >&2; exit 1; }
     [ -e "$FX/whoamicode" ] && { ncode "\$(cat "$FX/whoamicode")"; exit 1; }   # (\$FX/whoamicode: the code it answers)
@@ -588,6 +589,28 @@ r1a_=$(grep -c '^//registry.npmjs.org/:_authToken=' "$FX/st1.rc"); r1b_=$(grep -
   && pass "r16a F8: the npm stand-in's logout with no token line answers ENEEDAUTH, exit 1, as real npm does; control: a live line, exit 0, the line gone" \
   || fail "r16a F8: the stand-in's logout, no line: exit $r3_ '$(tr '\n' ' ' < "$FX/st3.err")'; a live line: exit $r4_ [$(tr '\n' ' ' < "$FX/st4.rc")]"
 rm -f "$FX/st1.rc" "$FX/st2.rc" "$FX/st3.rc" "$FX/st4.rc" "$FX/st3.err" "$FX/calls" "$FX/tokops" "$FX/npmucs" "$FX/npmenvs"
+# fwatch2.pl FIFO LOCK DONE RES (REV 12f rules 47, 48): each opener that blocks on FIFO until DONE exists (60 s
+# at most): a reader (released by a writer's open and close: it reads EOF) or a writer (released by a reader's
+# open: its bytes read, then the close); counted while LOCK (the run's lock, which its exit handler removes
+# last) exists, so the cell's own opens after the run do not count; the count into RES
+cat > "$FX/fwatch2.pl" <<'EOF'
+use strict; use warnings; use Fcntl; use Time::HiRes qw(time sleep);
+my ($fifo, $lock, $done, $res) = @ARGV; my ($n, $t0) = (0, time);
+while (time - $t0 < 60) {
+  my $hit = 0;
+  if (-p $fifo) {
+    if (sysopen(my $w, $fifo, O_WRONLY|O_NONBLOCK)) { close $w; $hit = 1 }
+    elsif (sysopen(my $r, $fifo, O_RDONLY|O_NONBLOCK)) {
+      my $t1 = time;
+      while (time - $t1 < 2) { my $b; my $k = sysread($r, $b, 4096); if (defined $k) { $hit = 1 if $k > 0; last } sleep 0.05 }
+      close $r;
+    }
+  }
+  if ($hit) { $n++ if -e $lock } elsif (-e $done) { last }
+  sleep 0.2;
+}
+open(my $o, '>', $res) or die; print $o "$n\n";
+EOF
 # --- the walls: each stand-in is checked as release.sh's standins checks one; a real tool, or none,
 # is refused before any call
 for v in SR_SHIP_DRY_BUILD SR_SHIP_DRY_NPMCHECK SR_SHIP_DRY_NOTIFY SR_SHIP_DRY_CAFFEINATE SR_SHIP_DRY_IDENTITY SR_SHIP_DRY_DOCKER \
@@ -1748,7 +1771,7 @@ RULES = [
     ('*', '${SR_ASK_RECORD:-/dev/null}', "a cell's record (/dev/null in a real run)"),
     ('exec-guard.sh', '$SR_EXEC_RECORD', "a cell's record (unset in a real run)"),
     ('release.sh', '$pt/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pt/npmrc"'),
-    ('release.sh', '$1/out.err', "npm_out's words on why it did not log out: a lost line leaves them out of the end's text, never its verdict (npm_out answers 1 either way)", r'"none: \$d_/npmrc is not the file'),
+    ('release.sh', '$1/out.err', "npm_out's words on why it did not log out: a lost line leaves them out of the end's text, never its verdict (npm_out answers 1 either way)", r'"none: \$d_'),
     ('npm-pack.sh', '$pk/npmrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/npmrc"'),
     ('npm-pack.sh', '$pk/globalrc', 'an empty file (no byte to lose)', r':\s*>\s*"\$pk/globalrc"'),
     ('archive.sh', '$t/list', "the listing's end line read back (tail): a short listing is \"cannot check\""),
@@ -2156,10 +2179,11 @@ printf '//registry.npmjs.org/:_authToken=npm_elsewhere\nkeep=me\n' > "$FX/elsewh
   || fail "r18a F4: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]"
 rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
 # r18a F5 (REV 12c rule 35): the login leaves P with no token line (here a basic-auth line only) and whoami
-# names another account: no logout of P (with no token line, npm logout ends a token of another layer: here
-# one planted in D/global), P removed, and the stop that says to log in as lukasco. Control: rule 3's row
-# (P with the login's token: its logout, P removed)
-rm -rf "${OUTR:?}"; mkdir -p "$PD" && chmod 700 "$PD" && printf '//registry.npmjs.org/:_authToken=npm_global18\n' > "$PD/global" || exit 3
+# names another account: no logout of P (with no token line, npm logout ends a token of another layer, the
+# global file's among them: r17a F1's row; a file at D/global now stops the run before any npm call, REV 12f
+# rule 47), P removed, and the stop that says to log in as lukasco. Control: rule 3's row (P with the
+# login's token: its logout, P removed)
+rm -rf "${OUTR:?}"
 : > "$FX/tokops"; : > "$FX/loginauth"; echo stranger > "$FX/whoami"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/loginauth" "${FX:?}/whoami"
 [ $r = 1 ] && ! grep -q '^npm logout' "$FX/calls" && ! grep -q DELETE "$FX/tokops" && [ ! -e "$PP" ] && grep -q 'the login to npm was as stranger' "$FX/o" \
   && pass "r18a F5: the login leaves no token line, whoami names another account: no logout (another layer's token kept), P removed, the stop" \
@@ -2218,8 +2242,10 @@ for k_ in sym hard; do
   [ $r = 1 ] && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q 'DELETE token=npm_elsewhere' "$FX/tokops" \
     && grep -q "ship's npm session (its own file, $PP) could not be ended" "$FX/o" && grep -qE 'It ends by itself at [0-9]{2}:[0-9]{2}' "$FX/o" \
     && ! grep -q 'session is ended' "$FX/o" \
-    && pass "r19a F3: a $k_ link at P made after the push: no logout through it, the other file untouched; the end says the session could not be ended" \
-    || fail "r19a F3 ($k_): rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
+    && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:" ] && sed -n 2p "$NF" | grep -q 'could not be ended' \
+    && [ "$(grep -c "^notify logout-failed v0.1.0 $OUTR\$" "$FX/calls")" = 1 ] \
+    && pass "r19a F3: a $k_ link at P made after the push: no logout through it, the other file untouched; the end says the session could not be ended, in the next file too (r21b F1)" \
+    || fail "r19a F3 ($k_): rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file [$(tr '\n' '|' < "$FX/elsewhere/npmrc")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-200); the next file [$(cut -c1-120 "$NF" 2>/dev/null | tr '\n' '|')]; $(grep '^notify logout-failed' "$FX/calls" | cut -c1-80)"
   rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset
 done
 # r20b F1 (PLAN-ship.md REV 12e rule 41; r20a F1): a FIFO at P after the login, made as the push starts
@@ -2253,7 +2279,8 @@ EOF
 KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_
 rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
 [ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && [ -s "$NF" ] && [ -p "$PP" ] \
-  && pass "r20b F1: a FIFO at P after the login (the push refused): the end does not open it; it says the session could not be ended, writes the next file, frees the lock" \
+  && sed -n 2p "$NF" | grep -q 'could not be ended' \
+  && pass "r20b F1: a FIFO at P after the login (the push refused): the end does not open it; it says the session could not be ended, in the next file's line 2 too (r21b F1), frees the lock" \
   || fail "r20b F1 (ship): readers blocked on P '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone), next file $( [ -s "$NF" ] && echo written || echo none); $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160)"
 rm -f "${PP:?}" "$FX/run.done" "$FX/w.res"; rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
 REC=$OUTR/.v0.1.0.ship-progress
@@ -2277,7 +2304,8 @@ mv "$PD" "$PD.aside"; echo "not ship's" > "$PD"
 EOF
 : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
 [ $r = 1 ] && [ -f "$PD" ] && [ "$(cat "$PD")" = "not ship's" ] && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" && ! grep -q '^DELETE' "$FX/tokops" \
-  && pass "r20a F6: a file at D at the end: kept; no logout; the end says the session could not be ended" \
+  && sed -n 2p "$NF" | grep -q 'could not be ended' && sed -n 2p "$NF" | grep -q 'so ship did not log out through it' \
+  && pass "r20a F6: a file at D at the end: kept; no logout; the end says the session could not be ended, in the next file's line 2 too (r21b F1), its words whole (r21b F5)" \
   || fail "r20a F6: rc=$r the file at D $( [ -f "$PD" ] && echo kept || echo REMOVED), tokops [$(tr '\n' ' ' < "$FX/tokops")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-160)"
 rm -f "${PD:?}"; rm -rf "${PD:?}.aside"; world_reset; rm -rf "${OUTR:?}"
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; rm -f "$FX/onpush.done"; mkdir -p "$FX/elsewhere" || exit 3
@@ -2291,6 +2319,72 @@ EOF
   && pass "r20a N5: D a link at the end: no logout through it, the other file untouched, nothing says ended" \
   || fail "r20a N5: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file $( [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && echo same || echo CHANGED); $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-160)"
 rm -f "${PD:?}"; rm -rf "${PD:?}.aside" "${FX:?}/elsewhere"; world_reset; rm -rf "${OUTR:?}"
+# r21b F1 (PLAN-ship.md REV 12f rule 47; Y5): run 1 stops at a refused push (its next file: nothing is
+# public, run ship again); run 2 makes v0.1.0 public, with P replaced by a link at C8 (its logout refused):
+# the next file is run 2's ("public; left:", then "could not be ended"), never run 1's. Then a link at P
+# made after the login, at C4's whoami, which names another account (through the link): no logout through
+# it, the other file byte-identical, and the end says the session could not be ended (the login wrote one).
+# Controls: r19a F3 hard (a hard link: line 2 already), r19a F5's control (a login that wrote nothing: no
+# line 2), every done row (a regular P: no next file after "ended")
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; rm -f "$FX/onpush.done"; mkdir -p "$FX/elsewhere" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_elsewhere\n' > "$FX/elsewhere/npmrc"
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+EOF
+KEEP=1; ship; r1_=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"; n1_=$(grep -c 'Nothing is public' "$NF" 2>/dev/null)
+printf 'rm -f "%s"; ln -s "%s" "%s"\n' "$PP" "$FX/elsewhere/npmrc" "$PP" > "$FX/onviewpush.sheepr"
+KEEP=1; ship; r2_=$?; KEEP=; rm -f "${FX:?}/onviewpush.sheepr" "${FX:?}/onviewpush.sheepr.done"
+[ $r1_ = 1 ] && [ "${n1_:-0}" -ge 1 ] && [ $r2_ = 1 ] && grep -q 'release: ship: v0.1.0 is public' "$FX/o" \
+  && [ "$(head -1 "$NF" 2>/dev/null)" = "release: ship v0.1.0 is public on GitHub, Homebrew and npm; ship's npm session is left:" ] && ! grep -q 'Nothing is public' "$NF" \
+  && sed -n 2p "$NF" | grep -q 'could not be ended' \
+  && pass "r21b F1 (Y5): a stopped run's next file, then a release done with a link at P: the next file is the second run's (public; could not be ended)" \
+  || fail "r21b F1 (Y5): rc $r1_ $r2_, run 1's file said nothing public: ${n1_:-0}; the next file [$(cut -c1-120 "$NF" 2>/dev/null | tr '\n' '|')]"
+rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
+printf '//registry.npmjs.org/:_authToken=npm_stranger_other\nkeep=me\n' > "$FX/elsewhere/npmrc"; es0_=$(cksum < "$FX/elsewhere/npmrc")
+printf 'rm -f "%s"; ln -s "%s" "%s"; rm -f "%s"\n' "$PP" "$FX/elsewhere/npmrc" "$PP" "$FX/onwhoami" > "$FX/onwhoami"
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/onwhoami"
+[ $r = 1 ] && grep -q 'the login to npm was as stranger' "$FX/o" && [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && ! grep -q 'npm_stranger_other' "$FX/tokops" \
+  && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" \
+  && pass "r21b F1: a link at P made after the login, its whoami another account's: no logout through it, the other file untouched; the session could not be ended" \
+  || fail "r21b F1 (the whoami's link): rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")] other file $( [ "$(cksum < "$FX/elsewhere/npmrc")" = "$es0_" ] && echo same || echo CHANGED); $(grep -m1 -e 'login to npm was as' -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-200)"
+rm -rf "${PD:?}" "${FX:?}/elsewhere"; world_reset; rm -rf "${OUTR:?}"
+# r21a F5 (PLAN-ship.md REV 12f rule 47): as the push starts, D (ship's live P in it) is moved aside and
+# nothing put at D; the push is refused. The end says ship's session could not be ended (the login wrote
+# one), in the next file's line 2 too, never ended, never silence; the moved P's token is not ended
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+mv "$PD" "$PD.aside"
+EOF
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+[ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" && sed -n 2p "$NF" | grep -q 'could not be ended' && ! grep -q '^DELETE' "$FX/tokops" \
+  && grep -q 'npm_dry' "$PD.aside/npmrc" \
+  && pass "r21a F5: D moved aside at the end: the session could not be ended (stdout and the next file), never ended; its token not ended" \
+  || fail "r21a F5: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")]; $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160); line 2 [$(sed -n 2p "$NF" 2>/dev/null | cut -c1-100)]"
+rm -rf "${PD:?}" "${PD:?}.aside"; world_reset; rm -rf "${OUTR:?}"
+# r21b F6 (PLAN-ship.md REV 12f rule 47): a FIFO at D/global (npm's global config, which ship names and never
+# makes), made as the push starts; the push is refused. The end opens nothing there (fwatch2.pl: no opener
+# blocks while the lock is held) and says the session could not be ended; the FIFO stays. Then a file at
+# D/global before the run: a stop before any npm call, "remove it", the file kept. Control: every done row
+rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done" "$FX/run.done" "$FX/w.res"
+cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+mkfifo "$PD/global"
+EOF
+/usr/bin/perl "$FX/fwatch2.pl" "$PD/global" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+: > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_
+rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && [ -p "$PD/global" ] && ! grep -q '^DELETE' "$FX/tokops" \
+  && pass "r21b F6: a FIFO at D/global at the end: nothing opens it; the session could not be ended; the lock freed" \
+  || fail "r21b F6: openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160)"
+rm -f "$FX/run.done" "$FX/w.res"; rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}"; mkdir -p "$PD" && chmod 700 "$PD" && : > "$PD/global" || exit 3
+KEEP=1; ship; r=$?; KEEP=
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" && grep -qF "$PD/global is not ship's" "$FX/o" && [ -f "$PD/global" ] \
+  && pass "r21b F6: a file at D/global before the run: a stop before any npm call, remove it; the file kept" \
+  || fail "r21b F6 (the start): rc=$r npm calls $(grep -c '^npm ' "$FX/calls"); $(grep -m1 -e 'global' -e 'stopped at' "$FX/o" | cut -c1-160)"
+rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
@@ -2368,7 +2462,8 @@ rm -rf "${OUTR:?}" "${FX:?}/elsewhere"
 rm -rf "${OUTR:?}"; : > "$FX/tokops"; echo stranger > "$FX/whoami"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/whoami"; r12keep
 [ $r = 1 ] && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$NF" && grep -q 'log in as lukasco in the browser, then run ship again' "$NF" \
   && [ ! -e "$PP" ] && grep -q '^DELETE token=npm_dry' "$FX/tokops" && ! grep -q '^npm publish' "$FX/calls" && grep -qx 'Nothing is public.' "$NF" \
-  && pass "REV 12 rule 3: the login names another account: its logout, P removed, a stop: log in as lukasco in the browser when ship asks; nothing public" \
+  && ! grep -q 'could not be ended' "$FX/o" \
+  && pass "REV 12 rule 3: the login names another account: its logout, P removed, a stop: log in as lukasco in the browser when ship asks; nothing public; nothing says the session could not be ended (REV 12f rule 47)" \
   || fail "REV 12 rule 3: rc=$r P $( [ -e "$PP" ] && echo left || echo gone); $(head -1 "$NF" 2>/dev/null | cut -c1-200)"
 world_reset
 # rule 4: the logout of P at the end: exit 0, D removed (every completed row above); a failure: P kept,
