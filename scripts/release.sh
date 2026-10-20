@@ -1287,9 +1287,11 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   shipprog=$out/.$tag.ship-progress
   # (its first write as progress writes its later lines: into the temp name, absent once rm -f ran, then
   # renamed onto the record: an earlier run's FIFO or link at the record's name is replaced, never written
-  # through (REV 12f rule 48; r21b F3, F8), and a rename that leaves no regular file there fails)
+  # through (REV 12f rule 48; r21b F3, F8), and a rename that leaves no regular file there fails. A directory,
+  # or a link to one, at the record's name: no rename (mv -f would move the temp file into it: REV 12g rule
+  # 53; r22b F2))
   rm -f "$shipprog.tmp" 2>/dev/null
-  [ ! -e "$shipprog.tmp" ] && [ ! -L "$shipprog.tmp" ] && fput "$shipprog.tmp" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  [ ! -d "$shipprog" ] && [ ! -e "$shipprog.tmp" ] && [ ! -L "$shipprog.tmp" ] && fput "$shipprog.tmp" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     && mv -f "$shipprog.tmp" "$shipprog" 2>/dev/null && [ -f "$shipprog" ] && [ ! -L "$shipprog" ] || { rm -f "$shipprog.tmp" 2>/dev/null; die "cannot write $shipprog"; }
   progok=yes   # (ship_stoptext: from here a record it cannot read is never "nothing started")
   # REV 12 rule 2, ship's first npm call: an earlier P logged out of first (a dead token there would fail

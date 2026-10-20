@@ -2513,6 +2513,27 @@ KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_; rm -f "${FX:?}/onbuild
   && pass "rule 48: a FIFO at the record's temp name that rm cannot remove: progress opens nothing there; a stop before the push" \
   || fail "rule 48, progress's temp name: openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r; $(grep -m1 -e 'cannot write' -e 'stopped at' "$FX/o" | cut -c1-200)"
 chflags nouchg "$REC21.tmp" 2>/dev/null; rm -f "${REC21:?}.tmp" "$FX/run.done" "$FX/w.res"; world_reset; rm -rf "${OUTR:?}"
+# r22b F2, F3 (PLAN-ship.md REV 12g rule 53; Y11a, Y11b): a link to a directory, or a directory, at ship's
+# record's name: the record's first write moves nothing into it, and the run stops at preflight with no npm
+# login. Then r22a F4's E: a FIFO at D/global before the run: a stop before any npm call, no opener blocked
+# on it. Controls: every completed row, r21b F6's row (a file at D/global)
+REC22=$OUTR/.v0.1.0.ship-progress; b8_=""
+for k_ in link dir; do
+  rm -rf "${OUTR:?}" "${FX:?}/recdir"; mkdir -p "$OUTR" || exit 3
+  case $k_ in link) mkdir -p "$FX/recdir" && ln -s "$FX/recdir" "$REC22" || exit 3; L_=$FX/recdir ;; dir) mkdir -p "$REC22" || exit 3; L_=$REC22 ;; esac
+  KEEP=1; ship; r=$?; KEEP=
+  [ $r = 1 ] && grep -q 'stopped at preflight' "$FX/o" && grep -qF "cannot write $REC22" "$FX/o" && ! grep -q '^npm login' "$FX/calls" && [ -z "$(ls -A "$L_")" ] \
+    || b8_="$b8_ [$k_: rc=$r logins $(grep -c '^npm login' "$FX/calls") in it [$(ls -A "$L_" 2>/dev/null | tr '\n' ' ')]; $(grep -m1 -e 'cannot' -e 'stopped at' "$FX/o" | cut -c1-160)]"
+  rm -rf "${OUTR:?}" "${FX:?}/recdir"; world_reset
+done
+[ -z "$b8_" ] && pass "r22b F2, F3: a link to a directory, or a directory, at the record's name: nothing moved into it; a stop at preflight, no npm login" || fail "r22b F2, F3:$b8_"
+rm -rf "${OUTR:?}"; rm -f "$FX/run.done" "$FX/w.res"; mkdir -p "$PD" && chmod 700 "$PD" && mkfifo "$PD/global" || exit 3
+/usr/bin/perl "$FX/fwatch2.pl" "$PD/global" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" && grep -qF "$PD/global is not ship's" "$FX/o" && [ -p "$PD/global" ] \
+  && pass "r22a F4 (E): a FIFO at D/global before the run: a stop before any npm call, nothing opens it" \
+  || fail "r22a F4 (E): openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, npm calls $(grep -c '^npm ' "$FX/calls"); $(grep -m1 -e 'global' -e 'stopped at' "$FX/o" | cut -c1-160)"
+rm -f "$FX/run.done" "$FX/w.res"; rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
