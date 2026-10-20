@@ -328,7 +328,8 @@ leg_release() {
 }
 
 leg_bundle() {
-  bg_wait timeout -k 30 3600 sh tests/dist/run.sh > "$LOGDIR/bundle.log" 2>&1 \
+  # (every cell's own limit, tests/dist/run.sh, and t_ship_dry's 90 minutes among them, fits)
+  bg_wait timeout -k 30 10800 sh tests/dist/run.sh > "$LOGDIR/bundle.log" 2>&1 \
     && record bundle PASS || record bundle "FAIL ($LOGDIR/bundle.log)"
 }
 

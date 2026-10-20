@@ -30,7 +30,10 @@ for t in t_*.sh; do
   n=$((n + 1))
   echo "== $t"
   cur="$logdir/$n"
-  timeout -k 10 1200 sh "$t" > "$cur" 2>&1 & cp=$!
+  # 20 minutes a cell; t_ship_dry runs ~490 dry releases (about 45 minutes on this Mac, measured
+  # 2026-10-20: at 1200 s the limit stopped it at row 249)
+  lim=1200; [ "$t" = t_ship_dry.sh ] && lim=5400
+  timeout -k 10 "$lim" sh "$t" > "$cur" 2>&1 & cp=$!
   # the group id, once timeout has made its group (bounded; unconfirmed means a pid-only kill)
   gp="" i=0
   while [ $i -lt 20 ]; do
