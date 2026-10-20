@@ -2340,6 +2340,7 @@ EOF
 : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
 [ $r = 1 ] && [ -f "$PD" ] && [ "$(cat "$PD")" = "not ship's" ] && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" && ! grep -q '^DELETE' "$FX/tokops" \
   && sed -n 2p "$NF" | grep -q 'could not be ended' && sed -n 2p "$NF" | grep -q 'so ship did not log out through it' \
+  && sed -n 2p "$NF" | grep -q 'stops until it is removed' && ! grep -q 'logs out of it first' "$NF" && ! grep -q '^none: ' "$FX/o" \
   && pass "r20a F6: a file at D at the end: kept; no logout; the end says the session could not be ended, in the next file's line 2 too (r21b F1), its words whole (r21b F5)" \
   || fail "r20a F6: rc=$r the file at D $( [ -f "$PD" ] && echo kept || echo REMOVED), tokops [$(tr '\n' ' ' < "$FX/tokops")]; $(grep -m1 -e 'session is ended' -e 'could not be ended' "$FX/o" | cut -c1-160)"
 rm -f "${PD:?}"; rm -rf "${PD:?}.aside"; world_reset; rm -rf "${OUTR:?}"
@@ -2395,9 +2396,34 @@ EOF
 : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
 [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && ! grep -q 'session is ended' "$FX/o" && sed -n 2p "$NF" | grep -q 'could not be ended' && ! grep -q '^DELETE' "$FX/tokops" \
   && grep -q 'npm_dry' "$PD.aside/npmrc" \
-  && pass "r21a F5: D moved aside at the end: the session could not be ended (stdout and the next file), never ended; its token not ended" \
+  && grep -q 'could not be ended.*No run can log out of it' "$FX/o" && sed -n 2p "$NF" | grep -q 'No run can log out of it' && ! grep -q 'logs out of it first' "$NF" \
+  && pass "r21a F5: D moved aside at the end: the session could not be ended (stdout and the next file), never ended; its token not ended; no run can log out of it (r22a F2)" \
   || fail "r21a F5: rc=$r tokops [$(tr '\n' ' ' < "$FX/tokops")]; $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160); line 2 [$(sed -n 2p "$NF" 2>/dev/null | cut -c1-100)]"
 rm -rf "${PD:?}" "${PD:?}.aside"; world_reset; rm -rf "${OUTR:?}"
+# r22a F2 (PLAN-ship.md REV 12g rule 50): as the push starts (the push refused), P is removed, or emptied (r22a
+# F4's C): this run's login wrote a session and P holds no token line now: the end says it could not be
+# ended and that no run can log out of it, in stdout and the next file's line 2, never that the next run
+# logs out of it first. After the removal, ship again: its first token write is its own login (no logout of
+# the earlier session: there is nothing to log out with). Control: rule 4's row (a failed logout, P kept)
+b6_=""
+for k_ in rm empty; do
+  rm -rf "${OUTR:?}"; rm -f "$FX/onpush.done"
+  case $k_ in rm) a_='rm -f' ;; empty) a_=': >' ;; esac
+  cat > "$FX/onpush" <<EOF
+printf '#!/bin/sh\nexit 1\n' > "$FX/origin.git/hooks/pre-receive" && chmod +x "$FX/origin.git/hooks/pre-receive"
+$a_ "$PP"
+EOF
+  : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "$FX/onpush" "$FX/onpush.done" "${FX:?}/origin.git/hooks/pre-receive"
+  [ $r = 1 ] && grep -q 'could not be ended.*No run can log out of it' "$FX/o" && sed -n 2p "$NF" | grep -q 'No run can log out of it' && ! grep -q 'logs out of it first' "$NF" \
+    && ! grep -q 'session is ended' "$FX/o" && ! grep -q '^DELETE' "$FX/tokops" \
+    || b6_="$b6_ [$k_: rc=$r; $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-200); line 2 [$(sed -n 2p "$NF" 2>/dev/null | cut -c1-160)]]"
+  if [ $k_ = rm ]; then
+    : > "$FX/tokops"; KEEP=1; ship; r2_=$?; KEEP=
+    [ "$(head -1 "$FX/tokops")" = LOGIN ] || b6_="$b6_ [rm, the next run: rc=$r2_ first token write '$(head -1 "$FX/tokops")']"
+  fi
+  rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
+done
+[ -z "$b6_" ] && pass "r22a F2: P removed or emptied at the end: could not be ended, no run can log out of it; never that the next run does, which logs in with no logout" || fail "r22a F2:$b6_"
 # r21b F6 (PLAN-ship.md REV 12f rule 47): a FIFO at D/global (npm's global config, which ship names and never
 # makes), made as the push starts; the push is refused. The end opens nothing there (fwatch2.pl: no opener
 # blocks while the lock is held) and says the session could not be ended; the FIFO stays. Then a file at

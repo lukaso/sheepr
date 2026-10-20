@@ -273,7 +273,8 @@ printf 'rm -f "%s"; mkfifo "%s"\n' "$PN/npmrc" "$PN/npmrc" > "$FX/onpublish.shee
 /usr/bin/perl "$FX/fwatch.pl" "$PN/npmrc" "$FX/out/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
 mkout "$D" v0.1.0; : > "$FX/tokops"; pub v0.1.0; r=$?; : > "$FX/run.done"; wait $wp_; rm -f "$FX/onpublish.sheepr"
 [ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'could not be ended' "$FX/o" && [ ! -e "$FX/out/.ship.lock" ] && [ -p "$PN/npmrc" ] \
-  && pass "r20b F1: publish-npm, a FIFO at P after the last upload: its end does not open it; it says the session could not be ended, frees the lock" \
+  && grep -q 'stops until it is removed' "$FX/o" && ! grep -q 'logs out of it first' "$FX/o" \
+  && pass "r20b F1: publish-npm, a FIFO at P after the last upload: its end does not open it; it says the session could not be ended, frees the lock; the next run stops until it is removed (r22a F2)" \
   || fail "r20b F1 (publish-npm): readers blocked on P '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$FX/out/.ship.lock" ] && echo left || echo gone); $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-160)"
 rm -f "$FX/run.done" "$FX/w.res" "${FX:?}/fwatch.pl"; rm -rf "${PN:?}"
 # r20a PX2 (PLAN-ship.md REV 12e rule 44; X2's publish-npm twin; REV 12 rule 5, REV 12c rule 34): another
@@ -298,6 +299,16 @@ echo E401 > "$FX/logoutcode"; : > "$FX/tokops"; pub v0.1.0; r=$?; rm -f "$FX/log
   && pass "r21a F1 (PNW1): publish-npm, E401 while whoami answers, past the end time: a stop, P kept, nothing says ended" \
   || fail "r21a F1 (PNW1): rc=$r logins $(grep -c '^npm login' "$FX/calls"), the earlier P $(grep -qx '//registry.npmjs.org/:_authToken=npm_earlier' "$PN/npmrc" 2>/dev/null && echo kept || echo GONE); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
 rm -rf "${PN:?}" "${FX:?}/out/.ship.lock"
+# r22a F2 (PLAN-ship.md REV 12g rule 50): publish-npm on its own; after the main package's upload D is moved
+# aside: its login wrote a session and P holds none now: stderr says the session could not be ended and that
+# no run can log out of it, never that the next run logs out of it first. Control: rule 2's rows
+mkout "$D" v0.1.0; rm -rf "${PN:?}" "${PN:?}.aside"
+printf 'mv "%s" "%s"\n' "$PN" "$PN.aside" > "$FX/onpublish.sheepr"
+: > "$FX/tokops"; pub v0.1.0; r=$?; rm -f "$FX/onpublish.sheepr"
+[ $r = 1 ] && grep -q 'could not be ended.*No run can log out of it' "$FX/o" && ! grep -q 'logs out of it first' "$FX/o" && ! grep -q 'session is ended' "$FX/o" \
+  && pass "r22a F2: publish-npm, D moved aside after the last upload: could not be ended, no run can log out of it" \
+  || fail "r22a F2 (publish-npm): rc=$r $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-240)"
+rm -rf "${PN:?}" "${PN:?}.aside" "${FX:?}/out/.ship.lock"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \
