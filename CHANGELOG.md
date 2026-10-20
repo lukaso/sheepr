@@ -6,7 +6,7 @@ schemas (`"v": 1`, additive changes only) and the `sheepr:` at the start of the 
 each message sheepr itself writes to stderr (for a usage error, that line says what was wrong;
 `sheepr` alone prints the overview and exits 2).
 
-## Unreleased
+## 0.1.4 (2026-10-20)
 
 - `run --status-fd`: two new fields, `root_code` (the command's exit code when it exited) and
   `root_signal` (the number of the signal that ended it), each null otherwise. Both are null when
@@ -109,6 +109,11 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
 - `run` (Linux): when the command's starter fails, stderr and `error` say how: it ended before
   it answered (its exit code or signal), it gave no answer in time, or which of its own steps
   failed, with the errno.
+- `install.sh`: when a signal stops it (now also QUIT, ALRM, USR1, USR2, XCPU, XFSZ, VTALRM and
+  PROF, not only HUP, INT and TERM), or when the program that reads its output exits first
+  (`curl ... | sh | head -1`), it removes its temp folder and puts back an old `Sheepr.app` it had
+  moved aside. Before, under dash, busybox ash and zsh, a closed output ended it with its temp
+  folder left behind.
 
 ## 0.1.3 (2026-10-10)
 
