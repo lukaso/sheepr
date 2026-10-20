@@ -26,11 +26,19 @@
 #       compares against it
 #   npm-same.py same TGZ ARCHIVE           the darwin package's Sheepr.app equals the release
 #       archive's, file by file: path, mode and content (`packages` has fixed the package's modes)
-# Exit 0, or 1 with the reason on stderr.
+#   npm-same.py owners PATH                PATH's volume keeps file ownership (0); one that ignores it
+#       (1: mounted noowners, an external drive's way: every account reads its files as its own), read
+#       from the mount's flags (statfs, MNT_IGNORE_OWNERSHIP); release.sh checks the volume of its npm
+#       directory before it logs in there (PLAN-ship.md REV 12b rule 28)
+# Exit 0, or 1 with the reason on stderr; 3, "npm-same: cannot check: ...", when the check could
+# not run (a file it cannot open, any other error): no finding about the packages (r13b F3).
 import sys, hashlib, json, os, re, zlib
 
 def die(msg):
     sys.stderr.write("npm-same: " + msg + "\n"); sys.exit(1)
+
+def cannot(msg):
+    sys.stderr.write("npm-same: cannot check: " + msg + "\n"); sys.exit(3)
 
 NAME = re.compile(r"[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*/?")
 NPM = "npm 11.6.0 (node-tar 6.2.1)"  # whose npm pack the header rule was measured on
@@ -55,9 +63,11 @@ def npm_header(name, mode, size):
 def plain(path, what, allow_dirs, canonical=False):
     # exactly one gzip member and nothing after it: Python reads on past a zero byte into another
     # member, node's zlib and libarchive stop there
+    try: raw = open(path, "rb").read()
+    except OSError as e: cannot("%s: cannot open %s (%s)" % (what, path, e))
     try:
-        z = zlib.decompressobj(31); data = z.decompress(open(path, "rb").read())
-    except Exception as e: die("%s: cannot read %s (%s)" % (what, path, e))
+        z = zlib.decompressobj(31); data = z.decompress(raw)
+    except zlib.error as e: die("%s: not a gzip stream (%s)" % (what, e))
     if not z.eof or z.unused_data: die("%s: not one gzip stream (%s)" % (what, "cut short" if not z.eof else "bytes after it"))
     files, seen, o = {}, set(), 0
     while True:
@@ -177,14 +187,46 @@ def same(tgz, arc):
         if p[n][0] != a[n][0]: die("the darwin package's bundle is not the release archive's bundle: %s has mode %o, the archive's %o" % (n, p[n][0], a[n][0]))
         if p[n][1] != a[n][1]: die("the darwin package's bundle is not the release archive's bundle: %s differs in content" % n)
 
-if __name__ == "__main__":
+MNT_IGNORE_OWNERSHIP = 0x00200000   # <sys/mount.h>
+
+def owners(path):
+    import ctypes, ctypes.util
+    class Statfs(ctypes.Structure):   # struct statfs, 64-bit inodes (__DARWIN_STRUCT_STATFS64)
+        _fields_ = [("f_bsize", ctypes.c_uint32), ("f_iosize", ctypes.c_int32), ("f_blocks", ctypes.c_uint64),
+                    ("f_bfree", ctypes.c_uint64), ("f_bavail", ctypes.c_uint64), ("f_files", ctypes.c_uint64),
+                    ("f_ffree", ctypes.c_uint64), ("f_fsid", ctypes.c_int32 * 2), ("f_owner", ctypes.c_uint32),
+                    ("f_type", ctypes.c_uint32), ("f_flags", ctypes.c_uint32), ("f_fssubtype", ctypes.c_uint32),
+                    ("f_fstypename", ctypes.c_char * 16), ("f_mntonname", ctypes.c_char * 1024),
+                    ("f_mntfromname", ctypes.c_char * 1024), ("f_flags_ext", ctypes.c_uint32), ("f_reserved", ctypes.c_uint32 * 7)]
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    fn = None
+    for name in ("statfs$INODE64", "statfs"):   # x86_64 names the 64-bit-inode call so; arm64 has only it
+        try: fn = getattr(libc, name); break
+        except AttributeError: continue
+    if fn is None: cannot("no statfs in libc")
+    fn.argtypes = [ctypes.c_char_p, ctypes.POINTER(Statfs)]
+    s = Statfs()
+    if fn(os.fsencode(path), ctypes.byref(s)) != 0: cannot("statfs %s: %s" % (path, os.strerror(ctypes.get_errno())))
+    mp = s.f_mntonname.decode("utf-8", "replace")
+    if not mp.startswith("/"): cannot("statfs %s: no mount point" % path)
+    if s.f_flags & MNT_IGNORE_OWNERSHIP:
+        die("%s is on a volume that ignores file ownership (%s, mounted on %s)" % (path, s.f_fstypename.decode("ascii", "replace"), mp))
+
+def main():
     if len(sys.argv) == 6 and sys.argv[1] == "packages": packages(*sys.argv[2:6])
     elif len(sys.argv) == 4 and sys.argv[1] == "pkgjson": print(json.dumps(pkgjson(sys.argv[2], sys.argv[3]), indent=2))
     elif len(sys.argv) == 4 and sys.argv[1] == "same": same(*sys.argv[2:4])
     elif len(sys.argv) == 3 and sys.argv[1] == "list": check_list(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "owners": owners(sys.argv[2])
     # the integrity npm records for a published tarball (its `dist.integrity`)
     elif len(sys.argv) == 3 and sys.argv[1] == "integrity":
         import base64
         print("sha512-" + base64.b64encode(hashlib.sha512(ref(sys.argv[2])).digest()).decode())
     else:
-        sys.stderr.write("usage: npm-same.py packages DIR VERSION REF NAMES | list NAMES | same TGZ ARCHIVE | pkgjson KIND VERSION | integrity TGZ\n"); sys.exit(2)
+        sys.stderr.write("usage: npm-same.py packages DIR VERSION REF NAMES | list NAMES | same TGZ ARCHIVE | pkgjson KIND VERSION | integrity TGZ | owners PATH\n"); sys.exit(2)
+
+if __name__ == "__main__":
+    # an error that is not one of the checks' own refusals (die) is no finding: exit 3
+    try: main()
+    except SystemExit: raise
+    except BaseException as e: cannot("%s: %s" % (type(e).__name__, e))

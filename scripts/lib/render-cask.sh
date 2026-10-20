@@ -10,5 +10,8 @@ lib=$(cd "$(dirname "$0")" && pwd -P) || exit 1
 one() { printf '%s\n' "$1" | grep -Eq "$2" && [ "$(printf '%s' "$1" | wc -l | tr -d ' ')" = 0 ]; }
 one "$v" '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' || { echo "render-cask: bad version $v" >&2; exit 2; }
 one "$h" '^[0-9a-f]{64}$' || { echo "render-cask: bad sha256 $h" >&2; exit 2; }
-sed -e "s/@VERSION@/$v/" -e "s/@SHA256@/$h/" "$lib/../../packaging/homebrew/sheepr.rb.in" > "$o.tmp" && mv "$o.tmp" "$o" \
+# the render read back before the rename: sed may exit 0 when a full disk took none of its bytes (as
+# /usr/bin/printf does: r17b F1), and a short cask would read as another one
+t_=$lib/../../packaging/homebrew/sheepr.rb.in
+sed -e "s/@VERSION@/$v/" -e "s/@SHA256@/$h/" "$t_" > "$o.tmp" && sed -e "s/@VERSION@/$v/" -e "s/@SHA256@/$h/" "$t_" | /usr/bin/cmp -s - "$o.tmp" && mv "$o.tmp" "$o" \
   || { rm -f "$o.tmp"; echo "render-cask: cannot write $o" >&2; exit 1; }

@@ -4,7 +4,11 @@
 #   archive.sh make APP OUT.tar.gz          tar APP (Sheepr.app) with no xattrs, ACLs or mac
 #                                           metadata, owners 0/0 with no names
 #   archive.sh check ARCHIVE [--signed|--signed-unstapled]
-#                                           exit 0 only if ARCHIVE holds exactly the bundle
+#                                           exit 0 only if ARCHIVE holds exactly the bundle; 1 when
+#                                           it does not ("archive: ..."); 3 when the check could not
+#                                           run ("archive: cannot check: ...": no temp dir, a tar a
+#                                           signal stopped, an extraction that fails once the listing
+#                                           passed, i.e. a full or unwritable temp dir): no finding
 #
 # The default macOS tar stores com.apple.provenance and any com.apple.quarantine in pax headers
 # that `tar -t` does not show, and extraction restores them; it also stores the user's name.
@@ -15,8 +19,10 @@
 # and no xattr on anything after extraction.
 set -u
 PATH=/usr/bin:/bin; export PATH
+. "$(dirname "$0")/sigs.sh" || exit 1   # SIGS: the signals the cleanup trap catches
 usage() { echo "usage: archive.sh make APP OUT.tar.gz | archive.sh check ARCHIVE [--signed|--signed-unstapled]" >&2; exit 2; }
 bad() { echo "archive: $*" >&2; exit 1; }
+nocheck() { echo "archive: cannot check: $*" >&2; exit 3; }   # (no finding about the archive: r13b F3)
 [ $# -ge 2 ] || usage
 case $1 in
   make)
@@ -31,9 +37,9 @@ case $1 in
     [ $# -le 3 ] || usage
     [ $# -eq 3 ] && case $3 in --signed) signed=yes ;; --signed-unstapled) signed=unstapled ;; *) usage ;; esac
     [ -f "$arc" ] || bad "no archive $arc"
-    t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || exit 1
-    trap 'rm -rf "$t"' EXIT
-    trap 'rm -rf "$t"; exit 1' HUP INT TERM
+    t=$(mktemp -d /private/tmp/sr-archive.XXXXXX 2>/dev/null || mktemp -d) || nocheck "no temp dir"
+    trap 'trap "" $SIGS; rm -rf "$t"' EXIT
+    trap 'rm -rf "$t"; exit 1' $SIGS
     want="Sheepr.app/Contents/Info.plist
 Sheepr.app/Contents/MacOS/sheepr"
     [ $signed != no ] && want="$want
@@ -42,18 +48,35 @@ Sheepr.app/Contents/_CodeSignature/CodeResources"
 Sheepr.app/Contents/CodeResources"
     want=$(printf '%s\n' "$want" | sort)
     wantdirs=$(printf '%s\n' "$want" | while IFS= read -r f; do d=$(dirname "$f"); while [ "$d" != . ]; do echo "$d/"; d=$(dirname "$d"); done; done | sort -u)
-    # the listing: regular files and directories, owners
-    tar -tvzf "$arc" > "$t/list" 2>/dev/null || bad "cannot list $arc"
-    files=$(awk '$1 ~ /^-/ {print $NF}' "$t/list" | sort)
-    dirs=$(awk '$1 ~ /^d/ {print $NF}' "$t/list" | sed 's#/*$#/#' | sort -u)
-    others=$(awk '$1 !~ /^[-d]/' "$t/list")
+    # the listing: regular files and directories, owners. bsdtar exits 0 when its listing cannot be
+    # written (a full temp dir: an empty or a cut listing, read as a defect of the archive;
+    # notes/r14b/arc/list2.out, notes/builder/arc14/x.out): a line written after it must land, or there
+    # is no listing to judge (a write failure that clears before that line is not seen). tar stays
+    # this script's own child (the signal rows send to it there). The file is made first: a listing file
+    # that cannot be made is the temp dir's, not the archive's (REV 11b rule 18: the shell refused the
+    # redirection, and tar never ran, which read as "cannot list"); and the line after the listing is
+    # written by /usr/bin/printf: a builtin's failed write left its bytes in the shell's buffer, for the
+    # next write to stderr (r15b dmg/fd.out)
+    { : > "$t/list"; } 2>/dev/null || nocheck "cannot make the listing file in $t (a full or unwritable temp dir)"
+    tar -tvzf "$arc" > "$t/list" 2>/dev/null; r_=$?
+    [ $r_ -le 125 ] || nocheck "tar stopped by a signal while it listed $arc (exit $r_)"
+    [ $r_ = 0 ] || bad "cannot list $arc"
+    # (no row holds the tail compare below: a listing cut mid-line, with the append after it landing,
+    # needs a seam the cells' PATH cannot reach; r15b's MTAIL, the compare dropped, passes every cell)
+    { /usr/bin/printf 'end\n' >> "$t/list"; } 2>/dev/null && [ "$(tail -n 1 "$t/list")" = end ] \
+      || nocheck "the listing of $arc could not be written into $t (a full or unwritable temp dir)"
+    list=$(sed '$d' "$t/list")
+    files=$(printf '%s\n' "$list" | awk '$1 ~ /^-/ {print $NF}' | sort)
+    dirs=$(printf '%s\n' "$list" | awk '$1 ~ /^d/ {print $NF}' | sed 's#/*$#/#' | sort -u)
+    others=$(printf '%s\n' "$list" | awk '$1 !~ /^[-d]/ && NF')
     [ -z "$others" ] || bad "entries that are neither files nor directories: $others"
     [ "$files" = "$want" ] || bad "the files are not exactly the bundle's: $(printf '%s' "$files" | tr '\n' ' ')"
     [ "$dirs" = "$wantdirs" ] || bad "the directories are not exactly the files' parents: $(printf '%s' "$dirs" | tr '\n' ' ')"
-    owners=$(awk '{print $3 " " $4}' "$t/list" | sort -u)
+    owners=$(printf '%s\n' "$list" | awk 'NF {print $3 " " $4}' | sort -u)
     [ "$owners" = "0 0" ] || bad "owners are not 0/0 without names: $(printf '%s' "$owners" | tr '\n' ',')"
     gzip -dc "$arc" | grep -a -q -e 'SCHILY.xattr' -e 'LIBARCHIVE.xattr' && bad "an xattr pax header"
-    mkdir "$t/x" && tar -xzf "$arc" -C "$t/x" || bad "cannot extract"
+    # (the listing passed: an extraction that fails is the temp dir's (full, unwritable) or a signal's)
+    mkdir "$t/x" && tar -xzf "$arc" -C "$t/x" || nocheck "cannot extract $arc into $t/x (a full or unwritable temp dir, or a stopped tar)"
     # macOS adds com.apple.provenance to every file this process creates (measured: even
     # `echo > f`), so that one is the extraction's own; any other (quarantine, ...) came from the
     # archive. The pax-header check above is the one that sees what the archive carries.

@@ -25,7 +25,14 @@
 #     url (the release's archive) line; after its checks the cask step reads nothing of the out
 #     dir (its cask or its manifest changed at the PATCH never reaches the tap); a backport
 #     publishes with the cask untouched; curl's real class (__curl-env, from real_tools), the real
-#     entries' and real_tools' bodies (each defined once) and their dispatch arms are pinned.
+#     entries' and real_tools' bodies (each defined once) and their dispatch arms are pinned;
+#   - publish_check (the ship plan, slice 2): every check publish makes before a write except the
+#     remote tag's, split out of publish_exec, which calls it first: it reads no remote and writes
+#     nothing; no remote tag, or one at another commit, is still refused before any POST;
+#   - `shipping` is never inherited: an exported shipping=yes neither skips the second
+#     confirmation nor requires verify's binding; under __publish-dry's knob SR_PUBLISH_DRY_SHIPPING=yes
+#     (the shipping branches), an unverified archive is refused before any call, and a verified one
+#     is published with no second confirmation.
 set -u
 . "$(dirname "$0")/lib.sh"
 fx_dir; fx_repo
@@ -100,6 +107,7 @@ cat > "$FX/npm" <<EOF
 #!/bin/sh
 n=\$(ls "$FX" | grep -c '^env\\.npm\\.'); env > "$FX/env.npm.\$n"
 echo "npm \$*" >> "$FX/calls"
+for a_; do case \$a_ in --userconfig=*) wc -c < "\${a_#--userconfig=}" | tr -d ' ' >> "$FX/ucsize" ;; esac; done   # (the size of the npm file each call names)
 case \$1 in owner) p=\$3
   if [ -f "$FX/ownerfail.\$p" ]; then echo "npm error code E404" >&2; exit 1; fi
   if [ -f "$FX/owner.\$p" ]; then echo "\$(cat "$FX/owner.\$p") <x@example.com>"; else echo "lukasco <x@example.com>"; fi; exit 0 ;;
@@ -115,20 +123,26 @@ exit 0
 EOF
 chmod +x "$FX/gh" "$FX/git" "$FX/npm" "$FX/curl"
 printf '%s\trefs/tags/v0.1.0\n%s\trefs/tags/v0.1.0^{}\n' "$T" "$C" > "$FX/remote"
+# rec: the dry HOME the last run printed (every dry run here is followed by it; the last row checks
+# that none of them is left)
+rec() { sed -n 's/^release: __publish[a-z-]*-dry (.*a temp HOME, \(\/private\/tmp\/sr-dryhome\.[A-Za-z0-9]*\))$/\1/p' "$FX/o" >> "$FX/homes"; }
 pub() { # tag answers -> rc; output in $FX/o (a fresh tap: TAPV's cask, 0.0.9 when unset; TAPKEEP=1:
        # the tap as it is). Set them as plain assignments and clear them after: a VAR=x prefix on
        # a function call persists in POSIX sh
   rm -rf "$FX/calls" "$FX"/env.* "$FX/up"; printf '%s\n' "$2" > "$FX/ask"
   [ "${TAPKEEP:-}" = 1 ] || tapset "${TAPV:-0.0.9}"
-  (cd "$REPO" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  # PUBCD, PUBOUT: where it runs and the --out it gets (the repo and $FX/out when unset)
+  (cd "${PUBCD:-$REPO}" && env -u LC_ALL LANG=en_GB.UTF-8 LC_COLLATE=en_GB.UTF-8 HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     GH_TOKEN="$DECOY" GITHUB_TOKEN="$DECOY" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" NPM_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" \
     SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    ${PUBX:+"$PUBX"} sh "$REPO/scripts/release.sh" __publish-dry --out "${PUBOUT-$FX/out}" "$1") > "$FX/o" 2>&1; r_=$?; rec
+  return $r_
 }
 cask() { # tag -> rc: `__publish-cask-dry` (the cask step alone); the tap as it is; output in $FX/o
   rm -rf "$FX/calls" "$FX"/env.*
   (cd "$REPO" && env -u LC_ALL HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GH_TOKEN="$DECOY" \
-    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1
+    SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_CURL="$FX/curl" ${PUBX:+"$PUBX"} sh scripts/release.sh __publish-cask-dry --out "$FX/out" "$1") > "$FX/o" 2>&1; r_=$?; rec
+  return $r_
 }
 nowrite() { ! grep -q -e '^gh api -X PUT' "$FX/calls"; }
 nopublic() { ! grep -q -e '^gh api -X POST' -e '^gh api -X PATCH' "$FX/calls"; }
@@ -150,9 +164,28 @@ grep -q '^curl -q -fsSL --proto =https https://github.com/lukaso/sheepr/releases
   && pass "the archive is fetched at the cask's url, with no curlrc and https only" || fail "the curl call: $(grep '^curl' "$FX/calls")"
 # the npm names are checked before anything else: GitHub must not go public when npm would then
 # refuse (the first v0.1.0 did exactly that). `npm owner ls` needs no login; the owner is release.conf's
-REG="--registry=https://registry.npmjs.org/"
-[ "$(sed -n 1,4p "$FX/calls" | tr '\n' ',')" = "npm owner ls sheepr-linux-arm64 $REG,npm owner ls sheepr-linux-x64 $REG,npm owner ls sheepr-darwin-universal $REG,npm owner ls sheepr $REG," ] \
+REG="--registry=https://registry.npmjs.org/ --scope="   # the registry pinned, and no scope (REV 11 rule 2)
+UCP=$(sed -n 's/^npm owner ls sheepr .* --userconfig=\(\/private\/tmp\/sr-publish\.[A-Za-z0-9]*\/npmrc\)$/\1/p' "$FX/calls" | head -1)   # (publish's own npm file: REV 12)
+[ -n "$UCP" ] && [ "$(sed -n 1,4p "$FX/calls" | tr '\n' ',')" = "npm owner ls sheepr-linux-arm64 $REG --userconfig=$UCP,npm owner ls sheepr-linux-x64 $REG --userconfig=$UCP,npm owner ls sheepr-darwin-universal $REG --userconfig=$UCP,npm owner ls sheepr $REG --userconfig=$UCP," ] \
   && pass "before any git or gh call: the npm owners of all four names" || fail "the first calls: $(sed -n 1,4p "$FX/calls" | tr '\n' ',')"
+# REV 12: publish on its own never logs in: its npm calls name an empty npm file of its own run (in its
+# private temp dir: gone after it), never ship's P (an earlier run's, here with a dead token: byte-
+# identical) and never the operator's (the HOME's .npmrc and NPM_CONFIG_USERCONFIG's file, each with a
+# live line: byte-identical); under ship (SR_PUBLISH_DRY_SHIPPING), they name ship's P
+PD_=$FX/out/.v0.1.0.npm; mkdir -p "$PD_" "$FX/ghome" && echo '//registry.npmjs.org/:_authToken=npm_dead' > "$PD_/npmrc" || exit 3
+echo '//registry.npmjs.org/:_authToken=npm_decoyHOME' > "$FX/ghome/.npmrc"; echo '//registry.npmjs.org/:_authToken=npm_decoyENV' > "$FX/decoy-npmrc"
+s0_=$(cat "$PD_/npmrc" "$FX/ghome/.npmrc" "$FX/decoy-npmrc" | cksum)
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; rm -f "$FX/ucsize"; PUBX="NPM_CONFIG_USERCONFIG=$FX/decoy-npmrc"; pub v0.1.0 v0.1.0; r=$?; PUBX=
+u_=$(sed -n 's/^npm .* --userconfig=\([^ ]*\)$/\1/p' "$FX/calls" | sort -u)
+[ $r = 0 ] && [ "$(grep -c '^npm ' "$FX/calls")" = 4 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v ' --userconfig=/private/tmp/sr-publish\.[A-Za-z0-9]*/npmrc$')" ] && [ "$(printf '%s\n' "$u_" | grep -c .)" = 1 ] \
+  && [ ! -e "$u_" ] && [ "$(sort -u "$FX/ucsize" 2>/dev/null)" = 0 ] && [ "$(cat "$PD_/npmrc" "$FX/ghome/.npmrc" "$FX/decoy-npmrc" | cksum)" = "$s0_" ] \
+  && pass "REV 12: publish on its own: every npm call names one empty npm file of its own run (gone after it), never P or the operator's, those byte-identical" \
+  || fail "REV 12, publish's npm file: rc=$r files: $(printf '%s' "$u_" | tr '\n' ' ') sizes: $(sort -u "$FX/ucsize" 2>/dev/null | tr '\n' ' ') $(grep '^npm ' "$FX/calls" | head -1 | cut -c1-200)"
+AH_=$(shasum -a 256 "$FX/out/v0.1.0/sheepr-macos-universal.tar.gz" | cut -d' ' -f1)
+SR_PUBLISH_DRY_VERIFIED=$AH_; export SR_PUBLISH_DRY_VERIFIED; PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && [ "$(grep -c '^npm ' "$FX/calls")" = 4 ] && [ -z "$(grep '^npm ' "$FX/calls" | grep -v -- " --userconfig=$PD_/npmrc\$")" ] \
+  && pass "  under ship: publish's npm calls name ship's P" || fail "  under ship, publish's npm file: rc=$r $(grep '^npm ' "$FX/calls" | head -1 | cut -c1-200)"
+rm -rf "${PD_:?}"; rm -f "${FX:?}/ghome/.npmrc" "${FX:?}/decoy-npmrc" "${FX:?}/ucsize"
 [ "$(grep -c '^git ls-remote https://github.com/lukaso/sheepr refs/tags/v0.1.0\*$' "$FX/calls")" = 2 ] \
   && pass "the tag is read from github.com/lukaso/sheepr itself (twice)" || fail "ls-remote: $(grep ls-remote "$FX/calls" | head -1)"
 bad=""; for f in "$FX"/env.gh.* "$FX"/env.git.*; do for k in $(sed 's/=.*//' "$f"); do   # npm has its own class and row
@@ -168,6 +201,20 @@ pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/moved"
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "the tag moved during the upload: no PATCH (1)" || fail "moved tag: rc=$r"
 pub v0.1.0 no; r=$?
 [ $r = 1 ] && ! grep -q PATCH "$FX/calls" && pass "a wrong second answer: no PATCH (1)" || fail "wrong answer: rc=$r"
+# --out is made absolute right after the arguments, for every entry: a relative one, from another
+# directory than the repo's, names the same out dir as its absolute spelling (the planner, which runs
+# in the repo, and the uploads, which do not, read one directory); an empty one is a usage error
+PUBCD=$FX; PUBOUT=out; pub v0.1.0 v0.1.0; r=$?; PUBCD=; unset PUBOUT
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && pass "a relative --out from another directory: the same out dir, published (0)" || fail "relative --out: rc=$r $(tail -1 "$FX/o")"
+PUBOUT=; pub v0.1.0 v0.1.0; r=$?; unset PUBOUT
+[ $r = 2 ] && [ ! -s "$FX/calls" ] && grep -q '^usage' "$FX/o" && pass "an empty --out: a usage error (2), nothing called" || fail "empty --out: rc=$r $(tail -1 "$FX/o")"
+# the remote tag stays publish_exec's check (publish_check does not read it): none, or one at another
+# commit, is refused before any POST
+cp "$FX/remote" "$FX/remote.good"; : > "$FX/remote"; pub v0.1.0 v0.1.0; r=$?
+[ $r = 1 ] && nopublic && grep -q 'no remote tag v0.1.0' "$FX/o" && pass "no remote tag: refused before any POST (1)" || fail "no remote tag: rc=$r $(seq) $(tail -1 "$FX/o")"
+printf '%s\trefs/tags/v0.1.0\n%s\trefs/tags/v0.1.0^{}\n' "$T" 1111111111111111111111111111111111111111 > "$FX/remote"; pub v0.1.0 v0.1.0; r=$?
+[ $r = 1 ] && nopublic && grep -q 'is on 1111111111111111111111111111111111111111' "$FX/o" && pass "a remote tag at another commit: refused before any POST (1)" || fail "remote tag elsewhere: rc=$r $(seq) $(tail -1 "$FX/o")"
+cp "$FX/remote.good" "$FX/remote"
 
 # a file changed during its own upload (the upload and the local file agree, the manifest does
 # not): the downloads are compared with the manifest, so no PATCH
@@ -204,6 +251,14 @@ mkout "$FX/out/v0.1.0" v0.1.0 "$C"
 # npm-check comes first: without its stamp for this manifest, nothing reaches GitHub
 rm "$FX/out/v0.1.0/NPM-CHECKED"; pub v0.1.0 v0.1.0; r=$?
 [ $r = 1 ] && [ ! -s "$FX/calls" ] && grep -q 'npm-check' "$FX/o" && pass "no npm-check stamp: refused before any call, npm-check named" || fail "no stamp: rc=$r calls=$(seq)"
+# r17b P4 (REV 11a rule 6): that npm-check step is a line of its own, as printed it names the checkout's
+# release.sh and the out dir; and so after a file changed since npm-check ("again")
+NCL="  sh '$(cd "$REPO" && pwd -P)/scripts/release.sh' npm-check --out '$(cd "$FX/out" && pwd -P)' v0.1.0"
+grep -q '^release: npm-check has not passed on .*\. Run npm-check first:$' "$FX/o" && grep -qxF "$NCL" "$FX/o" \
+  && pass "r17b P4: no stamp: 'Run npm-check first:', then the npm-check line of its own" || fail "r17b P4, the npm-check line: $(grep -A1 'npm-check has not passed' "$FX/o" | tr '\n' '|' | cut -c1-240)"
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; echo x >> "$FX/out/v0.1.0/sheepr-linux-aarch64"; pub v0.1.0 v0.1.0; r=$?; mkout "$FX/out/v0.1.0" v0.1.0 "$C"
+[ $r = 1 ] && grep -q 'has changed since (above)\. Run npm-check again:$' "$FX/o" && grep -qxF "$NCL" "$FX/o" \
+  && pass "r17b P4: a file changed since npm-check: 'Run npm-check again:', then the line of its own" || fail "r17b P4, again: rc=$r $(grep -A1 'changed since' "$FX/o" | tr '\n' '|' | cut -c1-240)"
 mkout "$FX/out/v0.1.0" v0.1.0 "$C"; echo ' ' >> "$FX/out/v0.1.0/MANIFEST.json"; pub v0.1.0 v0.1.0; r=$?
 [ $r = 1 ] && [ ! -s "$FX/calls" ] && pass "a stamp for another manifest (changed after npm-check): refused before any call" || fail "stale stamp: rc=$r calls=$(seq)"
 mkout "$FX/out/v0.1.0" v0.1.0 "$C"; sed 's/^v0.1.0 /v0.1.0-rc.9 /' "$FX/out/v0.1.0/NPM-CHECKED" > "$FX/s" && mv "$FX/s" "$FX/out/v0.1.0/NPM-CHECKED"; pub v0.1.0 v0.1.0; r=$?
@@ -256,13 +311,28 @@ cp "$FX/out/v0.1.0/sheepr.rb" "$FX/tap.cur"; tapset 0.0.9; cp "$FX/tap.cur" "$FX
 
 # after the PATCH, a failure leaves the release public: exit 5, the next command named
 post() { # label: the last pub ended at 5, public, publish-cask named
-  [ $r = 5 ] && grep -q PATCH "$FX/calls" && grep -q 'v0.1.0 is public' "$FX/o" && grep -qF "publish-cask --out \"$FX/out\" v0.1.0" "$FX/o" \
+  [ $r = 5 ] && grep -q PATCH "$FX/calls" && grep -q 'v0.1.0 is public' "$FX/o" && grep -qF "publish-cask --out '$FX/out' v0.1.0" "$FX/o" \
     && pass "$1: exit 5, public said, publish-cask named" || fail "$1: rc=$r $(seq) $(tail -2 "$FX/o" | tr '\n' ' ')"
 }
 touch "$FX/corruptafter"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/corruptafter"; post "the published archive is not the build's"; nowrite && pass "  and no PUT" || fail "  a PUT ran"
 touch "$FX/curlcorrupt"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/curlcorrupt"; post "the archive brew would fetch is not the build's"; nowrite && pass "  and no PUT" || fail "  a PUT ran"
 echo true > "$FX/draftafter"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/draftafter"; post "the release reads as a draft after the PATCH"; nowrite && pass "  and no PUT" || fail "  a PUT ran"
 touch "$FX/put409"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/put409"; post "the PUT is refused (the tap changed)"
+# round 16 item 7 (r15b's census): the exit-5 step, publish-cask, is a line of its own that runs as printed
+# (sh, an interactive zsh, from /): a stub release.sh at the checkout's path (put there after the run,
+# then taken back) records its arguments
+RR_=$(cd "$REPO" && pwd -P); pl_=$(grep -x "  sh '$RR_/scripts/release.sh' publish-cask --out '$FX/out' v0.1.0" "$FX/o"); pb_=0
+cp "$REPO/scripts/release.sh" "$FX/rs.keep" || exit 3
+printf '#!/bin/sh\n{ printf "rs"; for a; do printf " [%%s]" "$a"; done; printf "\\n"; } >> "$REC"\n' > "$REPO/scripts/release.sh"
+  for how_ in sh zsh; do
+    REC=$FX/rs.rec; : > "$REC"
+    if [ $how_ = sh ]; then (cd / && env -i PATH=/usr/bin:/bin REC="$REC" /bin/sh -c "$pl_") > /dev/null 2>&1
+    else (cd / && printf '%s\n' "$pl_" | env -i PATH=/usr/bin:/bin HOME="$FX" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+    [ "$(cat "$REC")" = "rs [publish-cask] [--out] [$FX/out] [v0.1.0]" ] || pb_=1
+  done
+cp "$FX/rs.keep" "$REPO/scripts/release.sh"; rm -f "$FX/rs.keep" "$FX/rs.rec"
+[ -n "$pl_" ] && [ $pb_ = 0 ] && grep -q ' Run this:$' "$FX/o" \
+  && pass "  item 7: the exit-5 step, publish-cask, is a line of its own that runs as printed (sh, an interactive zsh)" || fail "  the publish-cask line: '$pl_' $(cat "$FX/rs.rec" 2>/dev/null)"
 touch "$FX/readbackdiff"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/readbackdiff"; post "the cask read back is not the one put"
 # publish-cask alone resumes it: the release is public, the tap is updated
 touch "$FX/put409"; pub v0.1.0 v0.1.0 >/dev/null; rm -f "$FX/put409"; cask v0.1.0; r=$?
@@ -326,6 +396,7 @@ want_publish_cask='publish_cask() {
   publish_cask_exec "$out/$tag"
 }'
 want_real_tools='real_tools() {
+  [ "$dryentry" = no ] || die "real_tools in a dry entry"
   GH=gh GITCMD=git NPM=npm NPMC=npm DRY=no NETC=net CURL=/usr/bin/curl CURLC=web
 }'
 for e in publish publish_cask real_tools; do
@@ -377,7 +448,7 @@ printf '#!/bin/sh\nexec "%s" "$@"\n' "$OUT/gh" > "$FX/gh-wrap"; chmod +x "$FX/gh
 for spec in "outside:$OUT/gh" "symlink:$FX/gh-link" "dotdot:$FX/../$(basename "$OUT")/gh"; do
   l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
   (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$p" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
   [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_GH' "$FX/o" && pass "__publish-dry, a $l gh: refused for the gh stand-in, the outside gh never called" || fail "__publish-dry, $l: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1)"
 done
 # a stand-in whose name ends in a newline, next to a symlink without it: refused, the symlink's
@@ -386,14 +457,14 @@ nl='
 '
 cp "$FX/gh" "$FX/ghn$nl"; ln -s "$OUT/gh" "$FX/ghn"; rm -f "$OUT/called"
 (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/ghn$nl" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-  sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+  sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
 [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_GH' "$FX/o" && pass "a stand-in name ending in a newline: refused for the gh stand-in, the symlink's target never called" || fail "newline name: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1)"
 # a wrapper inside the fixtures that execs a gh outside them cannot be seen before it runs: what
 # it reaches runs with a fresh temp HOME and no token or transport variable, so a real gh would
 # have no login and could not write
 rm -f "$OUT/called" "$OUT/env"
 (cd "$REPO" && env HOME="$FX/ghome" GH_TOKEN="$DECOY" GH_CONFIG_DIR="$FX/ghcfg" SSH_AUTH_SOCK="$FX/sock" SR_PUBLISH_DRY_GH="$FX/gh-wrap" \
-  SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1
+  SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; rec
 if [ -e "$OUT/env" ]; then
   h=$(sed -n 's/^HOME=//p' "$OUT/env")
   case $h in /private/tmp/sr-*) ! grep -q -e '^GH_TOKEN=' -e '^GH_CONFIG_DIR=' -e '^SSH_AUTH_SOCK=' -e '^GITHUB_TOKEN=' "$OUT/env" \
@@ -404,7 +475,7 @@ printf '#!/bin/sh\necho "OUTSIDE npm $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OU
 for spec in "outside:$OUT/npm" "symlink:$FX/npm-link"; do
   l=${spec%%:*} p=${spec#*:}; rm -f "$OUT/called"
   (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$p" SR_PUBLISH_DRY_CURL="$FX/curl" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?
+    sh scripts/release.sh __publish-dry --out "$FX/out" v0.1.1-rc.1) > "$FX/o" 2>&1; r=$?; rec
   [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_NPM' "$FX/o" && pass "__publish-dry, a $l npm: refused for the npm stand-in, the outside npm never called" || fail "__publish-dry, $l npm: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1) $(tail -1 "$FX/o")"
 done
 printf '#!/bin/sh\necho "OUTSIDE curl $*" >> "%s/called"\nexit 0\n' "$OUT" > "$OUT/curl"; chmod +x "$OUT/curl"; ln -s "$OUT/curl" "$FX/curl-link"
@@ -412,7 +483,7 @@ for spec in "outside:$OUT/curl" "symlink:$FX/curl-link"; do
   l=${spec%%:*} p=${spec#*:}
   for entry in __publish-dry __publish-cask-dry; do rm -f "$OUT/called"
     (cd "$REPO" && env HOME="$FX/ghome" SR_PUBLISH_DRY_GH="$FX/gh" SR_PUBLISH_DRY_GIT="$FX/git" SR_PUBLISH_DRY_NPM="$FX/npm" SR_PUBLISH_DRY_CURL="$p" SR_ASK_SCRIPT="$FX/ask" SR_ASK_RECORD="$FX/calls2" \
-      sh scripts/release.sh $entry --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; r=$?
+      sh scripts/release.sh $entry --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; r=$?; rec
     [ $r != 0 ] && [ ! -e "$OUT/called" ] && grep -q 'SR_PUBLISH_DRY_CURL' "$FX/o" && pass "$entry, a $l curl: refused for the curl stand-in, the outside curl never called" || fail "$entry, $l curl: rc=$r called=$(cat "$OUT/called" 2>/dev/null | head -1) $(tail -1 "$FX/o")"
   done
 done
@@ -436,8 +507,6 @@ echo stranger > "$FX/owner.sheepr"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/owner.sh
 [ $r = 1 ] && nogh && grep -q 'sheepr on npm belongs to stranger, not to lukasco' "$FX/o" && pass "an npm name owned by someone else: refused before any git or gh call" || fail "npm owner: rc=$r $(seq) $(tail -1 "$FX/o")"
 : > "$FX/ownerfail.sheepr-linux-arm64"; pub v0.1.0 v0.1.0; r=$?; rm -f "$FX/ownerfail.sheepr-linux-arm64"
 [ $r = 1 ] && nogh && grep -q 'sheepr-linux-arm64 is not on npm yet' "$FX/o" && pass "an npm name not on npm yet: refused before any git or gh call" || fail "npm absent: rc=$r $(seq) $(tail -1 "$FX/o")"
-n=$(ls -d /private/tmp/sr-dryhome.* 2>/dev/null | wc -l | tr -d ' ')
-[ "$n" = 0 ] && pass "no dry HOME is left, after the refused runs too" || fail "$n dry HOME dirs left"
 # the planner judges the stamped manifest (the run's private copy), not the output dir's read
 # again: a stamped manifest naming another commit, the output dir's file corrected after the copy
 # (at the first git call), is refused by the planner
@@ -464,4 +533,84 @@ tapset 0.0.9; cask v0.1.0; r=$?
 [ $r = 0 ] && grep -q '^gh api -X PUT' "$FX/calls" && pass "control: publish-cask goes on (0)" || fail "verify binding control (publish-cask): rc=$r $(seq) $(tail -1 "$FX/o")"
 unset SR_PUBLISH_DRY_VERIFIED
 
+# `shipping` is release.sh's own (set to no at its start, never inherited): an exported shipping=yes
+# does not skip the second confirmation (its one ask still recorded), and does not make verify's
+# binding required (no SR_PUBLISH_DRY_VERIFIED: publish goes on, as today)
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"
+SR_PUBLISH_DRY_VERIFIED=$AH; export SR_PUBLISH_DRY_VERIFIED; PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && [ "$(grep -c '^ask ' "$FX/calls")" = 1 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes: the second confirmation is still asked (0)" || fail "exported shipping, the ask: rc=$r asks=$(grep -c '^ask ' "$FX/calls") $(tail -1 "$FX/o")"
+PUBX=shipping=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && pass "an exported shipping=yes without verify's hash: publish goes on, as today (0)" || fail "exported shipping, verify: rc=$r $(tail -1 "$FX/o")"
+# the shipping branches, reached through __publish-dry's own knob (SR_PUBLISH_DRY_SHIPPING=yes; read
+# by that entry only, release.sh's shipping still set at its start): verify's binding required (no
+# verified archive: refused before any npm or gh call), and no second confirmation (the PATCH with
+# no ask)
+PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 1 ] && [ ! -s "$FX/calls" ] && grep -q 'verify has not judged the archive' "$FX/o" && pass "shipping, no verified archive: refused before any npm or gh call (1)" || fail "shipping, unverified: rc=$r calls=$(seq) $(tail -1 "$FX/o")"
+SR_PUBLISH_DRY_VERIFIED=$AH; export SR_PUBLISH_DRY_VERIFIED; PUBX=SR_PUBLISH_DRY_SHIPPING=yes; pub v0.1.0 v0.1.0; r=$?; PUBX=; unset SR_PUBLISH_DRY_VERIFIED
+[ $r = 0 ] && grep -q PATCH "$FX/calls" && [ "$(grep -c '^ask ' "$FX/calls")" = 0 ] && pass "shipping, the archive verified: published with no second confirmation (0)" || fail "shipping, verified: rc=$r asks=$(grep -c '^ask ' "$FX/calls") $(seq) $(tail -1 "$FX/o")"
+# publish_check: defined once; publish_exec calls it first; it reads no remote and writes nothing
+pc=$(body publish_check); pe=$(body publish_exec)
+n=$(grep -Ec "(^|[;&|()[:space:]])(function[[:space:]]+publish_check([[:space:]{(]|\$)|publish_check[[:space:]]*[(][[:space:]]*[)])" "$SR_ROOT/scripts/release.sh")
+[ -n "$pc" ] && [ "$n" = 1 ] && pass "publish_check: defined once" || fail "publish_check is defined $n times"
+# publish_exec calls publish_check first and stops unless it returns 0 (so every success row above,
+# a final tag with the cask put, already there, older, and an rc, pins that it returns 0)
+[ "$(printf '%s\n' "$pe" | sed -n 2p)" = '  publish_check "$1" || die "the checks before publishing did not pass; this step uploaded nothing"' ] \
+  && pass "publish_exec calls publish_check first, and stops unless it returns 0" || fail "publish_exec's start: $(printf '%s\n' "$pe" | sed -n 2p)"
+# the text of publish_check and of each function it calls (a fixed list: the text cannot follow a
+# call it does not name): only reads, by an allow-list (below). It reads the network otherwise
+# (npm's owners, the tap's cask and its write right)
+fbody() { # name file -> the function's text (a one-line function: its line)
+  awk -v n="$1" '$0 ~ "^" n "\\(\\) \\{" { f = 1; print; if ($0 ~ /\}[[:space:]]*(#.*)?$/) exit; next } f { print } f && /^}/ { exit }' "$2"
+}
+pcwrites() { # file -> the lines of publish_check and its callees that are not a read: an allow-list. A
+  # gh call ("$GH") is `api` with no write flag (-X, --method, -f, -F, --field, --raw-field,
+  # --input); an npm call ("$NPM", or npm_owners' "$2") is `owner ls`, `view` or `whoami`; no push,
+  # remote-tag read, planner or question, and no bare gh or npm write
+  for fn in publish_check private_manifest stamp_ok stamp_line files_ok man_hash npm_list npm_owners npy cask_pre blob_id; do
+    b=$(fbody "$fn" "$1"); [ -n "$b" ] || { echo "MISSING $fn"; continue; }
+    printf '%s\n' "$b" | grep -v '^ *#' | awk '
+      /git[[:space:]]+push|GITCMD|ls-remote|release-plan|confirm / { print "WRITE: " $0; next }
+      /(^|[[:space:](";])gh[[:space:]]+(api|release|repo)([[:space:]]|$)/ { print "BARE GH: " $0; next }
+      /(^|[[:space:](";])npm[[:space:]]+(publish|unpublish|login|logout|adduser|deprecate|dist-tag|access|owner[[:space:]]+(add|rm))([[:space:]]|$)/ { print "BARE NPM: " $0; next }
+      # a call: the program right after `tool "CLASS"`, at a command start, or after $( (an argument
+      # that only passes "$NPM" on, as to npm_owners, is not one)
+      /(tool "[^"]*" |^[[:space:]]*|[;(|&][[:space:]]*|\$\()"\$GH"/ { if ($0 !~ /"\$GH" api / || $0 ~ /(^|[[:space:]])(-X|--method|-f|-F|--field|--raw-field|--input)([[:space:]=]|$)/ || $0 ~ /[[:space:]]-X[A-Za-z]/) print "GH: " $0; next }
+      /(tool "[^"]*" |^[[:space:]]*|[;(|&][[:space:]]*|\$\()"\$NPM"|tool "\$1" "\$2"/ { if ($0 !~ /("\$NPM"|"\$2") (owner ls|view|whoami)([[:space:]]|$)/) print "NPM: " $0; next }
+    '
+  done
+}
+w=$(pcwrites "$SR_ROOT/scripts/release.sh")
+[ -n "$pc" ] && [ -z "$w" ] && pass "publish_check and the functions it calls read no remote tag, run no planner, ask nothing and write nothing" || fail "publish_check's text: $(printf '%s' "$w" | head -2 | tr '\n' ' ')"
+# the control: a copy with a remote read planted in publish_check, and one with a write planted in
+# cask_pre (a callee); each is caught (the copies are never run)
+awk '{ print } /^publish_check\(\) \{/ && !d { print "  tool \"$NETC\" \"$GITCMD\" ls-remote \"$UPSTREAM\" x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant1.sh"
+awk '{ print } /^cask_pre\(\) \{/ && !d { print "  tool \"$NETC\" \"$GH\" api -X PUT x"; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant2.sh"
+[ -n "$(pcwrites "$FX/rel-plant1.sh")" ] && [ -n "$(pcwrites "$FX/rel-plant2.sh")" ] && pass "control: a remote read planted in publish_check, and a write planted in cask_pre, are each caught" || fail "control: plant1 '$(pcwrites "$FX/rel-plant1.sh")' plant2 '$(pcwrites "$FX/rel-plant2.sh")'"
+# one planted control per spelling of a write: each copy (never run) is caught
+n_=0
+for plant in '  tool "$NETC" "$GH" api -f message=x repos/x' '  tool "$NETC" "$GH" api --method PUT repos/x' '  tool "$NETC" "$GH" api -XPOST repos/x' \
+    '  tool "$NETC" "$NPM" publish x.tgz' '  gh release create v9.9.9' '  git push origin main'; do
+  n_=$((n_ + 1))
+  awk -v l="$plant" '{ print } /^publish_check\(\) \{/ && !d { print l; d = 1 }' "$SR_ROOT/scripts/release.sh" > "$FX/rel-plant-s$n_.sh"
+  cmp -s "$SR_ROOT/scripts/release.sh" "$FX/rel-plant-s$n_.sh" && { fail "control: '$plant' was not planted"; continue; }
+  [ -n "$(pcwrites "$FX/rel-plant-s$n_.sh")" ] && pass "control: '$plant' planted in publish_check is caught" || fail "control: '$plant' planted in publish_check is not caught"
+done
+
+# the entries set their tools with plain assignments: none reaches a child of release.sh through the
+# environment. A shasum on PATH (release.sh runs shasum itself, outside the tool classes) records
+# which of their names it sees (names only), then runs the real one
+mkdir -p "$FX/envbin"
+printf '#!/bin/sh\nfor k in GH GITCMD NPM NPMC DRY NETC CURL CURLC NOTIFY npm_part shipping npmuc; do eval "[ -z \\"\\${$k+x}\\" ]" || echo "$k" >> "%s/exported"; done\nexec /usr/bin/shasum "$@"\n' "$FX" > "$FX/envbin/shasum"; chmod +x "$FX/envbin/shasum"
+mkout "$FX/out/v0.1.0" v0.1.0 "$C"; rm -f "$FX/exported"; PUBX="PATH=$FX/envbin:$PATH"; pub v0.1.0 v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && [ ! -e "$FX/exported" ] && pass "__publish-dry: none of its tool variables is exported (0)" || fail "__publish-dry exports: rc=$r $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ')"
+rm -f "$FX/exported"; tapset 0.0.9; PUBX="PATH=$FX/envbin:$PATH"; cask v0.1.0; r=$?; PUBX=
+[ $r = 0 ] && [ ! -e "$FX/exported" ] && pass "__publish-cask-dry: none of its tool variables is exported (0)" || fail "__publish-cask-dry exports: rc=$r $(sort -u "$FX/exported" 2>/dev/null | tr '\n' ' ') $(tail -1 "$FX/o")"
+
+# the last row (every run of the cell comes before it): this cell's own dry HOMEs (each run prints
+# the one it made; other sessions may run these cells at the same time, so the whole /private/tmp
+# is not counted): at least ten seen, none left
+nh=$(grep -c . "$FX/homes" 2>/dev/null); nh=${nh:-0}; left=""
+while IFS= read -r h; do [ -e "$h" ] && left="$left $h"; done < "$FX/homes" 2>/dev/null
+[ "$nh" -ge 10 ] && [ -z "$left" ] && pass "none of this cell's $nh dry HOMEs is left, after the refused runs too" || fail "this cell's dry HOMEs: $nh seen; left:$left"
 finish

@@ -7,7 +7,8 @@
 #   - the order: sign, requirement; then announce, lock, unlock (the notary keychain's password),
 #     profile check, submit, and the notary keychain locked again right after the last notarytool
 #     call, before staple, spctl, the door and the archive (the new binary never runs while it is
-#     unlocked); a failed lock is loud and fails the build;
+#     unlocked); a failed lock is loud and fails the build; a signal during notarytool submit
+#     relocks and removes the temp dir, and a second signal during that relock does not cut it short;
 #   - notarytool only with --keychain-profile sheepr-notary and --keychain <the notary keychain
 #     file under HOME>, never a password, key or Apple ID; no other tool gets a keychain path;
 #   - a failed unlock stops the build before any notarytool call, and the keychain is locked; a
@@ -18,11 +19,21 @@
 #   - the control mode (--no-notarize) makes no notarytool call and no keychain lock or unlock;
 #   - the guard: a direct call with a `security` that reports an identity, or with a forged
 #     --real nonce, is refused (3) and no signing tool runs;
-#   - the release-ID bundle lives only under /private/tmp/sr-sign.* and is gone afterwards.
+#   - the release-ID bundle lives only under /private/tmp/sr-sign.* and is gone afterwards;
+#   - the notifications (scripts/lib/notify.sh, recorded as `notify KEY` in dry mode): `password`
+#     once, right before the announce; after a rejection, `password-again` right before the second
+#     unlock (none when the rejection names no submission id); none in the control mode; the real
+#     mode's call pinned by text (the tag tree's notify.sh, through the named environment).
+# Every dry sign.sh run here (the ones that reach a notification point) is inside lib.sh's
+# no-osascript wall, so no row can show a real notification. The real-mode rows (the guard's parent
+# checks, section 4) run outside it: /bin/ps is setuid and cannot run inside the sandbox, and
+# sign.sh's `2>/dev/null` turns that into the same empty answer as a parent it cannot read; each of
+# them stops at the guard, before any notification point. The text pin of section 5 holds that.
 set -u
 . "$(dirname "$0")/lib.sh"
 [ "$(uname -s)" = Darwin ] || { echo "SKIP (macOS only)"; exit 0; }
 fx_dir
+wall_ok && pass "the wall: a path naming osascript cannot run here, another can" || { fail "the no-osascript wall does not hold: nothing else runs"; finish; }
 SIGN="$SR_ROOT/scripts/lib/sign.sh"
 DECOY=decoy-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
 printf 'int main(){return 0;}\n' > "$FX/m.c"; cc -arch arm64 -arch x86_64 -o "$FX/bin" "$FX/m.c" || exit 3
@@ -49,14 +60,18 @@ shim codesign 'case "$*" in
 esac; exit 0'
 shim xcrun 'case "$*" in
   *"notarytool history"*) echo "Successfully received submission history." ;;
-  *"notarytool submit"*) if [ -e "'"$FX"'/reject" ]; then echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
+  *"notarytool submit"*) [ -e "'"$FX"'/submitsig" ] && { p=$(printf "%s" "$*" | sed -n "s|.*/private/tmp/sr-sign\.\([0-9][0-9]*\)\..*|\1|p"); echo "$p" > "'"$FX"'/target.pid"
+      kill -$(cat "'"$FX"'/submitsig") "$p"; /bin/sleep 1; echo "submit done" >> "'"$S"'/calls"; }
+    if [ -e "'"$FX"'/reject" ]; then [ -e "'"$FX"'/noid" ] && { echo "{\"status\":\"Invalid\"}"; exit 1; }; echo "{\"id\":\"11111111-0000-0000-0000-000000000000\",\"status\":\"Invalid\"}"; exit 1; fi
     echo "{\"id\":\"00000000-0000-0000-0000-000000000000\",\"status\":\"Accepted\"}" ;;
 esac; exit 0'
 shim spctl 'exit 0'
 shim ditto 'for a; do last=$a; done; : > "$last"; exit 0'
 shim security 'case "$*" in *find-identity*) echo "     0 valid identities found" ;;
   unlock-keychain*) { [ -e "'"$FX"'/unlock.fail" ] || { [ -e "'"$FX"'/unlock.fail2" ] && [ "$(grep -c "^security unlock-keychain" "'"$S"'/calls")" -ge 2 ]; }; } && { echo "security: SecKeychainUnlock: The user name or passphrase you entered is not correct." >&2; exit 51; } ;;
-  lock-keychain*) [ -e "'"$FX"'/lock.fail" ] && [ "$(grep -c "^security lock-keychain" "'"$S"'/calls")" -ge 2 ] && { echo "security: lock failed" >&2; exit 50; } ;;
+  lock-keychain*) [ -e "'"$FX"'/locksig" ] && [ -s "'"$FX"'/target.pid" ] && [ ! -e "'"$FX"'/locksent" ] && { : > "'"$FX"'/locksent"
+      kill -$(cat "'"$FX"'/locksig") $(cat "'"$FX"'/target.pid"); /bin/sleep 1; echo "lock done" >> "'"$S"'/calls"; }
+    [ -e "'"$FX"'/lock.fail" ] && [ "$(grep -c "^security lock-keychain" "'"$S"'/calls")" -ge 2 ] && { echo "security: lock failed" >&2; exit 50; } ;;
 esac; exit 0'
 KC=$FX/home/Library/Keychains/sheepr-notary.keychain-db
 mkdir -p "${KC%/*}"; : > "$KC"
@@ -65,7 +80,7 @@ run() { # name args... -> rc; output in $FX/out.<name>
   nm=$1; shift
   rm -f "$S/calls" "$S"/env.*
   mkdir -p "$FX/dest.$nm"
-  env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+  no_osascript env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
     SR_ASK_RECORD="$S/calls" \
     sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.$nm" "$@" \
     > "$FX/out.$nm" 2>&1
@@ -82,6 +97,9 @@ seq=$(grep -n -e 'notarytool history' -e '--force' -e 'notarytool submit' -e 'st
 kcl() { grep -n -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' -e 'notarytool' "$S/calls" | cut -d: -f2- | sed -e 's/^security \([a-z-]*\) .*/\1/' -e 's/^xcrun notarytool \([a-z]*\) .*/\1/' | tr '\n' '|'; }
 seq=$(kcl)
 [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] && pass "the order: announce, lock, unlock, profile check, submit, lock at the end" || fail "the keychain order: $seq"
+nkl() { grep -e '^notify ' -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' -e 'notarytool' "$S/calls" | sed -e 's/^security \([a-z-]*\) .*/\1/' -e 's/^xcrun notarytool \([a-z]*\) .*/\1/' | tr '\n' '|'; }
+seq=$(nkl)
+[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] && pass "notify password: once, right before the announce" || fail "the notifications: $seq"
 ln=$(grep -n notarytool "$S/calls" | tail -1 | cut -d: -f1)
 [ "$(sed -n "$((ln + 1))p" "$S/calls")" = "security lock-keychain $KC" ] && pass "the notary keychain is locked right after the last notarytool call" || fail "after the last notarytool call: $(sed -n "$((ln + 1))p" "$S/calls")"
 lk=$(grep -n '^security lock-keychain' "$S/calls" | tail -1 | cut -d: -f1); st=$(grep -n 'stapler staple' "$S/calls" | head -1 | cut -d: -f1)
@@ -118,6 +136,7 @@ run c --no-notarize; rc=$?
 [ $rc = 5 ] && pass "control run ends at the door's refusal (5)" || fail "control run: rc=$rc $(tail -2 "$FX/out.c" | tr '\n' ' ')"
 grep -q notarytool "$S/calls" && fail "the control mode called notarytool" || pass "the control mode calls no notarytool"
 ! grep -q -e '^announce' -e '^security lock-keychain' -e '^security unlock-keychain' "$S/calls" && pass "the control mode announces nothing and touches no keychain" || fail "the control mode announced or touched a keychain: $(grep -e announce -e keychain "$S/calls" | tr '\n' ';')"
+grep -q '^notify ' "$S/calls" && fail "the control mode notified: $(grep '^notify ' "$S/calls" | tr '\n' ';')" || pass "the control mode notifies nothing (it asks for no password)"
 
 # 2b. a failed unlock (a wrong password): stops before any notarytool call; the keychain is locked
 : > "$FX/unlock.fail"; run u; rc=$?; rm -f "$FX/unlock.fail"
@@ -142,8 +161,54 @@ mv "$KC" "$KC.away"; run m; rc=$?; mv "$KC.away" "$KC"
 # 2d. Apple rejects it: unlocked again before the log fetch, locked at the end
 : > "$FX/reject"; run j; rc=$?; rm -f "$FX/reject"
 seq=$(kcl)
-[ $rc = 1 ] && [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|unlock-keychain|log|lock-keychain|" ] && ! grep -q stapler "$S/calls" \
-  && pass "a rejection: unlocked again before the log fetch, locked at the end" || fail "rejection: rc=$rc $seq"
+[ $rc = 1 ] && [ "$seq" = "announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|unlock-keychain|log|lock-keychain|" ] && ! grep -q stapler "$S/calls" \
+  && pass "a rejection: locked, then unlocked again before the log fetch, locked at the end" || fail "rejection: rc=$rc $seq"
+seq=$(nkl)
+[ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|notify password-again|unlock-keychain|log|lock-keychain|" ] \
+  && pass "a rejection: the keychain locked before notify password-again (no time limit), then the second unlock" || fail "rejection, the notifications: $seq"
+[ "$(grep -c '^security lock-keychain' "$S/calls")" = 3 ] && pass "a rejection: three locks" || fail "rejection: $(grep -c '^security lock-keychain' "$S/calls") locks"
+# 2h. Apple rejects it with no submission id: no second unlock, so no second notification
+: > "$FX/reject"; : > "$FX/noid"; run jn; rc=$?; rm -f "$FX/reject" "$FX/noid"
+seq=$(nkl)
+[ $rc = 1 ] && [ "$seq" = "notify password|announce|lock-keychain|unlock-keychain|history|submit|lock-keychain|" ] \
+  && pass "a rejection without an id: no second unlock, no password-again" || fail "rejection without an id: rc=$rc $seq"
+
+# 2i. a QUIT (its default runs no EXIT trap), then a USR1 (its default runs it at once, not waiting
+# for the running tool), to sign.sh while notarytool submit runs, the notary keychain unlocked: its
+# trap waits for the tool, its exit relocks the keychain and removes its temp dir; exit 1
+for sg in QUIT USR1; do
+  rm -f "$S/calls" "$S"/env.* "$FX/target.pid"; echo $sg > "$FX/submitsig"; mkdir -p "$FX/dest.s$sg"
+  # QUIT at its default: a background job of a non-interactive sh starts with QUIT and INT ignored,
+  # and a signal ignored at the start cannot be trapped
+  no_osascript /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+    SR_ASK_RECORD="$S/calls" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.s$sg" \
+    > "$FX/out.s$sg" 2>&1 & sp=$!
+  wait $sp; rc=$?; rm -f "$FX/submitsig"; tp=$(cat "$FX/target.pid" 2>/dev/null)
+  waited=$(grep -c '^submit done$' "$S/calls"); ll=$(tail -1 "$S/calls")
+  i=0; while ! grep -q '^submit done$' "$S/calls" && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done   # the tool's own end, before the next row
+  [ $rc = 1 ] && [ "$waited" = 1 ] && [ "$ll" = "security lock-keychain $KC" ] && [ -n "$tp" ] && [ -z "$(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)" ] \
+    && pass "a $sg during notarytool submit: sign.sh waits for it, relocks the notary keychain, removes its temp dir, exit 1" \
+    || fail "$sg in submit: rc=$rc waited=$waited last='$ll' pid '$tp' temp dir: $(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)"
+done
+
+# 2j. a second signal while the exit locks the notary keychain again (a USR1 during notarytool
+# submit, then a QUIT or a USR1 from the lock-keychain stand-in): the cleanup holds further signals
+# off, so the lock ends, the lock is the last keychain call, and the temp dir is gone; exit 1
+for sg in QUIT USR1; do
+  rm -f "$S/calls" "$S"/env.* "$FX/target.pid" "$FX/locksent"; echo USR1 > "$FX/submitsig"; echo $sg > "$FX/locksig"; mkdir -p "$FX/dest.l$sg"
+  no_osascript /usr/bin/perl -e '$SIG{QUIT} = $SIG{INT} = "DEFAULT"; exec @ARGV or die' -- env HOME="$FX/home" PATH="$S:$PATH" APPLE_APP_SPECIFIC_PASSWORD="$DECOY" CSC_KEY_PASSWORD="$DECOY" GH_TOKEN="$DECOY" NPM_TOKEN="$DECOY" \
+    SR_ASK_RECORD="$S/calls" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.l$sg" \
+    > "$FX/out.l$sg" 2>&1 & sp=$!
+  wait $sp; rc=$?; rm -f "$FX/submitsig" "$FX/locksig"; tp=$(cat "$FX/target.pid" 2>/dev/null)
+  i=0; while ! grep -q '^lock done$' "$S/calls" && [ $i -lt 40 ]; do sleep 0.1; i=$((i + 1)); done   # the stand-in's own end, before the next row
+  kc=$(grep -e '^security lock-keychain' -e '^security unlock-keychain' "$S/calls" | tail -1)
+  [ $rc = 1 ] && [ -e "$FX/locksent" ] && grep -q '^lock done$' "$S/calls" && [ "$kc" = "security lock-keychain $KC" ] && [ -n "$tp" ] \
+    && [ -z "$(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)" ] \
+    && pass "a $sg while the exit locks the keychain again: the lock ends, the keychain stays locked, the temp dir is gone, exit 1" \
+    || fail "$sg in the exit's lock: rc=$rc sent: $(ls "$FX/locksent" 2>/dev/null) last keychain call: '$kc' pid '$tp' temp dir: $(ls -d /private/tmp/sr-sign.$tp.* 2>/dev/null)"
+  rm -rf "${FX:?}/dest.l$sg"
+done
+rm -f "$FX/locksent"
 
 # 3. the requirement comparison refuses a changed marker (a copy of sign.sh's library dir with a
 #    release.conf whose requirement lacks one Developer ID marker)
@@ -158,7 +223,7 @@ SIGN=$SIGN_SAVE
 # 4. the guard. (a) A real HOME (the key and the real login keychain in reach), everything else
 # the same: refused (3) before any signing tool, whatever the security shim says.
 rm -f "$S/calls" "$S"/env.*
-env PATH="$S:$PATH" SR_ASK_RECORD="$S/calls" \
+no_osascript env PATH="$S:$PATH" SR_ASK_RECORD="$S/calls" \
   sh "$SIGN" --bin "$FX/bin" --version 0.1.0 --build 1 --tag v0.1.0-rc.1 --commit 0123456789ab --dest "$FX/dest.g1" > "$FX/out.g1" 2>&1; rc=$?
 [ $rc = 3 ] && ! grep -q -e '^codesign' -e '^xcrun' "$S/calls" 2>/dev/null && pass "a real HOME: refused (3), no signing tool ran" || fail "real HOME: rc=$rc calls=$(cat "$S/calls" 2>/dev/null | tr '\n' ';')"
 # (b) the real mode's parent: sign.sh must be a direct child of `release.sh build --sign`, in any of
@@ -192,4 +257,44 @@ env HOME="$FX/home" PATH="$S:$PATH" sh "$SIGN" --bin "$FX/bin" --version 0.1.0 -
 rm -f "$S/calls"
 (cd "$FX/fake" && env HOME="$FX/home" PATH="$S:$PATH" SR_PPID=1 scripts/release.sh build --sign v0.1.0-rc.1) > "$FX/out.g3" 2>&1; rc=$?
 [ $rc = 3 ] && grep -q "parent's pid" "$FX/out.g3" && [ ! -e "$S/calls" ] && pass "the right parent with another pid given: refused by the pid check (3)" || fail "wrong pid: rc=$rc $(tail -1 "$FX/out.g3")"
+
+# 5. the real mode's notification, by text (never run here): one notify(), whose real branch runs the
+#    tag tree's notify.sh (sign.sh's own lib dir) through the named environment, with the key and the
+#    tag; its dry branch records; the two calls, each once
+code=$(grep -v '^ *#' "$SIGN")
+printf '%s\n' "$code" | grep -qxF '  if [ $real = yes ]; then tool sh "$lib/notify.sh" "$1" "$tag"; else echo "notify $1" >> "${SR_ASK_RECORD:-/dev/null}"; fi' \
+  && [ "$(printf '%s\n' "$code" | grep -c 'notify\.sh')" = 1 ] && pass "the real mode runs the tag tree's notify.sh, through tool, with the key and the tag (its one call)" || fail "the real notify call: $(printf '%s\n' "$code" | grep 'notify\.sh' | tr '\n' ';')"
+[ "$(printf '%s\n' "$code" | grep -c '^ *notify password$')" = 1 ] && [ "$(printf '%s\n' "$code" | grep -c '^ *notify password-again; unlock ')" = 1 ] \
+  && pass "notify password and notify password-again: one call each" || fail "the notify calls: $(printf '%s\n' "$code" | grep -n 'notify pass' | tr '\n' ';')"
+# every notify call lies below the guard's end (`# --- the work`): no notification before the guard
+# has decided the mode. A call is `notify WORD` outside a comment (the definition is `notify() {`)
+calls_at() { # file -> "above N below M def D": the lines (not comments) with the word notify above
+  # and below the guard's end, in any spelling, and where the notify() definition is
+  awk '/^# --- the work/ { w = 1 }
+    /^[[:space:]]*#/ { next }
+    /(^|[^A-Za-z0-9_])notify([^A-Za-z0-9_]|$)/ { if (w) b++; else a++ }
+    /^notify\(\) \{/ { d = (w ? "below" : "above") }
+    END { printf "above %d below %d def %s\n", a, b, (d == "" ? "none" : d) }' "$1"
+}
+[ "$(calls_at "$SIGN")" = "above 0 below 4 def below" ] && pass "every word notify, and its definition, is below the guard's end (four lines, none above)" || fail "the notify lines: $(calls_at "$SIGN")"
+# the controls (copies, never run): each spelling planted right after `real=yes` is caught
+n_=0
+for plant in '  notify password' '  if notify password; then :; fi' '  if :; then notify password; fi' '  x=$(notify password)' '  ( notify password )' \
+    '  ! notify password' '  notify "password"' '  notify() { :; }'; do
+  n_=$((n_ + 1))
+  awk -v l="$plant" '{ print } /^  real=yes$/ && !d { print l; d = 1 }' "$SIGN" > "$FX/sign-notify-early.$n_.sh"
+  cmp -s "$SIGN" "$FX/sign-notify-early.$n_.sh" && { fail "control: '$plant' was not planted"; continue; }
+  case $(calls_at "$FX/sign-notify-early.$n_.sh") in "above 0 "*) fail "control: '$plant' after real=yes is not caught" ;; *) pass "control: '$plant' after real=yes is caught (the copy is never run)" ;; esac
+done
+# r19b F4 (PLAN-ship.md REV 12d rule 39): sign.sh's last line is text, and its status was sign.sh's: a
+# failed write of it (a full disk, a read-only stdout) made release.sh say "signing failed" after a
+# notarized build. No dry run here reaches that line (each ends at the door's refusal, above), so the row
+# reads the script: its last two commands are that echo, then `exit 0`. Control: a copy without it
+lastcmds() { grep -vE '^[[:space:]]*(#|$)' "$1" | tail -2 | sed 's/^\(.\{20\}\).*/\1/' | tr '\n' '|'; }
+grep -vx 'exit 0' "$SIGN" > "$FX/sign-noexit.sh"
+lc_='echo "sign: $tag sig|exit 0|'
+[ "$(lastcmds "$SIGN")" = "$lc_" ] && [ "$(lastcmds "$FX/sign-noexit.sh")" != "$lc_" ] \
+  && pass "r19b F4: sign.sh ends with exit 0 after its last line of text; control: a copy without it is caught" \
+  || fail "r19b F4: sign.sh's last commands: $(lastcmds "$SIGN"); the control: $(lastcmds "$FX/sign-noexit.sh")"
+rm -f "${FX:?}/sign-noexit.sh"
 finish

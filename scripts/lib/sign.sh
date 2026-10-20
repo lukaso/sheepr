@@ -19,11 +19,13 @@
 # Then: (notarizing) the notary keychain, $HOME/$SR_NOTARY_KEYCHAIN, must exist; the bundle with
 # the release ID, built only under /private/tmp and deleted on any failure; codesign with the
 # hardened runtime; the signed requirement must equal the release requirement (csreq's canonical
-# form); verify; the runtime flag. Notarizing: announce the password prompt; lock the notary
-# keychain, then `security unlock-keychain` asks for its password in the terminal (a failure stops
-# before any notarytool call); the profile check; submit (the profile in the notary keychain only;
-# on a rejection, unlock again, then the log fetch); lock it again at once, before anything of the
-# new build runs (a failed lock is loud and fails the build; any exit in that span locks it too);
+# form); verify; the runtime flag. Notarizing: a notification (lib/notify.sh password; in dry mode
+# the record `notify password`), then announce the password prompt; lock the notary keychain, then
+# `security unlock-keychain` asks for its password in the terminal (a failure stops before any
+# notarytool call); the profile check; submit (the profile in the notary keychain only; on a
+# rejection that names its submission: lock, a notification (password-again), unlock again, then the
+# log fetch); lock it again at once, before anything of the new build runs (a failed lock is loud and
+# fails the build; any exit in that span locks it too);
 # staple; spctl and stapler validate. Then --version through the exec door names the commit; the
 # archive. The control mode (--no-notarize) signs and checks only: no keychain, no profile check,
 # no submission, no staple.
@@ -33,6 +35,7 @@
 # signed bundle (the end state of a dry run, whose codesign is a shim).
 set -u
 lib=$(cd "$(dirname "$0")" && pwd -P) || exit 1
+. "$lib/sigs.sh" || exit 1   # SIGS: the signals the relock trap catches
 usage() { echo "usage: sign.sh --bin B --version X.Y.Z --build N --tag T --commit C --dest D [--no-notarize] [--real NONCE --nonce-file F --parent-pid P]" >&2; exit 2; }
 die() { echo "sign: $*" >&2; exit 1; }
 guard() { echo "sign: refused: $*" >&2; exit 3; }
@@ -102,9 +105,16 @@ relock() {
   echo "sign: could not lock the notary keychain $kc; lock it now: security lock-keychain $kc" >&2
   kc=""; return 1
 }
-trap 'rc=$?; relock; rm -rf "$tmp"; exit $rc' EXIT
-trap 'exit 1' HUP INT TERM
+# a second signal during the cleanup (the lock above all) is held off: it must not cut it short
+trap 'rc=$?; trap "" $SIGS; relock; rm -rf "$tmp"; exit $rc' EXIT
+trap 'exit 1' $SIGS
 mkdir -m 700 "$tmp" || die "cannot make $tmp"
+# the operator's attention before each password prompt (they may have left the desk): the tag tree's
+# notify.sh (a notification and the terminal bell; it always exits 0), through the named environment,
+# so no SR_NOTIFY_OSASCRIPT of the caller's reaches it; in dry mode only its record
+notify() { # key
+  if [ $real = yes ]; then tool sh "$lib/notify.sh" "$1" "$tag"; else echo "notify $1" >> "${SR_ASK_RECORD:-/dev/null}"; fi
+}
 # `security unlock-keychain` with no -p asks for the password in the terminal (never read here)
 unlock() { # what-was-sent
   tool security unlock-keychain "$kc" || die "the notary keychain was not unlocked (a wrong password, or the prompt cancelled): $1"; }
@@ -128,6 +138,7 @@ if [ $notarize = yes ]; then
   tool ditto -c -k --keepParent "$app" "$tmp/submit.zip" || die "ditto"
   # the notary keychain is open only from here to the lock after the last notarytool call: nothing
   # of the new build runs in that span
+  notify password
   echo "sign: security will now ask for the password of the sheepr-notary keychain (its own password, not your login password), in this terminal. Type it only here. It is locked again right after the submission."
   [ $real = no ] && echo "announce" >> "${SR_ASK_RECORD:-/dev/null}"
   kc=$k
@@ -138,12 +149,15 @@ if [ $notarize = yes ]; then
   fi
   # the reply is kept even when notarytool fails (it may exit non-zero on a rejection)
   res=$(tool xcrun notarytool submit "$tmp/submit.zip" --keychain-profile sheepr-notary --keychain "$kc" --wait --output-format json 2>&1)
-  printf '%s\n' "$res" > "$dest/notary-submit.json"
+  /usr/bin/printf '%s\n' "$res" > "$dest/notary-submit.json"
   case $res in
     *'"status":"Accepted"'*|*'"status": "Accepted"'*) ;;
     *) id=$(printf '%s' "$res" | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p')
-       # the keychain may have locked itself during --wait (5 minutes idle)
-       [ -n "$id" ] && unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc" \
+       # the keychain may have locked itself during --wait (5 minutes idle), and the operator may
+       # have left: locked first (notify.sh has no time limit, and nothing may hold the keychain open
+       # while it waits), then a second notification, then the second unlock
+       [ -n "$id" ] && { { tool security lock-keychain "$kc" || die "cannot lock the notary keychain $kc before the second notification; lock it now: security lock-keychain $kc"; }
+         notify password-again; unlock "the submission $id WAS sent and Apple did not accept it; its log was not fetched: xcrun notarytool log $id --keychain-profile sheepr-notary --keychain $kc"; } \
          && tool xcrun notarytool log "$id" --keychain-profile sheepr-notary --keychain "$kc" > "$dest/notary-log.json" 2>&1
        die "Apple did not accept it; see $dest/notary-log.json" ;;
   esac
@@ -165,3 +179,6 @@ if [ $notarize = yes ]; then chk=--signed; else chk=--signed-unstapled; fi
 "$lib/archive.sh" make "$app" "$dest/sheepr-macos-universal.tar.gz" || die "archive"
 "$lib/archive.sh" check "$dest/sheepr-macos-universal.tar.gz" $chk || die "the archive fails its check"
 echo "sign: $tag signed${notarize:+ }$( [ $notarize = yes ] && echo 'and notarized' || echo '(control: not notarized)')"
+# (the line above is text: a write of it that fails, a full disk or a read-only stdout, is not this
+# script's status, which release.sh reads as "signing failed"; PLAN-ship.md REV 12d rule 39, r19b F4)
+exit 0

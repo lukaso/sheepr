@@ -19,6 +19,17 @@ grep -q '^SHEEPR_VERSION=0.1.0$' "$I" && pass "rendered with the version" || fai
 sed -n "/<<'SR_DOOR_EOF'/,/^SR_DOOR_EOF$/p" "$I" | sed '1d;$d' > "$FX/door.embedded"
 cmp -s "$FX/door.embedded" "$SR_ROOT/scripts/lib/exec-guard.sh" \
   && pass "the embedded door is exec-guard.sh, byte for byte" || fail "the embedded door differs from exec-guard.sh"
+# install.sh's own lines (the door, which has its own list, left out) name no SIGS variable: the
+# list is written into each trap line at render (zsh does not split a variable into words), and it
+# is scripts/lib/sigs.sh's
+list=$(sed -n 's/^SIGS="\([A-Z0-9 ]*\)"$/\1/p' "$SR_ROOT/scripts/lib/sigs.sh")
+sed "/<<'SR_DOOR_EOF'/,/^SR_DOOR_EOF\$/d" "$I" > "$FX/own"
+# PIPE too, on both lines (install.sh's own: sigs.sh leaves it out): a closed stdout must end the run
+# through the cleanup, and the cleanup holds a second PIPE off (zsh loops on its write error otherwise)
+[ -n "$list" ] && [ "$(grep -c SIGS "$FX/own")" = 0 ] && [ "$(grep -c -x -F "trap 'cleanup; exit 1' $list PIPE" "$FX/own")" = 1 ] \
+  && [ "$(sed -n '/^cleanup() {$/{n;p;}' "$FX/own" | sed 's/[[:space:]]*#.*//')" = "  trap '' $list PIPE" ] \
+  && pass "install.sh's trap line and its cleanup's first line carry scripts/lib/sigs.sh's list and PIPE, written in at render; no SIGS left" \
+  || fail "install.sh's own lines: $(grep -n SIGS "$FX/own" | head -3 | tr '\n' '|') trap: $(grep -n "^trap '" "$FX/own" | tr '\n' '|')"
 
 # the server
 mkdir -p "$FX/srv"
@@ -85,4 +96,13 @@ done
 rec=$FX/rec; : > "$rec"
 env PATH="$FX/p" HOME="$H" SHEEPR_INSTALL_BASE="$BASE" SR_EXEC_RECORD="$rec" "$FX/p/sh" "$I" > "$FX/o" 2>&1; r=$?
 [ $r = 1 ] && grep -q curl "$FX/o" && grep -q wget "$FX/o" && nothing && pass "no curl and no wget: refused, both named" || fail "no downloader: rc=$r $(tail -1 "$FX/o")"
+# an INT, a QUIT (its default runs no EXIT trap) and a USR1 (its default runs it at once, not waiting
+# for the running tool) to install.sh while curl downloads, under each shell it may be piped to
+# (scripts/install-sig-rows.sh): it waits for curl, exits 1, its temp dir is gone, nothing on stderr
+mkdir -p "$FX/isig"
+sh "$SR_ROOT/scripts/install-sig-rows.sh" "$FX/isig" "$I" /bin/zsh /bin/sh /bin/dash /bin/bash /bin/ksh > "$FX/isig.out" 2>&1
+while IFS= read -r l; do
+  case $l in "ok: "*) pass "${l#ok: }" ;; "FAIL: "*) fail "${l#FAIL: }" ;; *) fail "install-sig-rows: $l" ;; esac
+done < "$FX/isig.out"
+[ "$(grep -c '^ok: ' "$FX/isig.out")" = 20 ] && pass "20 signal rows ran (5 shells: stdout closed, and 3 signals)" || fail "signal rows: $(grep -c '^ok: ' "$FX/isig.out") of 20 passed"
 finish

@@ -76,6 +76,10 @@ echo v0.1.0 > "$FX/rel2"; no "$FX/o" "$FX/remote" "$FX/rel2" && pass "a release 
 
 mkout "$FX/o"; mkdir -p "$FX/o/a sub/v0.1.0-control"; printf '{\n  "control": true\n}\n' > "$FX/o/a sub/v0.1.0-control/MANIFEST.json"
 no "$FX/o" && grep -q 'a sub/v0.1.0-control/MANIFEST.json' "$FX/err" && pass "a control manifest nested inside (a space in the path): refused, named" || fail "nested control: rc=$r $(cat "$FX/err")"
+# only what lies inside the release dir counts (PHASE3.md S2): a control build beside it (<outroot>/vX.Y.Z-control)
+# and an earlier build's staging dir (<outroot>/.vX.Y.Z-build.*, which may hold a manifest) do not refuse it
+mkout "$FX/root/v0.1.0"; mkout "$FX/root/v0.1.0-control" signed true; mkout "$FX/root/.v0.1.0-build.abc123" signed true
+ok "$FX/root/v0.1.0" && pass "a control build and a staging dir beside the release dir: not refused" || fail "siblings: rc=$r $(cat "$FX/err")"
 # an rc tag is a prerelease (never the "latest" release)
 fx_release 0.1.1 2 v0.1.1-rc.1; C2=$(g rev-parse "v0.1.1-rc.1^{commit}")
 mkout "$FX/o2"; sed -i.b "s/v0.1.0/v0.1.1-rc.1/; s/$C/$C2/" "$FX/o2/MANIFEST.json"

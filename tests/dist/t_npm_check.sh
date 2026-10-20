@@ -24,7 +24,7 @@ mk() { # mode control
   "$SR_ROOT/scripts/lib/archive.sh" make "$app" "$D/sheepr-macos-universal.tar.gz" || exit 3
   printf '#!/bin/sh\necho aarch64\n' > "$D/sheepr-linux-aarch64"; printf '#!/bin/sh\necho x86_64\n' > "$D/sheepr-linux-x86_64"
   chmod 755 "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64"
-  sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$D" >/dev/null || exit 3
+  mkdir -p "$FX/tmp" && TMPDIR=$FX/tmp sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$D" >/dev/null || exit 3   # (npm pack's temp dir under the fixture: RULES line 13)
   { printf '{\n  "v": 1,\n  "tag": "v0.1.0",\n  "commit": "%s",\n  "mode": "%s",\n  "control": %s,\n  "files": [\n' "$(g rev-parse 'v0.1.0^{commit}')" "$1" "$2"
     sep=""; for f in "$D"/sheepr-macos-universal.tar.gz "$D"/sheepr-linux-aarch64 "$D"/sheepr-linux-x86_64 "$D"/*.tgz; do printf '%s    {"name": "%s", "sha256": "%s"}' "$sep" "$(basename "$f")" "$(shasum -a 256 "$f" | cut -d' ' -f1)"; sep=",
 "; done; printf '\n  ]\n}\n'; } > "$D/MANIFEST.json"
@@ -133,6 +133,11 @@ python3 "$NS" packages "$D" "$nv" "$R" "sheepr sheepr-linux-arm64 sheepr-linux-x
 [ $r != 0 ] && grep -q 'SR_NPM_PKGS' "$FX/o" && pass "npm-same.py: a list with a name twice is refused" || fail "npm-same repeated name: rc=$r $(tail -1 "$FX/o")"
 cp "$D/sheepr-linux-arm64-$nv.tgz" "$D/sheepr-linux-x64-$nv.tgz"; python3 "$NS" packages "$D" "$nv" "$R" "$L" > "$FX/o" 2>&1; r=$?
 [ $r != 0 ] && grep -q "sheepr-linux-x64-$nv.tgz: the package inside is 'sheepr-linux-arm64', not sheepr-linux-x64" "$FX/o" && pass "npm-same.py: a tarball holding another package than its file's is refused for that" || fail "npm-same swapped: rc=$r $(tail -1 "$FX/o")"
+# r17a F4 (REV 12b rule 28): npm-same.py owners PATH: the volume of PATH keeps file ownership: / (this
+# Mac's own disk) 0; a path that is not there: cannot check (3), never an answer
+python3 -I "$NS" owners / > "$FX/o" 2>&1; r1_=$?; python3 -I "$NS" owners "$FX/no/such" > "$FX/o2" 2>&1; r2_=$?
+[ $r1_ = 0 ] && [ ! -s "$FX/o" ] && [ $r2_ = 3 ] && grep -q '^npm-same: cannot check: statfs' "$FX/o2" \
+  && pass "r17a F4: npm-same.py owners: this Mac's disk keeps ownership (0); a path not there: cannot check (3)" || fail "r17a F4, npm-same.py owners: / $r1_ '$(cat "$FX/o")'; missing $r2_ '$(cat "$FX/o2")'"
 # the list's order is the upload order: the main package must come last (its optional dependencies
 # name the others); and its optional dependencies are exactly the list's other names (a name there
 # that is not in the list would never have its npm owner checked)
@@ -161,4 +166,155 @@ h1=$(shasum -a 256 "$D/MANIFEST.json" | cut -d' ' -f1)
   && pass "a manifest replaced during npm-check: the stamp names the one checked, so publish refuses the replaced one" || fail "replaced during the check: rc=$r stamp '$(cat "$D/NPM-CHECKED" 2>/dev/null)' checked $h0 now $h1"
 cp "$FX/rt.real" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.real" "$REPO/scripts/lib/archive.sh" || exit 3
 
+# r12b F1: npm_check sets the content class itself, only at a check that found a defect in the bytes
+# (__class-npm-check: npm_check as ship's C2 subshell runs it, then the class it left). Controls: a
+# package hash, a control build, codesign's verdict on the .dev bundle: content. An Apple tool that
+# cannot run (codesign's path in the fixture's realtools.sh replaced by one that exits 127): fix
+ncc() { (cd "$REPO" && env HOME="$FX/ghome" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 sh scripts/release.sh __class-npm-check --out "$FX/out" v0.1.0) > "$FX/o" 2>&1; }
+cls() { sed -n 's/^release: (class) //p' "$FX/o" | tail -1; }
+mk signed false; echo x >> "$D/sheepr-linux-x64-$nv.tgz"; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'does not match its manifest hash' "$FX/o" && pass "control: a package not its manifest hash: class content" || fail "hash class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+mk signed true; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'control' "$FX/o" && pass "  control: a control build: class content" || fail "control class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'codesign' "$FX/o" && pass "  control: codesign's verdict on the .dev bundle: class content" || fail "codesign class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep" || exit 3
+printf '#!/bin/sh\nexit 127\n' > "$FX/cs127"; chmod +x "$FX/cs127"
+sed "s#/usr/bin/codesign#$FX/cs127#" "$FX/rt.keep" > "$REPO/scripts/lib/realtools.sh"
+grep -q "$FX/cs127" "$REPO/scripts/lib/realtools.sh" || fail "premise: codesign's path not replaced"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'codesign' "$FX/o" && pass "r12b F1: an Apple tool that cannot run (exit 127): class fix" || fail "codesign 127 class: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+cp "$FX/rt.keep" "$REPO/scripts/lib/realtools.sh" || exit 3
+# r15b P4-1: npm-check's order of the checks: stapler refusing (65) runs before spctl, so its verdict is
+# content, with its words, and spctl does not run (it would refuse too). Stand-in real tools (functions)
+# and archive check, in the fixture repo only. Control: the stand-ins accepting (the stamp rows above)
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep3" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep3" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { echo "x.app does not have a ticket stapled to it." > "\${RT_OUT:-/dev/null}"; rt_rc=65; return 1; }
+rt_spctl_ok() { : > "$FX/spctl.ran"; echo "x.app: rejected" > "\${RT_OUT:-/dev/null}"; rt_rc=3; return 1; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+rm -f "$FX/spctl.ran"; mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'does not have a ticket stapled' "$FX/o" && [ ! -e "$FX/spctl.ran" ] \
+  && pass "r15b P4-1: npm-check, stapler refuses and spctl would too: content, stapler's words, spctl not run" \
+  || fail "r15b P4-1 (npm-check): rc=$r '$(cls)' spctl ran: $( [ -e "$FX/spctl.ran" ] && echo yes || echo no); $(tail -1 "$FX/o" | cut -c1-200)"
+cp "$FX/rt.keep3" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep3" "$REPO/scripts/lib/archive.sh" || exit 3
+# r17b F1: npm-check's stamp write that lands nothing (/usr/bin/printf exits 0 on a full disk: measured,
+# notes/builder/i17/wprobe.out): here a link to /dev/null at NPM-CHECKED, planted by the last real-tool
+# stand-in, after npm-check removed the old stamp. npm-check stops: exit 1, "cannot write", class fix
+# (a full disk is no finding about the bytes), and no stamp is left (no link, no file). Control: the same
+# stand-ins with no link: the stamp is written (the stamp rows above)
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep5" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep5" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { return 0; }
+rt_spctl_ok() { [ -e "$FX/nullstamp" ] && ln -s /dev/null "$D/NPM-CHECKED"; return 0; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+mk signed false; : > "$FX/nullstamp"; ncc; r=$?; rm -f "$FX/nullstamp"
+[ $r = 1 ] && [ "$(cls)" = fix ] && grep -q "cannot write $D/NPM-CHECKED" "$FX/o" && [ ! -e "$D/NPM-CHECKED" ] && [ ! -L "$D/NPM-CHECKED" ] \
+  && pass "r17b F1: npm-check's stamp write that lands nothing: exit 1, 'cannot write', class fix, no stamp left" \
+  || fail "r17b F1 (npm-check's stamp): rc=$r '$(cls)' stamp: $( [ -L "$D/NPM-CHECKED" ] && echo link || { [ -e "$D/NPM-CHECKED" ] && echo file || echo none; })"
+mk signed false; ncc; r=$?
+[ $r = 0 ] && [ "$(cat "$D/NPM-CHECKED" 2>/dev/null)" = "v0.1.0 $(shasum -a 256 "$D/MANIFEST.json" | cut -d' ' -f1)" ] \
+  && pass "  control: the same stand-ins, no link: the stamp is written" || fail "  control (stamp): rc=$r '$(cat "$D/NPM-CHECKED" 2>/dev/null)'"
+cp "$FX/rt.keep5" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep5" "$REPO/scripts/lib/archive.sh" || exit 3
+# gkrun FILE ARCHIVE: the two Gatekeeper lines of a spctl stop (FILE) run as printed, from / in sh and
+# in an interactive zsh -f, with a stub spctl first on PATH and TMPDIR under $FX (the line's mktemp names
+# TMPDIR: macOS's mktemp -d with no template ignores it): `spctl --status`, and
+# the line that unpacks ARCHIVE into a new temp dir, asks spctl about the bundle there (the stub
+# records whether that bundle is a directory) and removes that dir (r16b F5: none is left). 0 when
+# both gave exactly that
+gkrun() {
+  mkdir -p "$FX/spb" "$FX/gk" || return 1
+  printf '#!/bin/sh\n{ printf "spctl"; for a; do printf " [%%s]" "$a"; done; [ $# = 5 ] && { [ -d "$5" ] && printf " bundle=yes" || printf " bundle=no"; }; printf "\\n"; } >> "$REC"\n' > "$FX/spb/spctl"; chmod +x "$FX/spb/spctl"
+  l1_=$(grep -x '  spctl --status' "$1"); l2_=$(grep -x "  d=\$(mktemp -d \"\${TMPDIR:-/tmp}/sheepr-gatekeeper.XXXXXX\") && tar -xzf '$2' -C \"\$d\" && spctl -a -vv -t exec \"\$d/[a-zA-Z/.]*\"; rm -rf \"\${d:?}\"" "$1")
+  [ -n "$l1_" ] && [ -n "$l2_" ] || return 1
+  g_=0
+  for how_ in sh zsh; do
+    for l_ in "$l1_" "$l2_"; do
+      REC=$FX/gk.rec; : > "$REC"
+      if [ $how_ = sh ]; then (cd / && env -i PATH="$FX/spb:/usr/bin:/bin" TMPDIR="$FX/gk" REC="$REC" /bin/sh -c "$l_") > /dev/null 2>&1
+      else (cd / && printf '%s\n' "$l_" | env -i PATH="$FX/spb:/usr/bin:/bin" HOME="$FX" TMPDIR="$FX/gk" REC="$REC" /bin/zsh -f -i) > /dev/null 2>&1; fi
+      case $l_ in
+        *--status) [ "$(cat "$REC")" = "spctl [--status]" ] || g_=1 ;;
+        *) case $(cat "$REC") in "spctl [-a] [-vv] [-t] [exec] [$FX/gk/sheepr-gatekeeper."*"/Sheepr.app] bundle=yes") ;; *) g_=1 ;; esac
+           # (r16b F5: the line removes its temp dir: none is left)
+           [ "$(ls "$FX/gk" | grep -c '^sheepr-gatekeeper\.')" = 0 ] || g_=1 ;;
+      esac
+    done
+  done
+  rm -rf "${FX:?}/gk" "${FX:?}/gk.rec"; return $g_
+}
+# REV 11b rule 16: npm-check's spctl stop (stand-in real tools: codesign and stapler accept, spctl
+# refuses, exit 3): class fix; no "cannot change"; its Gatekeeper lines run as printed, on the darwin
+# package's bundle
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep4" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep4" || exit 3
+cat > "$REPO/scripts/lib/realtools.sh" <<EOF
+rt_meets() { return 0; }
+rt_staple_ok() { return 0; }
+rt_spctl_ok() { echo "x.app: rejected" > "\${RT_OUT:-/dev/null}"; echo "source=Notarized Developer ID" >> "\${RT_OUT:-/dev/null}"; rt_rc=3; return 1; }
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REPO/scripts/lib/archive.sh"
+mk signed false; ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = gatekeeper ] && ! grep -qi 'cannot change' "$FX/o" && grep -q 'source=Notarized Developer ID' "$FX/o" && gkrun "$FX/o" "$D/sheepr-darwin-universal-$nv.tgz" \
+  && grep -qxF "If that prints nothing, v0.1.0 is not pushed yet: move the build aside and rebuild it with a valid certificate. If it prints a line, v0.1.0 is pushed: never rebuild v0.1.0; release a new version." "$FX/o" && ! grep -qxF "When the cause is a revoked signing certificate, move the build aside and rebuild it with a valid one." "$FX/o" && ! grep -qi 'expired' "$FX/o" \
+  && pass "REV 11b rule 16, REV 12a, REV 12b rule 23: npm-check's spctl stop: class gatekeeper (a fix class), no 'cannot change', its Gatekeeper lines run as printed on the darwin package's bundle; the rebuild only if v0.1.0 is not pushed; never 'expired'" \
+  || fail "rule 16 (npm-check): rc=$r '$(cls)'; $(grep -e 'spctl' -e 'cannot change' "$FX/o" | tr '\n' '|' | cut -c1-300)"
+cp "$FX/rt.keep4" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep4" "$REPO/scripts/lib/archive.sh" || exit 3
+# r13b F3, F4: judged takes a checking tool's failure for a finding only for its own refusal (exit 1,
+# its "npm-same: " or "archive: " line). npm-same.py stand-ins (the fixture's): "npm-same: x", then a
+# KILL (137); a traceback (exit 1, no "npm-same: " line); exit 2 (usage): fix. Control: the real
+# npm-same refusing an extra file in a package: content
+cp "$REPO/scripts/lib/npm-same.py" "$FX/ns.real" || exit 3
+for t_ in 'kill|import os, signal, sys\nsys.stderr.write("npm-same: x\\n"); sys.stderr.flush(); os.kill(os.getpid(), signal.SIGKILL)' \
+          'trace|raise RuntimeError("a bug (stand-in)")' \
+          'usage|import sys\nsys.stderr.write("usage: npm-same.py (stand-in)\\n"); sys.exit(2)'; do
+  printf "${t_#*|}\n" > "$REPO/scripts/lib/npm-same.py"
+  mk signed false; ncc; r=$?
+  [ $r = 1 ] && [ "$(cls)" = fix ] && grep -q 'an npm package is refused' "$FX/o" && pass "r13b F4: npm-same.py ${t_%%|*} (no refusal of its own): class fix" || fail "npm-same ${t_%%|*}: rc=$r '$(cls)' $(tail -2 "$FX/o" | tr '\n' '|')"
+done
+cp "$FX/ns.real" "$REPO/scripts/lib/npm-same.py" || exit 3
+mk signed false; python3 "$E" "$D/$MT" "$FX/e.tgz" add package/binding.gyp '{}' && mv "$FX/e.tgz" "$D/$MT" && resum "$MT" || fail "could not add a file to $MT"
+ncc; r=$?
+[ $r = 1 ] && [ "$(cls)" = content ] && grep -q 'the files are' "$FX/o" && pass "  control: the real npm-same refusing an extra file in a package: class content" || fail "  extra file: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+# archive.sh stand-ins (the fixture's; the real tools stand in and accept): exit 3, "archive: cannot
+# check: ..." (its extraction out of room): fix. Control: exit 1, "archive: ..." (its refusal): content
+cp "$REPO/scripts/lib/realtools.sh" "$FX/rt.keep2" && cp "$REPO/scripts/lib/archive.sh" "$FX/ar.keep2" || exit 3
+printf 'rt_meets() { return 0; }\nrt_staple_ok() { return 0; }\nrt_spctl_ok() { return 0; }\n' > "$REPO/scripts/lib/realtools.sh"
+for t_ in '3|archive: cannot check: cannot extract x into y (a full or unwritable temp dir, or a stopped tar)|fix' "1|archive: the files are not exactly the bundle's: x|content"; do
+  printf '#!/bin/sh\necho "%s" >&2\nexit %s\n' "$(printf '%s' "$t_" | cut -d'|' -f2)" "${t_%%|*}" > "$REPO/scripts/lib/archive.sh"; chmod +x "$REPO/scripts/lib/archive.sh"
+  mk signed false; ncc; r=$?; w_=${t_##*|}
+  [ $r = 1 ] && [ "$(cls)" = "$w_" ] && grep -q 'the release archive fails its check' "$FX/o" \
+    && pass "$( [ $w_ = content ] && echo '  control: ')r13b F3: archive.sh exit ${t_%%|*}$( [ $w_ = fix ] && echo ' (cannot check)' || echo ' (its refusal)'): class $w_" || fail "archive.sh ${t_%%|*}: rc=$r '$(cls)' $(tail -1 "$FX/o")"
+done
+cp "$FX/rt.keep2" "$REPO/scripts/lib/realtools.sh" && cp "$FX/ar.keep2" "$REPO/scripts/lib/archive.sh" || exit 3
+# RULES line 13 (round 13 item 6): the fixture's own npm pack (npm-pack.sh, what the build runs too) is
+# walled: its temp HOME, userconfig, global config and cache under its own temp dir (in the fixture: mk
+# gives npm-pack.sh TMPDIR=$FX/tmp), no update notifier,
+# the proxies at 127.0.0.1:9 and NO_PROXY 127.0.0.1. A stand-in npm first on PATH, for one npm-pack.sh
+# run, writes those variables only (never the whole environment) and makes no file
+mkdir -p "$FX/npmrec" || exit 3
+cat > "$FX/npmrec/npm" <<'EOS'
+#!/bin/sh
+o_=$(dirname "$0")/env.$$
+for k in HOME NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG npm_config_cache npm_config_update_notifier HTTPS_PROXY HTTP_PROXY NO_PROXY npm_config_userconfig NPM_CONFIG_REGISTRY; do
+  eval "v_=\${$k-<unset>}"; printf '%s=%s\n' "$k" "$v_"
+done > "$o_"
+exit 0
+EOS
+chmod +x "$FX/npmrec/npm"
+mkdir -p "$FX/pk.out" "$FX/tmp"; TMPDIR=$FX/tmp PATH="$FX/npmrec:$PATH" sh "$SR_ROOT/scripts/lib/npm-pack.sh" "$nv" "$D/sheepr-macos-universal.tar.gz" "$D/sheepr-linux-aarch64" "$D/sheepr-linux-x86_64" "$SR_ROOT/npm/sheepr/bin/sheepr" "$FX/pk.out" > /dev/null 2>&1
+e_=$(ls "$FX"/npmrec/env.* 2>/dev/null | head -1); bad_=""
+if [ -z "$e_" ]; then bad_=" no npm call recorded"; else
+  pd_=$(sed -n 's/^HOME=\(.*\)\/home$/\1/p' "$e_")
+  case $pd_ in "$FX/tmp/sr-npmpack."*) ;; *) bad_="$bad_ HOME=$(sed -n 's/^HOME=//p' "$e_") (not under the fixture)" ;; esac
+  for kv in "NPM_CONFIG_USERCONFIG=$pd_/npmrc" "NPM_CONFIG_GLOBALCONFIG=$pd_/globalrc" "npm_config_cache=$pd_/cache" npm_config_update_notifier=false \
+            HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1 'npm_config_userconfig=<unset>' 'NPM_CONFIG_REGISTRY=<unset>'; do
+    grep -qxF "$kv" "$e_" || bad_="$bad_ [want $kv: $(grep "^${kv%%=*}=" "$e_")]"
+  done
+fi
+[ -z "$bad_" ] && pass "npm-pack.sh's npm pack: its HOME, userconfig, global config and cache in its own temp dir; no update notifier; the proxies walled" || fail "npm pack's isolation:$bad_"
+rm -rf "${FX:?}/npmrec" "${FX:?}/pk.out"
 finish
