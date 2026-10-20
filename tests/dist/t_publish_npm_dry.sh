@@ -280,6 +280,17 @@ mkout "$D" v0.1.0; rm -rf "${PN:?}"; mkdir -p "$FX/out/.ship.lock" "$PN" && chmo
   && pass "r20a PX2: another run holds the lock: publish-npm makes no npm call, its P byte-identical" \
   || fail "r20a PX2: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null) tokops [$(tr '\n' ' ' < "$FX/tokops")] P $( [ "$(cksum < "$PN/npmrc" 2>/dev/null)" = "$p0_" ] && echo same || echo CHANGED)"
 rm -rf "${FX:?}/out/.ship.lock" "${PN:?}"
+# r21a F1 (PLAN-ship.md REV 12f rule 45; publish-npm's twin of W1: npm_pre is shared): an earlier live P,
+# its end time 60 s ago; the start's logout answers E401 (every logout here: $FX/logoutcode) and P's whoami
+# answers: a stop before any login, P kept, nothing says ended, no token ended. Control: rule 2's rows
+mkout "$D" v0.1.0; rm -rf "${PN:?}"; mkdir -p "$PN" && chmod 700 "$PN" && echo '//registry.npmjs.org/:_authToken=npm_earlier' > "$PN/npmrc" \
+  && echo $(( $(/bin/date +%s) - 60 )) > "$PN/end" || exit 3
+echo E401 > "$FX/logoutcode"; : > "$FX/tokops"; pub v0.1.0; r=$?; rm -f "$FX/logoutcode"
+[ $r = 1 ] && ! grep -q '^npm login' "$FX/calls" && grep -qx '//registry.npmjs.org/:_authToken=npm_earlier' "$PN/npmrc" && ! grep -q 'is ended' "$FX/o" \
+  && ! grep -q DELETE "$FX/tokops" && grep -q 'npm still answers for that session after its end time' "$FX/o" \
+  && pass "r21a F1 (PNW1): publish-npm, E401 while whoami answers, past the end time: a stop, P kept, nothing says ended" \
+  || fail "r21a F1 (PNW1): rc=$r logins $(grep -c '^npm login' "$FX/calls"), the earlier P $(grep -qx '//registry.npmjs.org/:_authToken=npm_earlier' "$PN/npmrc" 2>/dev/null && echo kept || echo GONE); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
+rm -rf "${PN:?}" "${FX:?}/out/.ship.lock"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \
