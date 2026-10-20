@@ -2385,6 +2385,46 @@ KEEP=1; ship; r=$?; KEEP=
   && pass "r21b F6: a file at D/global before the run: a stop before any npm call, remove it; the file kept" \
   || fail "r21b F6 (the start): rc=$r npm calls $(grep -c '^npm ' "$FX/calls"); $(grep -m1 -e 'global' -e 'stopped at' "$FX/o" | cut -c1-160)"
 rm -rf "${PD:?}"; world_reset; rm -rf "${OUTR:?}"
+# r21b F2 (PLAN-ship.md REV 12f rule 48; Y7): a FIFO at the next file's temp name that rm -f cannot remove (the
+# owner's chflags uchg; another account's in a sticky out dir is the same), then A1 refuses the checkout: the
+# exit handler (its signals ignored) opens nothing there, the run ends, stdout says the next file could not be
+# written, the lock goes. Control: every stop row (nothing at the temp name: the file written)
+T21=$OUTR/.v0.1.0.ship-next.tmp; REC21=$OUTR/.v0.1.0.ship-progress
+rm -rf "${OUTR:?}"; rm -f "$FX/run.done" "$FX/w.res"; mkdir -p "$OUTR" && mkfifo "$T21" && chflags uchg "$T21" || exit 3
+/usr/bin/perl "$FX/fwatch2.pl" "$T21" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+: > "$REPO/x21-untracked"; KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_; rm -f "${REPO:?}/x21-untracked"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -q 'the tree is not clean' "$FX/o" && [ ! -e "$OUTR/.ship.lock" ] && grep -qF "release: (the next file, $NF, could not be written" "$FX/o" && [ -p "$T21" ] \
+  && pass "r21b F2: a FIFO at the next file's temp name that rm cannot remove: the end opens nothing there, says the file could not be written, frees the lock" \
+  || fail "r21b F2: openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 -e 'next file' -e 'stopped at' "$FX/o" | cut -c1-200)"
+chflags nouchg "$T21" 2>/dev/null; rm -f "${T21:?}" "$FX/run.done" "$FX/w.res"; world_reset; rm -rf "${OUTR:?}"
+# r21b F3 (rule 48; Y1's run 2): an earlier run left a FIFO at ship's record (as r20b F1's record row does): the
+# next run's first write goes to the temp name and is renamed onto the record: nothing opens the FIFO, and the
+# release completes. Then r21b F8 (Y6): a link at the record's name: the run replaces the link, its target
+# byte-identical. Control: every completed row (an earlier regular record replaced)
+rm -rf "${OUTR:?}"; rm -f "$FX/run.done" "$FX/w.res"; mkdir -p "$OUTR" && mkfifo "$REC21" || exit 3
+/usr/bin/perl "$FX/fwatch2.pl" "$REC21" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && completed && [ -f "$REC21" ] && [ ! -p "$REC21" ] \
+  && pass "r21b F3: an earlier run's FIFO at ship's record: the first write replaces it, opens nothing there; the release completes" \
+  || fail "r21b F3: openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r, the record $( [ -p "$REC21" ] && echo 'a FIFO' || echo 'not a FIFO'); $(lastline | cut -c1-160)"
+rm -f "$FX/run.done" "$FX/w.res"; world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && printf 'precious\n' > "$FX/precious" && ln -s "$FX/precious" "$REC21" || exit 3; pr0_=$(cksum < "$FX/precious")
+KEEP=1; ship; r=$?; KEEP=
+completed && [ "$(cksum < "$FX/precious")" = "$pr0_" ] && [ -f "$REC21" ] && [ ! -L "$REC21" ] \
+  && pass "r21b F8: a link at ship's record's name: the run replaces the link, its target untouched; the release completes" \
+  || fail "r21b F8: rc=$r the link's target $( [ "$(cksum < "$FX/precious")" = "$pr0_" ] && echo same || echo "CHANGED [$(head -c 60 "$FX/precious")]"); $(lastline | cut -c1-160)"
+rm -f "${FX:?}/precious"; world_reset; rm -rf "${OUTR:?}"
+# rule 48, progress's temp name: a FIFO there that rm -f cannot remove, made during the build (the record's
+# first write is done): the next record line (C5's start push) opens nothing there; the run stops before the
+# push (cannot write the record), nothing public, the lock freed. Control: every completed row
+rm -rf "${OUTR:?}"; rm -f "$FX/run.done" "$FX/w.res" "$FX/pushtried"
+printf 'mkfifo "%s" && chflags uchg "%s"\n' "$REC21.tmp" "$REC21.tmp" > "$FX/onbuild"
+/usr/bin/perl "$FX/fwatch2.pl" "$REC21.tmp" "$OUTR/.ship.lock" "$FX/run.done" "$FX/w.res" & wp_=$!
+KEEP=1; ship; r=$?; KEEP=; : > "$FX/run.done"; wait $wp_; rm -f "${FX:?}/onbuild"
+[ "$(cat "$FX/w.res" 2>/dev/null)" = 0 ] && [ $r = 1 ] && grep -qF "cannot write $REC21" "$FX/o" && [ ! -e "$FX/pushtried" ] && [ ! -e "$OUTR/.ship.lock" ] && [ -p "$REC21.tmp" ] \
+  && pass "rule 48: a FIFO at the record's temp name that rm cannot remove: progress opens nothing there; a stop before the push" \
+  || fail "rule 48, progress's temp name: openers blocked '$(cat "$FX/w.res" 2>/dev/null)', rc=$r; $(grep -m1 -e 'cannot write' -e 'stopped at' "$FX/o" | cut -c1-200)"
+chflags nouchg "$REC21.tmp" 2>/dev/null; rm -f "${REC21:?}.tmp" "$FX/run.done" "$FX/w.res"; world_reset; rm -rf "${OUTR:?}"
 # G4: P planted as a link during the build (after the start's check): the login does not go through it (C4's
 # check: a stop before the login), its target untouched
 rm -rf "${OUTR:?}" "${FX:?}/elsewhere"; mkdir -p "$FX/elsewhere" || exit 3
@@ -2502,18 +2542,27 @@ ship; r=$?; /bin/chmod -N "$OUTR"
   && pass "r18b F3: the lock's pid cannot be written: a stop that removes its own lock" \
   || fail "r18b F3: rc=$r lock $( [ -e "$OUTR/.ship.lock" ] && echo left || echo gone); $(grep -m1 'cannot write' "$FX/o" | cut -c1-200)"
 rm -rf "${OUTR:?}"
-# r18b F4 (REV 12c rule 35): an earlier run's record that this run cannot replace (mode 0444: the first
-# write's open fails) is that run's, not this one's: the stop names the record it cannot write and prints
-# no route of it (here a record of the platform uploads, whose route would send the operator to publish;
-# it holds no `start push`, which the post-push scan reads as this run's); it says this run made nothing
-# public. Control: rule 21's rows (this run's own record, unreadable)
+# r18b F4 (REV 12c rule 35): an earlier run's record that this run cannot replace (chflags uchg: the rename
+# of the first write fails; REV 12f rule 48) is that run's, not this one's: the stop names the record it
+# cannot write and prints no route of it (here a record of the platform uploads, whose route would send the
+# operator to publish; it holds no `start push`, which the post-push scan reads as this run's); it says this
+# run made nothing public. Control: rule 21's rows (this run's own record, unreadable), and the next row
 rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && printf 'run 1 2026-01-01T00:00:00Z\nstart npm-platform sheepr-linux-arm64\n' > "$OUTR/.v0.1.0.ship-progress" \
-  && chmod 444 "$OUTR/.v0.1.0.ship-progress" || exit 3
-ship; r=$?; chmod 644 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
+  && chflags uchg "$OUTR/.v0.1.0.ship-progress" || exit 3
+ship; r=$?; chflags nouchg "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
 [ $r = 1 ] && grep -q 'cannot write .*/\.v0\.1\.0\.ship-progress' "$FX/o" && ! grep -q -e 'is pushed' -e ' publish --out' -e 'publish-npm --out' "$FX/o" && grep -qx 'This run made nothing public.' "$FX/o" \
   && pass "r18b F4: an earlier run's record this run cannot replace: no route of it; this run made nothing public" \
   || fail "r18b F4: rc=$r $(grep -v -e '(dry)' -e 'a temp HOME' "$FX/o" | head -6 | tr '\n' '|' | cut -c1-400)"
 rm -rf "${OUTR:?}"
+# REV 12f rule 48: the same earlier record of mode 0444 (its open for writing fails): the first write replaces
+# it by rename, as progress does with each later line; the release completes, and the record is this run's
+rm -rf "${OUTR:?}"; mkdir -p "$OUTR" && printf 'run 1 2026-01-01T00:00:00Z\nstart npm-platform sheepr-linux-arm64\n' > "$OUTR/.v0.1.0.ship-progress" \
+  && chmod 444 "$OUTR/.v0.1.0.ship-progress" || exit 3
+ship; r=$?; chmod 644 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null
+completed && ! grep -q '^run 1 2026-01-01' "$OUTR/.v0.1.0.ship-progress" && grep -q "^run [0-9]" "$OUTR/.v0.1.0.ship-progress" \
+  && pass "rule 48: an earlier run's record of mode 0444: replaced by the first write's rename; the release completes" \
+  || fail "rule 48, a 0444 record: rc=$r $(head -2 "$OUTR/.v0.1.0.ship-progress" 2>/dev/null | tr '\n' '|'); $(lastline | cut -c1-160)"
+world_reset; rm -rf "${OUTR:?}"
 # r19a F1 (PLAN-ship.md REV 12d rule 36): a done ship whose end logout fails (its next file: "ship's npm
 # session is left:", then that it could not be ended and that the next run logs out of it first), then ship
 # again (v0.1.0 public): its first npm call is the logout of P, stdout says that session is ended, D is gone,

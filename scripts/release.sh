@@ -1265,8 +1265,12 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   fput "$out/.ship.lock/pid" '%s\n' "$$" || die "cannot write $out/.ship.lock/pid"
   # this run's own record, started once it holds the lock: the stop text is built from it
   shipprog=$out/.$tag.ship-progress
+  # (its first write as progress writes its later lines: into the temp name, absent once rm -f ran, then
+  # renamed onto the record: an earlier run's FIFO or link at the record's name is replaced, never written
+  # through (REV 12f rule 48; r21b F3, F8), and a rename that leaves no regular file there fails)
   rm -f "$shipprog.tmp" 2>/dev/null
-  fput "$shipprog" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || die "cannot write $shipprog"
+  [ ! -e "$shipprog.tmp" ] && [ ! -L "$shipprog.tmp" ] && fput "$shipprog.tmp" 'run %s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    && mv -f "$shipprog.tmp" "$shipprog" 2>/dev/null && [ -f "$shipprog" ] && [ ! -L "$shipprog" ] || { rm -f "$shipprog.tmp" 2>/dev/null; die "cannot write $shipprog"; }
   progok=yes   # (ship_stoptext: from here a record it cannot read is never "nothing started")
   # REV 12 rule 2, ship's first npm call: an earlier P logged out of first (a dead token there would fail
   # every npm call with E401), before A1's checks (REV 12c rule 34; r18a F3): so every later ship of this
@@ -1414,8 +1418,10 @@ progress() { # line: ship's record of the phases (no-op outside ship); written b
   # it, so a write a full disk cut short leaves it as it was, and the step is not run (REV 12b rule 21)
   [ -n "$shipprog" ] || return 0
   pr_=$(cat "$shipprog" 2>/dev/null) && [ -n "$pr_" ] || die "cannot read $shipprog (ship's own record)"
+  # (the temp name must be absent once rm -f ran: a FIFO it cannot remove held fput: REV 12f rule 48)
   rm -f "$shipprog.tmp" 2>/dev/null
-  fput "$shipprog.tmp" '%s\n%s\n' "$pr_" "$1" && mv -f "$shipprog.tmp" "$shipprog" 2>/dev/null || { rm -f "$shipprog.tmp" 2>/dev/null; die "cannot write $shipprog"; }
+  [ ! -e "$shipprog.tmp" ] && [ ! -L "$shipprog.tmp" ] && fput "$shipprog.tmp" '%s\n%s\n' "$pr_" "$1" && mv -f "$shipprog.tmp" "$shipprog" 2>/dev/null \
+    || { rm -f "$shipprog.tmp" 2>/dev/null; die "cannot write $shipprog"; }
 }
 drydir() { # dir: a dry run names each temp dir it makes on stderr (a closed stdout cannot hide it),
            # so its cells can hold every one to being gone; a real run (no temp HOME) says nothing
@@ -1873,8 +1879,12 @@ line2() { printf '%s\n' "$1" | sed -n 1p; printf '%s\n' "$2"; printf '%s\n' "$1"
 nfput() {
   [ ! -d "$nf" ] || return 1
   # (r16b F4: what is at the temp name goes first, a link among them, and the write makes a new file,
-  # noclobber: no write goes through a link; a file the write left short is not the text: rm, 1)
+  # noclobber: no write goes through a link; a file the write left short is not the text: rm, 1. What rm -f
+  # cannot remove (a FIFO with chflags uchg, another account's in a sticky out dir) means no write: set -C
+  # refuses only a regular file, and opens a FIFO and waits for a reader, in a handler that ignores its
+  # signals: REV 12f rule 48; r21b F2)
   rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null
+  [ ! -e "$out/.$tag.ship-next.tmp" ] && [ ! -L "$out/.$tag.ship-next.tmp" ] || return 1
   ( set -C; /usr/bin/printf '%s\n' "$1" > "$out/.$tag.ship-next.tmp" ) 2>/dev/null && /usr/bin/printf '%s\n' "$1" | /usr/bin/cmp -s - "$out/.$tag.ship-next.tmp" \
     && mv -f "$out/.$tag.ship-next.tmp" "$nf" 2>/dev/null || { rm -f "$out/.$tag.ship-next.tmp" 2>/dev/null; return 1; }
   [ -f "$nf" ] && [ ! -L "$nf" ] && /usr/bin/printf '%s\n' "$1" | /usr/bin/cmp -s - "$nf" && return 0
