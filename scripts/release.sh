@@ -310,7 +310,7 @@ npm_env() { # HOME command...: base, the proxies and a CA npm may need, never th
   # that dir), never $HOME/.npm: npm answered whoami from its cache when the registry could not be reached,
   # for any token (the cache's key is the URL), sent no request within a max-age, and with Vary:
   # Authorization wrote the token into a 0644 index file there (npm 9.6.7, 10.9.2, 11.6.0: notes/r21a/np)
-  case $npmcache in /private/tmp/sr-ship.?*/npm|/private/tmp/sr-npmpub.?*/npm|/private/tmp/sr-publish.?*/npm) ;; *) echo "release: no npm cache for this run ('$npmcache'): an entry must set it" >&2; return 2 ;; esac
+  case $npmcache in /private/tmp/sr-ship.?*/npm|/private/tmp/sr-ship.?*/npm-c5|/private/tmp/sr-npmpub.?*/npm|/private/tmp/sr-publish.?*/npm) ;; *) echo "release: no npm cache for this run ('$npmcache'): an entry must set it" >&2; return 2 ;; esac
   case $ca in
     ''|/*) ;;
     *) p_=$(pwd -P 2>/dev/null) && [ -n "$p_" ] \
@@ -1355,6 +1355,10 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   # C5. A2's read fresh, A3 and A4 again; the live tag still the recorded object; then the push of
   # exactly A3's refspecs (the recorded object), atomic, no tag followed
   phase=push
+  # (npm's cache from here: one no earlier call of this run used: npm answers a view from a stale entry when
+  # the registry cannot be reached (make-fetch-happen's revalidation), so A4's answers would come back as C5's:
+  # REV 12g rule 51; r22a F3)
+  npmcache=$st/npm-c5
   ship_lsr; ship_pushcheck; ship_nothing_public
   [ "$(git -C "$root" rev-parse -q --verify "refs/tags/$tag")" = "$tagobj" ] || { stopclass content; die "the tag $tag moved since ship recorded it ($tagobj); nothing is public"; }
   set -- "$tagobj:refs/tags/$tag"; [ $pushmain = no ] || set -- "$commit:refs/heads/main" "$@"

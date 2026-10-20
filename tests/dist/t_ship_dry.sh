@@ -1299,10 +1299,16 @@ while read -r c_ k_; do
   case $c_:$k_ in
     /private/tmp/sr-ship.?*/npm:login|/private/tmp/sr-ship.?*/npm:whoami|/private/tmp/sr-ship.?*/npm:logout|/private/tmp/sr-npmpub.?*/npm:publish|/private/tmp/sr-npmpub.?*/npm:whoami) ;;
     /private/tmp/sr-ship.?*/npm:view|/private/tmp/sr-ship.?*/npm:owner|/private/tmp/sr-publish.?*/npm:view|/private/tmp/sr-publish.?*/npm:owner|/private/tmp/sr-npmpub.?*/npm:view|/private/tmp/sr-npmpub.?*/npm:owner) ;;
+    /private/tmp/sr-ship.?*/npm-c5:view|/private/tmp/sr-ship.?*/npm-c5:logout) ;;   # (C5's checks and the end: REV 12g rule 51)
     *) bc_="$bc_ [$k_: $c_]" ;;
   esac
-  [ ! -e "${c_%/npm}" ] || bc_="$bc_ [$k_: ${c_%/npm} left]"
+  [ ! -e "${c_%/*}" ] || bc_="$bc_ [$k_: ${c_%/*} left]"
+  grep -qxF "release: (dry) a temp dir, ${c_%/*}" "$FX/o" || bc_="$bc_ [$k_: ${c_%/*} not a dir this run made]"   # (r22a F4, MX14)
 done < "$FX/npmcaches"
+# (r22a F3: C5's views after the login read ship's npm-c5, which no call before the login used)
+li_=$(grep -n ' login$' "$FX/npmcaches" | head -1 | cut -d: -f1)
+[ -n "$li_" ] && [ "$(sed -n "1,${li_}p" "$FX/npmcaches" | grep -c '/npm-c5 ')" = 0 ] && [ "$(sed -n "$((li_ + 1)),\$p" "$FX/npmcaches" | grep -c '^/private/tmp/sr-ship\..*/npm-c5 view$')" -ge 3 ] \
+  && [ "$(sed -n "$((li_ + 1)),\$p" "$FX/npmcaches" | grep -c '^/private/tmp/sr-ship\..*/npm view$')" = 0 ] || bc_="$bc_ [C5's views: $(sed -n "$((${li_:-0} + 1)),\$p" "$FX/npmcaches" 2>/dev/null | grep ' view$' | sed 's|\.[A-Za-z0-9]*/|.X/|' | sort | uniq -c | tr '\n' ' ')]"
 [ -s "$FX/npmcaches" ] && [ -z "$bc_" ] && grep -q '^/private/tmp/sr-ship\..*/npm login$' "$FX/npmcaches" && grep -q '^/private/tmp/sr-npmpub\..*/npm publish$' "$FX/npmcaches" \
   && grep -q '^/private/tmp/sr-publish\..*/npm owner$' "$FX/npmcaches" \
   && pass "r21a F2: every npm call's cache is the run's own (ship's, publish_check's, publish-npm's private dir), never the HOME's; each gone after the run" \
