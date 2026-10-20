@@ -2192,6 +2192,27 @@ KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutsilent"
   && pass "r22a F6: the start's logout fails with nothing on stderr: the stop says so" \
   || fail "r22a F6: rc=$r $(grep -m1 'could not be ended' "$NF" 2>/dev/null | cut -c1-240)"
 world_reset; rm -rf "${OUTR:?}"
+# r22b F4 (PLAN-ship.md REV 12g rule 52; r22b F1): the out dir must be this account's own. Mode 1777 (a shared
+# sticky dir), mode 0775 (its group can write), an ACL entry that lets everyone add files, an owner other than
+# the uid ship compares with (the dry seam SR_SHIP_DRY_OUTUID=0), and a new out dir ship makes under umask 000:
+# each a stop before any npm call and any build, naming why (another account could plant a build, a record, D,
+# a next file or a temp name there). Controls: every completed row, r18a F2's row (a read-only inherited ACL)
+b7_=""
+for k_ in 1777 0775 acl uid umask; do
+  rm -rf "${OUTR:?}"; [ $k_ = umask ] || mkdir -p "$OUTR" || exit 3
+  case $k_ in
+    1777|0775) chmod $k_ "$OUTR"; w_="can be written by its group or by every account (mode $k_)" ;;
+    acl) /bin/chmod +a "group:everyone allow add_file,add_subdirectory" "$OUTR" || exit 3; w_='has an ACL entry that lets another account add or remove files in it' ;;
+    uid) w_="is not this account's (its owner's uid is $(/usr/bin/id -u))" ;;
+    umask) w_='can be written by its group or by every account (mode 0777)' ;;
+  esac
+  case $k_ in uid) SETX=SR_SHIP_DRY_OUTUID=0; ship; r=$?; SETX= ;; umask) ( umask 000; ship ); r=$? ;; *) ship; r=$? ;; esac
+  [ $r = 1 ] && grep -qF "the out dir $OUTR $w_" "$FX/o" && ! grep -q '^npm ' "$FX/calls" && ! grep -q '^build ' "$FX/calls" \
+    || b7_="$b7_ [$k_: rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null), builds $(grep -c '^build ' "$FX/calls" 2>/dev/null); $(grep -m1 -e 'out dir' -e 'stopped at' "$FX/o" | cut -c1-200)]"
+  [ ! -d "$OUTR" ] || { /bin/chmod -N "$OUTR" 2>/dev/null; chmod 755 "$OUTR"; }; rm -rf "${OUTR:?}"
+done
+[ -z "$b7_" ] && pass "r22b F4: an out dir another account can write (1777, 0775, an ACL entry, another owner, made under umask 000): a stop before any npm call or build" \
+  || fail "r22b F4:$b7_"
 # r18a F2 (PLAN-ship.md REV 12c rule 33): --out under a directory with an inheritable ACL that lets every
 # account read (chmod +a ... file_inherit,directory_inherit; Finder's "apply to enclosed items" makes one):
 # D (ship's mkdir -m 700) and P (npm's login) inherited it, and macOS checks an ACL's allow before the

@@ -179,6 +179,25 @@ case $out in /*) ;; *) out=$(pwd -P)/$out || exit 1 ;; esac
 # every entry, and again where ship_run resolves the dir it made
 outdollar() { case $out in *'$'*) die "the out dir $out holds a \$: npm reads \${NAME} in a path as a variable, so npm's own file and ship's would be two. Use an --out whose path holds no \$" ;; esac; }
 outdollar
+# ... and the operator's own (PLAN-ship.md REV 12g rule 52; r22b F4, F1): owned by this account, with no group
+# or other write bit (sticky or not) and no ACL entry that lets another account add, remove or change in it.
+# Else another account could put a build there ($out/$tag, which A7 takes as a finished build of ship's), a
+# record, D, a next file, or a link or FIFO at a temp name a moment before ship writes it. Checked here, on
+# every entry, when the dir exists, and again where ship makes it. (A dry entry's seam: SR_SHIP_DRY_OUTUID,
+# the uid the owner is compared with)
+outmine() {
+  [ -d "$out" ] || return 0
+  u_=$(/usr/bin/id -u 2>/dev/null); case $sub in __*-dry) u_=${SR_SHIP_DRY_OUTUID:-$u_} ;; esac
+  s_=$(/usr/bin/stat -f '%u %Mp%Lp' "$out" 2>/dev/null)   # (%Mp: the sticky, setgid and setuid digit; %Lp alone drops it)
+  case $u_:$s_ in [0-9]*:[0-9]*' '[0-7]*) ;; *) die "cannot read the owner and the mode of the out dir $out" ;; esac
+  [ "${s_%% *}" = "$u_" ] || die "the out dir $out is not this account's (its owner's uid is ${s_%% *}): another account could put files there that ship would take as its own. Use an --out that is yours"
+  m_=${s_#* }
+  [ $(( 0$m_ & 022 )) = 0 ] || die "the out dir $out can be written by its group or by every account (mode $m_): another account could put files there that ship would take as its own. Make it writable by you only, or use another --out"
+  a_=$(/bin/ls -led "$out" 2>/dev/null) || die "cannot read the ACL of the out dir $out"
+  a_=$(printf '%s\n' "$a_" | grep -E '^ *[0-9]+: .* allow .*(add_file|add_subdirectory|delete_child|writesecurity|chown)' | head -1)
+  [ -z "$a_" ] || die "the out dir $out has an ACL entry that lets another account add or remove files in it ($(printf '%s' "$a_" | sed 's/^ *//' | head -c 120)): another account could put files there that ship would take as its own. Remove that entry, or use another --out"
+}
+outmine
 case $sub in
   check|build|publish|publish-cask|publish-npm|npm-check|verify|ship|__publish-dry|__publish-cask-dry|__publish-npm-dry|__ship-dry|__npm-env|__curl-env|__tool-class|__class-verify|__class-npm-check) ;;
   *) usage ;;
@@ -1244,6 +1263,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   mkdir -p "$out" || die "cannot make $out"
   out=$(cd -P -- "$out" && pwd -P) && [ -n "$out" ] || die "cannot resolve $out"   # (physical: REV 12b rule 24)
   outdollar   # (a new dir under a link: its physical path is known only now; REV 12c rule 32)
+  outmine   # (a new dir: its mode follows the umask; REV 12g rule 52)
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
   drydir "$st"; npmcache=$st/npm   # (npm's cache: this run's own, REV 12f rule 46)
   shipcause=$st/cause shipcls=$st/class; stopclass fix || die "cannot write $shipcls"

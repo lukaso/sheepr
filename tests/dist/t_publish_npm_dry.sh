@@ -309,6 +309,14 @@ printf 'mv "%s" "%s"\n' "$PN" "$PN.aside" > "$FX/onpublish.sheepr"
   && pass "r22a F2: publish-npm, D moved aside after the last upload: could not be ended, no run can log out of it" \
   || fail "r22a F2 (publish-npm): rc=$r $(grep -m1 -e 'could not be ended' -e 'session is ended' "$FX/o" | cut -c1-240)"
 rm -rf "${PN:?}" "${PN:?}.aside" "${FX:?}/out/.ship.lock"
+# r22b F4 (PLAN-ship.md REV 12g rule 52): publish-npm with an out dir of mode 1777 (another account could put
+# D, P or a build there): a stop before any npm call, naming the mode. Control: every row (mode 0755)
+mkout "$D" v0.1.0; rm -rf "${PN:?}"; chmod 1777 "$FX/out" || exit 3
+pub v0.1.0; r=$?; chmod 755 "$FX/out"
+[ $r = 1 ] && ! grep -q '^npm ' "$FX/calls" 2>/dev/null && grep -qF "the out dir $FX/out can be written by its group or by every account (mode 1777)" "$FX/o" \
+  && pass "r22b F4: publish-npm with an out dir of mode 1777: a stop before any npm call" \
+  || fail "r22b F4 (publish-npm): rc=$r npm calls $(grep -c '^npm ' "$FX/calls" 2>/dev/null); $(grep -m1 'out dir' "$FX/o" | cut -c1-200)"
+rm -rf "${PN:?}"
 # rule 3: the login names another account: its logout, P removed, a stop that says how to log in
 mkout "$D" v0.1.0; : > "$FX/tokops"; echo stranger > "$FX/whoami"; pub v0.1.0; r=$?; echo lukasco > "$FX/whoami"
 [ $r = 1 ] && nopub && grep -q 'the login to npm was as stranger, but the packages belong to lukasco' "$FX/o" && grep -q 'When publish-npm asks you to log in to npm, log in as lukasco in the browser, then run publish-npm again' "$FX/o" \
