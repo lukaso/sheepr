@@ -220,6 +220,7 @@ fi
 for f_ in 8 9; do ( exec 3>&\$f_ ) 2>/dev/null && echo "FD\$f_ npm" >> "$FX/fds"; done   # (a child that holds ship's fd 8 or 9: the census row)
 echo "npm \$*" >> "$FX/calls"
 echo "\${NODE_EXTRA_CA_CERTS:-none} \$1" >> "$FX/npmenvs"
+echo "\${npm_config_cache:-none} \$1" >> "$FX/npmcaches"   # (npm's cache, each call's: REV 12f rule 46)
 echo "\$1 \$UC" >> "$FX/npmucs"   # (the userconfig each call loads: REV 11b rule 19)
 # npm's global config (r17a F1): NPM_CONFIG_GLOBALCONFIG or npm_config_globalconfig, else the prefix's
 # etc/npmrc (here \$FX/globaldefault); its token is sent when the userconfig has none (each such request in
@@ -474,7 +475,7 @@ chmod +x "$S/sgit"
 tnow() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }   # the clock, in seconds, to 1/100
 ship() { # args... -> rc; output in $FX/o. The default stand-ins; NO: names whose variable is left out;
          # SETX: one more assignment
-  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/npmucs" "$FX/pipe.rc" "$FX/made"
+  rm -f "$FX/calls" "$FX/pathcalls" "$FX/asks" "$FX/npmenvs" "$FX/npmucs" "$FX/pipe.rc" "$FX/made" "$FX/npmcaches"
   set -- SR_ASK_RECORD="$FX/asks" SR_SHIP_DRY_BUILD="$S/build" SR_SHIP_DRY_NPMCHECK="$S/npmcheck" SR_SHIP_DRY_NOTIFY="$S/notify" SR_SHIP_DRY_CAFFEINATE="$S/caffeinate" \
     SR_SHIP_DRY_IDENTITY="$S/identity" SR_SHIP_DRY_DOCKER="$S/docker" SR_PUBLISH_DRY_GH="$S/gh" SR_PUBLISH_DRY_GIT="$S/sgit" \
     SR_PUBLISH_DRY_NPM="$S/npm" SR_PUBLISH_DRY_CURL="$S/curl" NPM_CONFIG_USERCONFIG="$FX/npmrc" $( [ "${VERIFIED:-}" = - ] || printf '%s' "SR_PUBLISH_DRY_VERIFIED=${VERIFIED:-$AH}" ) "$@"
@@ -1263,6 +1264,24 @@ completed && [ "$(git --git-dir="$FX/origin.git" cat-file -t "$(cat "$FX/next")"
 SETX="NODE_EXTRA_CA_CERTS=$FX/ca.pem"; rm -rf "${OUTR:?}"; ship; r=$?; SETX=
 completed && [ -s "$FX/npmenvs" ] && [ -z "$(grep -v "^$FX/ca.pem " "$FX/npmenvs")" ] && grep -q ' login$' "$FX/npmenvs" && grep -q ' publish$' "$FX/npmenvs" && grep -q ' logout$' "$FX/npmenvs" \
   && pass "every npm call (views, login, uploads, logout) in the npm class" || fail "npm classes: $(grep -v "^$FX/ca.pem " "$FX/npmenvs" 2>/dev/null | sort | uniq -c | tr '\n' ' ') $(lastline)"
+# r21a F2 (PLAN-ship.md REV 12f rule 46): the same run: every npm call's cache is the run's own, never the
+# HOME's: ship's private temp dir's npm (its views, its login, whoami and logout), publish_check's (C3's
+# views) or publish-npm's (the uploads and their views), each gone after the run (npm answered whoami from
+# $HOME/.npm for any token when the registry could not be reached; with Vary: Authorization it wrote the
+# token into a 0644 index file there)
+bc_=""
+while read -r c_ k_; do
+  case $c_:$k_ in
+    /private/tmp/sr-ship.?*/npm:login|/private/tmp/sr-ship.?*/npm:whoami|/private/tmp/sr-ship.?*/npm:logout|/private/tmp/sr-npmpub.?*/npm:publish|/private/tmp/sr-npmpub.?*/npm:whoami) ;;
+    /private/tmp/sr-ship.?*/npm:view|/private/tmp/sr-ship.?*/npm:owner|/private/tmp/sr-publish.?*/npm:view|/private/tmp/sr-publish.?*/npm:owner|/private/tmp/sr-npmpub.?*/npm:view|/private/tmp/sr-npmpub.?*/npm:owner) ;;
+    *) bc_="$bc_ [$k_: $c_]" ;;
+  esac
+  [ ! -e "${c_%/npm}" ] || bc_="$bc_ [$k_: ${c_%/npm} left]"
+done < "$FX/npmcaches"
+[ -s "$FX/npmcaches" ] && [ -z "$bc_" ] && grep -q '^/private/tmp/sr-ship\..*/npm login$' "$FX/npmcaches" && grep -q '^/private/tmp/sr-npmpub\..*/npm publish$' "$FX/npmcaches" \
+  && grep -q '^/private/tmp/sr-publish\..*/npm owner$' "$FX/npmcaches" \
+  && pass "r21a F2: every npm call's cache is the run's own (ship's, publish_check's, publish-npm's private dir), never the HOME's; each gone after the run" \
+  || fail "r21a F2, npm's cache: $(printf '%s' "$bc_" | cut -c1-400) $(awk '{print $1}' "$FX/npmcaches" 2>/dev/null | sed 's|\.[A-Za-z0-9]*/npm$|.X/npm|' | sort | uniq -c | tr '\n' ' ')"
 # GitHub public, its cask refused (publish's exit 5): stopped, 'exit5' recorded, no main upload
 : > "$FX/putfail"; rm -rf "${OUTR:?}"; ship; r=$?; rm -f "$FX/putfail"
 [ $r = 1 ] && [ "$(tail -2 "$OUTR/.v0.1.0.ship-progress" | tr '\n' '|')" = "start github|exit5|" ] && [ "$(grep -c '^npm publish' "$FX/calls")" = 3 ] \

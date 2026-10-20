@@ -196,7 +196,7 @@ case $pd in /private/tmp/sr-npmpub.*) [ ! -e "$pd" ] && pass "this run's private
 bad=""; for f in "$FX"/env.npm.*; do for k in $(sed 's/=.*//' "$f"); do
   # npm_env's named set (a caller's proxy and CA settings pass by design; npm's colour and log level
   # are npm_env's own) and what sh adds
-  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS|NPM_CONFIG_USERCONFIG|NPM_CONFIG_GLOBALCONFIG) ;;
+  case $k in HOME|PATH|TMPDIR|USER|LOGNAME|PWD|SHLVL|_|OLDPWD|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy|NODE_EXTRA_CA_CERTS|NPM_CONFIG_USERCONFIG|NPM_CONFIG_GLOBALCONFIG|npm_config_cache) ;;
     npm_config_color|npm_config_dry_run|npm_config_heading|npm_config_json|npm_config_loglevel|npm_config_logs_max|npm_config_offline|npm_config_prefer_offline|npm_config_provenance|npm_config_tag|npm_config_update_notifier|npm_config_usage|npm_config_workspaces) ;;   # npm_env's pins (the e3 row)
     *) bad="$bad $k" ;; esac
 done; done
@@ -204,6 +204,13 @@ done; done
 grep -q '^HTTPS_PROXY=http://127.0.0.1:9$' "$FX/env.npm.0" && pass "control: the proxy reaches npm" || fail "control: no HTTPS_PROXY for npm"
 grep -rl "$DECOY" "$FX"/env.npm.* "$FX/calls" "$FX/o" >/dev/null 2>&1 && fail "a decoy token reached npm or the output" || pass "no decoy token reached npm or the output"
 h=$(sed -n 's/^HOME=//p' "$FX/env.npm.0"); case $h in /private/tmp/sr-dryhome.*) pass "the dry npm's HOME is a fresh temp dir" ;; *) fail "the dry npm's HOME is '$h'" ;; esac
+# r21a F2 (PLAN-ship.md REV 12f rule 46): every npm call of this run names one npm cache, its private copy
+# dir's npm (0700, gone above), never the HOME's
+bc_=""; nc_=0; for f in "$FX"/env.npm.*; do
+  nc_=$((nc_ + 1)); [ "$(grep -ic '^npm_config_cache=' "$f")" = 1 ] && grep -qx "npm_config_cache=$pd/npm" "$f" || bc_="$bc_ [${f##*/}: $(grep -i '^npm_config_cache=' "$f" | tr '\n' ' ')]"
+done
+case $pd in /private/tmp/sr-npmpub.?*) ;; *) bc_="$bc_ [no private copy dir: '$pd']" ;; esac
+[ $nc_ -ge 4 ] && [ -z "$bc_" ] && pass "r21a F2: each of the run's $nc_ npm calls names npm's cache in its private copy dir, never the HOME's" || fail "r21a F2, publish-npm's npm cache ($nc_ calls):$bc_"
 
 # who may publish: npm's own answer, for all four names before any view or upload; the main
 # package is asked last, so a refusal there proves no platform package went out first
@@ -433,6 +440,14 @@ bg_=""; for e_ in "$eg1" "$eg2"; do
     && ! printf '%s\n' "$e_" | grep -q -e "$FX/g1rc" -e "$FX/g2rc" || bg_="$bg_ [$(printf '%s\n' "$e_" | grep -i '^npm_config_globalconfig=' | tr '\n' ' ')]"
 done
 [ -z "$bg_" ] && pass "r17a F1: the real npm class names D/global as npm's global config, whatever the operator's variables say" || fail "r17a F1, the npm class's global config:$bg_"
+# r21a F2 (PLAN-ship.md REV 12f rule 46): npm's cache is the run's own (the cells' entry names one no run
+# makes), one npm_config_cache line, whatever the operator's npm_config_cache or NPM_CONFIG_CACHE says
+ec1=$(ne); ec2=$(ne npm_config_cache="$FX/c1" NPM_CONFIG_CACHE="$FX/c2")
+bk_=""; for e_ in "$ec1" "$ec2"; do
+  [ "$(printf '%s\n' "$e_" | grep -ic '^npm_config_cache=')" = 1 ] && printf '%s\n' "$e_" | grep -qx 'npm_config_cache=/private/tmp/sr-publish.cells/npm' \
+    && ! printf '%s\n' "$e_" | grep -q -e "$FX/c1" -e "$FX/c2" || bk_="$bk_ [$(printf '%s\n' "$e_" | grep -i -e '^npm_config_cache=' -e '^release:' | tr '\n' ' ')]"
+done
+[ -z "$bk_" ] && pass "r21a F2: the real npm class names the run's own npm cache, one line, whatever the operator's variables say" || fail "r21a F2, the npm class's cache:$bk_"
 # the spellings the npm class refused before REV 12 (~, ${VAR}, relative, a $): npm never sees them now;
 # P is named, and publish-npm runs to its end with P on every npm call
 bu_=""; for uv in 'NPM_CONFIG_USERCONFIG=~/npmrc' 'NPM_CONFIG_USERCONFIG=${HOME}/npmrc' 'npm_config_userconfig=rel/npmrc' "NPM_CONFIG_USERCONFIG=$FX/v/\${SRFOO}rc" "npm_config_userconfig=$FX/\$SRFOO/npmrc"; do
@@ -490,9 +505,9 @@ npm_config_tag=latest
 npm_config_update_notifier=false
 npm_config_usage=false
 npm_config_workspaces=false'
-[ "$(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v -e '^NPM_CONFIG_USERCONFIG=' -e '^NPM_CONFIG_GLOBALCONFIG=' | LC_ALL=C sort)" = "$PINS" ] \
+[ "$(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v -e '^NPM_CONFIG_USERCONFIG=' -e '^NPM_CONFIG_GLOBALCONFIG=' -e '^npm_config_cache=' | LC_ALL=C sort)" = "$PINS" ] \
   && pass "the real npm class: every npm output setting pinned ($(printf '%s\n' "$PINS" | grep -c .): heading=npm, json=false, ...), the caller's own dropped" \
-  || fail "the npm class's npm settings: $(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v -e '^NPM_CONFIG_USERCONFIG=' -e '^NPM_CONFIG_GLOBALCONFIG=' | LC_ALL=C sort | tr '\n' ' ')"
+  || fail "the npm class's npm settings: $(printf '%s\n' "$e3" | grep -i '^npm_config_' | grep -v -e '^NPM_CONFIG_USERCONFIG=' -e '^NPM_CONFIG_GLOBALCONFIG=' -e '^npm_config_cache=' | LC_ALL=C sort | tr '\n' ' ')"
 # REV 11a rule 10 (r14a np/t5: npm 10.9.2 writes ship's session token into its debug log after a failed
 # logout): npm_config_logs_max=0, whatever the caller's, either case (notes/builder/np14/t14m5-*: npm 9.6.7,
 # 10.5.2, 10.9.2 and 11.6.0 write no file under _logs with it)

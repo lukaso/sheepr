@@ -77,9 +77,9 @@ DRYHOME=""   # set only by the dry entries (__publish-dry, __publish-cask-dry, _
 # child), SHIP_NPMCHECK, SHIP_VERIFY, CAFFEINATE, SHIP_IDENTITY, SHIP_DOCKER, and GH, GITCMD, NPM,
 # CURL with their classes; dryentry (yes in a dry entry: real_tools refuses there); ship's own state
 unset shipping npm_part NOTIFY SHIP_BUILD SHIP_NPMCHECK SHIP_VERIFY CAFFEINATE SHIP_IDENTITY SHIP_DOCKER \
-  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners npm_try
+  GH GITCMD NPM NPMC CURL CURLC NETC DRY dryentry shipprog shipcause shipcls ship_mh shipok pnin pnlock npm_endrc npmuc ship_gk ship_noowners npm_try npmcache
 shipping=no npm_part="" NOTIFY="" SHIP_BUILD="" SHIP_NPMCHECK="" SHIP_VERIFY="" CAFFEINATE="" SHIP_IDENTITY="" SHIP_DOCKER=""
-GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners="" npm_try=no
+GH="" GITCMD="" NPM="" NPMC="" CURL="" CURLC="" NETC="" DRY="" dryentry=no shipprog="" shipcause="" shipcls="" ship_mh="" shipok=no pnin=no pnlock=no npm_endrc=0 npmuc="" ship_gk="" ship_noowners="" npm_try=no npmcache=""
 root=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 # the one file this script sources from the checkout before ship's frozen tree (every later source
 # command reads the frozen tree under ship); ship compares it, with every file under scripts/, with
@@ -306,6 +306,11 @@ npm_env() { # HOME command...: base, the proxies and a CA npm may need, never th
   # looks) and in its environment; the operator's variables never reach npm (env -i). A relative CA
   # file is made absolute before the cd below, from a current directory that can be read
   case $u in /?*/.v*.npm/npmrc|/private/tmp/sr-publish.*/npmrc) ;; *) echo "release: no npm file for this run ('$u'): an entry must set out and tag" >&2; return 2 ;; esac
+  # npm's cache (REV 12f rule 46; r21a F2): the run's own, <its private temp dir>/npm (0700, removed with
+  # that dir), never $HOME/.npm: npm answered whoami from its cache when the registry could not be reached,
+  # for any token (the cache's key is the URL), sent no request within a max-age, and with Vary:
+  # Authorization wrote the token into a 0644 index file there (npm 9.6.7, 10.9.2, 11.6.0: notes/r21a/np)
+  case $npmcache in /private/tmp/sr-ship.?*/npm|/private/tmp/sr-npmpub.?*/npm|/private/tmp/sr-publish.?*/npm) ;; *) echo "release: no npm cache for this run ('$npmcache'): an entry must set it" >&2; return 2 ;; esac
   case $ca in
     ''|/*) ;;
     *) p_=$(pwd -P 2>/dev/null) && [ -n "$p_" ] \
@@ -334,7 +339,7 @@ npm_env() { # HOME command...: base, the proxies and a CA npm may need, never th
   # And logs-max=0 (REV 11a rule 10): npm's debug log, under its cache's _logs, is not written (npm
   # 10.9.2 writes the token of a failed logout's request into it; notes/r14a/np/t5;
   # notes/builder/np14/t14m5-*: npm 9.6.7, 10.5.2, 10.9.2 and 11.6.0 write no log file with it)
-  ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" NPM_CONFIG_USERCONFIG="$u" NPM_CONFIG_GLOBALCONFIG="${u%/*}/global" \
+  ( cd / && exec /usr/bin/env -i HOME="$h" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" NPM_CONFIG_USERCONFIG="$u" NPM_CONFIG_GLOBALCONFIG="${u%/*}/global" npm_config_cache="$npmcache" \
     npm_config_color=false npm_config_loglevel=notice npm_config_heading=npm npm_config_json=false npm_config_usage=false \
     npm_config_dry_run=false npm_config_tag=latest npm_config_offline=false npm_config_prefer_offline=false \
     npm_config_workspaces=false npm_config_provenance=false npm_config_update_notifier=false npm_config_logs_max=0 \
@@ -651,7 +656,7 @@ files_ok() { # dir -> 0 if every file MANIFEST.json lists is there and is its ha
 publish_check() { # dir
   d=$1
   pt=$(mktemp -d /private/tmp/sr-publish.XXXXXX) || die "no temp dir"
-  drydir "$pt"
+  drydir "$pt"; npmcache=$pt/npm   # (npm's cache: this run's own, REV 12f rule 46)
   trap 'trap "" $SIGS; rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}' EXIT; trap 'rm -rf "$pt" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   private_manifest "$d" "$pt"
   stamp_ok "$d" || { stopclass fix; die "npm-check has not passed on $d for this manifest$(next_hint ". Run npm-check first:
@@ -984,6 +989,7 @@ publish_npm_exec() { # dir
   # (on its own: the logout of its own session first, then the lock: npm_end, REV 12 rule 5)
   trap 'trap "" $SIGS; npm_end "$pc"; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; [ "$npm_endrc" = 0 ] || exit 1' EXIT; trap 'npm_end "$pc"; rm -rf "$pc" ${DRYHOME:+"$DRYHOME"}; exit 1' $SIGS
   chmod 700 "$pc" || die "cannot make $pc private"
+  npmcache=$pc/npm   # (npm's cache: this run's own, REV 12f rule 46)
   private_manifest "$d" "$pc"; m=$MAN
   stamp_ok "$d" || die "npm-check has not passed on $d for this manifest$(next_hint ". Run npm-check first:
   sh $(dq "$root/scripts/release.sh") npm-check --out $(dq "$out") $tag")"
@@ -1239,7 +1245,7 @@ ship_run() { # ship and __ship-dry: the whole release (the ship plan's phases A,
   out=$(cd -P -- "$out" && pwd -P) && [ -n "$out" ] || die "cannot resolve $out"   # (physical: REV 12b rule 24)
   outdollar   # (a new dir under a link: its physical path is known only now; REV 12c rule 32)
   st=$(mktemp -d /private/tmp/sr-ship.XXXXXX) || die "no temp dir"
-  drydir "$st"
+  drydir "$st"; npmcache=$st/npm   # (npm's cache: this run's own, REV 12f rule 46)
   shipcause=$st/cause shipcls=$st/class; stopclass fix || die "cannot write $shipcls"
   locked=no logged_in=no armed=no pubok=no shipok=no phase=preflight oroot=$root wt="" progok=no
   # ship's own stdout and stderr, kept on fds 8 and 9 before the handler is set and before the first
@@ -2012,7 +2018,8 @@ case $sub in
   # npm_env adds after the command, one arg= line each (it runs only env and printf)
   ship) ship ;;
   __ship-dry) ship_dry ;;
-  __npm-env) tool npm /bin/sh -c '/usr/bin/env; for a; do printf "arg=%s\n" "$a"; done' sh ;;
+  __npm-env) npmcache=/private/tmp/sr-publish.cells/npm   # (a name no run makes: the cells read the variable, no npm runs)
+    tool npm /bin/sh -c '/usr/bin/env; for a; do printf "arg=%s\n" "$a"; done' sh ;;
   __tool-class) tool "${SR_TOOL_CLASS-}" /bin/echo ran ;;   # the cells: tool with SR_TOOL_CLASS's class
   __curl-env) real_tools; tool "$CURLC" /usr/bin/env ;;
   npm-check) npm_check "$out/$tag" ;;
