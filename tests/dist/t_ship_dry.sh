@@ -336,6 +336,8 @@ case \$1 in
     if [ -s "$FX/logoutonce" ]; then c_=\$(cat "$FX/logoutonce"); rm -f "$FX/logoutonce"; ncode "\$c_"; exit 1; fi
     # (\$FX/logoutoncetext: the next logout fails with the file's text on stderr, once, and the line stays)
     if [ -s "$FX/logoutoncetext" ]; then cat "$FX/logoutoncetext" >&2; rm -f "$FX/logoutoncetext"; exit 1; fi
+    # (\$FX/logoutsilent: the next logout fails with nothing on stderr, once, and the line stays)
+    if [ -e "$FX/logoutsilent" ]; then rm -f "$FX/logoutsilent"; exit 1; fi
     [ -e "$FX/logoutint" ] && exec /usr/bin/perl -e 'getpgrp() == getppid() or do { open(my \$f, ">>", "$FX/calls"); print \$f "UNSAFE logoutint\\n"; exit 1 }; \$SIG{INT} = "DEFAULT"; kill "INT", 0; sleep 5; exit 0'
     # (\$FX/logoutmsg CODE: the logout fails with npm's own words for CODE, the request's URL naming the
     # token it sends (npm masks only its npm_ shape, as npm_***: notes/r13a/np/t9b-*), and the line stays)
@@ -2065,7 +2067,7 @@ for k_ in ok E401 ENEEDAUTH passed live; do
     ok) pplant "$EL" 3600 ;;
     E401) pplant '//registry.npmjs.org/:_authToken=npm_dead_earlier' 3600 ;;   # (a dead token: its logout and its whoami answer E401; REV 12e rule 42)
     ENEEDAUTH) pplant "$EL" 3600; echo ENEEDAUTH > "$FX/logoutonce" ;;   # (a P with no token line gets no logout: REV 12b rule 25)
-    passed) pplant "$EL" -60; echo ETIMEDOUT > "$FX/logoutonce" ;;
+    passed) pplant "$EL" -60; echo ETIMEDOUT > "$FX/logoutonce"; echo ETIMEDOUT > "$FX/whoamionce" ;;   # (a whoami that cannot tell: REV 12g rule 49)
     live) pplant "$EL" 3600; echo ETIMEDOUT > "$FX/logoutonce" ;;
   esac
   KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutonce"; r12keep
@@ -2150,6 +2152,39 @@ KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutonce" "${FX:?}/whoamionce"
 completed && grep -qF "release: an earlier npm session of ship's own file ($PP) is ended." "$FX/o" \
   && pass "  control: E401, whoami ETIMEDOUT, past the end time: the end time decides, that session is ended, the run completes" \
   || fail "  control, E401 + whoami ETIMEDOUT past the end time: rc=$r $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-200)"
+world_reset; rm -rf "${OUTR:?}"
+# r22a F1 (PLAN-ship.md REV 12g rule 49): past the end time recorded in D (60 s ago), the start's logout of an
+# earlier live P fails with EOTP, E403, ETIMEDOUT or E503 and P's whoami answers (A1); or the logout answers
+# E401 and whoami EOTP, EAUTHIP or E403, npm's answers for a live token (A2): npm still knows the session, so
+# a stop, P and its end kept, no login, no DELETE, nothing says ended, and the stop says npm still answers
+# for it (npm_preend removed the live token's only file and said "ended"). A4: an earlier done file (its end
+# logout failed) over such a session: byte-identical. Then a logout that fails with nothing on stderr, before
+# the end time: the stop says so (r22a F6). Controls: rule 2's "passed" (ETIMEDOUT, then a whoami that cannot
+# tell: ended), r21a F1's control and r20a F3's dead token (ended)
+b5_=""
+for k_ in o:EOTP o:E403 o:ETIMEDOUT o:E503 w:EOTP w:EAUTHIP w:E403; do
+  rm -rf "${OUTR:?}"; pplant "$EL" -60
+  case $k_ in o:*) echo "${k_#o:}" > "$FX/logoutonce" ;; w:*) echo E401 > "$FX/logoutonce"; echo "${k_#w:}" > "$FX/whoamionce" ;; esac
+  : > "$FX/tokops"; KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutonce" "${FX:?}/whoamionce"
+  [ $r = 1 ] && ! grep -q '^npm login' "$FX/calls" && grep -qx "$EL" "$PP" && [ -f "$PD/end" ] && ! grep -q 'is ended' "$FX/o" && ! grep -q DELETE "$FX/tokops" \
+    && grep -q '^npm whoami' "$FX/calls" && grep -q 'npm still answers for that session after its end time' "$NF" && grep -q 'run ship again later' "$NF" \
+    || b5_="$b5_ [$k_: rc=$r logins $(grep -c '^npm login' "$FX/calls") whoamis $(grep -c '^npm whoami' "$FX/calls") P $(grep -qx "$EL" "$PP" 2>/dev/null && echo kept || echo GONE); $(grep -m1 -e 'is ended' -e 'could not be ended' "$FX/o" | cut -c1-120)]"
+  world_reset; rm -rf "${OUTR:?}"
+done
+[ -z "$b5_" ] && pass "r22a F1 (A1, A2): past the end time, a logout failing EOTP, E403, ETIMEDOUT, E503 (whoami answers) or E401 with whoami EOTP, EAUTHIP, E403: a stop, P kept, nothing says ended" \
+  || fail "r22a F1 (A1, A2):$b5_"
+rm -rf "${OUTR:?}"; echo ETIMEDOUT > "$FX/logoutcode"; KEEP=1; ship; r1_=$?; KEEP=; rm -f "${FX:?}/logoutcode"; f1_=$(cksum < "$NF" 2>/dev/null)
+echo $(( $(/bin/date +%s) - 60 )) > "$PD/end"; echo ETIMEDOUT > "$FX/logoutonce"
+: > "$FX/tokops"; KEEP=1; ship; r2_=$?; KEEP=; rm -f "${FX:?}/logoutonce"
+[ $r2_ = 1 ] && [ -e "$PP" ] && [ -n "$f1_" ] && [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && ! grep -q 'is ended' "$FX/o" && ! grep -q DELETE "$FX/tokops" \
+  && pass "r22a F1 (A4): an earlier done file over a session npm still answers for past its end time (the logout ETIMEDOUT): not rewritten, P kept" \
+  || fail "r22a F1 (A4): rc $r1_ $r2_, P $( [ -e "$PP" ] && echo kept || echo GONE), file $( [ "$(cksum < "$NF" 2>/dev/null)" = "$f1_" ] && echo same || echo REWRITTEN); $(grep -m1 'is ended' "$FX/o" | cut -c1-160)"
+world_reset; rm -rf "${OUTR:?}"
+rm -rf "${OUTR:?}"; pplant "$EL" 3600; : > "$FX/logoutsilent"
+KEEP=1; ship; r=$?; KEEP=; rm -f "${FX:?}/logoutsilent"
+[ $r = 1 ] && grep -q "the logout's answer: it failed, with no words" "$NF" && ! grep -q "the logout's answer: )" "$NF" && grep -qx "$EL" "$PP" \
+  && pass "r22a F6: the start's logout fails with nothing on stderr: the stop says so" \
+  || fail "r22a F6: rc=$r $(grep -m1 'could not be ended' "$NF" 2>/dev/null | cut -c1-240)"
 world_reset; rm -rf "${OUTR:?}"
 # r18a F2 (PLAN-ship.md REV 12c rule 33): --out under a directory with an inheritable ACL that lets every
 # account read (chmod +a ... file_inherit,directory_inherit; Finder's "apply to enclosed items" makes one):

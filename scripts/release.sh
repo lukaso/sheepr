@@ -1517,35 +1517,44 @@ npm_dok() {
 # npm_pre DIR WHO TAIL: before a login (REV 12 rule 2): D's and P's shapes (npm_dok); when P exists (an
 # earlier run's: a KILL, a logout that failed) and holds a token line (ptok; else it is removed), the
 # logout of P first. Exit 0, ENEEDAUTH, or E401 with P's whoami refused too (E401): that session is ended
-# (npm_preend). Any other failure: ended too when its end time has passed (it ended by itself), unless P's
-# whoami answers (REV 12f rule 45); else a stop (fix) with npm's words, the end time, and "run WHO again".
-# DIR holds npm's stderr
+# (npm_preend). Any other failure: ended too when its end time has passed (it ended by itself), unless npm
+# still knows the token (P's whoami answers, or EOTP, EAUTHIP, E403: REV 12f rule 45, REV 12g rule 49); else a
+# stop (fix) with npm's words, the end time, and "run WHO again". DIR holds npm's stderr
 npm_pre() {
   npm_dok "$2" "$3"
   pp_=${out%/}/.$tag.npm/npmrc
   [ -e "$pp_" ] || return 0
   ptok "$pp_" || { rm -f "$pp_"; return 0; }   # (no token line: nothing of ship's to end, and a logout would end another layer's)
   tool "$NPMC" "$NPM" logout --registry="$NPMREG" --scope= 2> "$1/pre.err"; r_=$?
-  c_=$(npmcode "$1/pre.err") wa_=""
-  # (npm's E401 is any 401 to the logout's DELETE, a WWW-Authenticate other than exactly otp or ipaddress
-  # among them (r20a F3: npm 9.6.7, 10.9.2, 11.6.0), so it says the session ended only when P's whoami is
-  # refused too, E401 (REV 12e rule 42): npm's ENEEDAUTH there is a 200 that names no user, for a live token
-  # too (r21a F3), so it fails another way, and the end time decides. A whoami that answers is npm's word
-  # that the session is live: the logout failed, and its end time does not make it ended (REV 12f rule 45;
-  # r21a F1: npm_preend removed the live token's only file and said "ended")
-  if [ $r_ != 0 ] && [ "$c_" = E401 ]; then
-    if tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= > /dev/null 2> "$1/prew.err"; then c_=live wa_="; its whoami still answers: the session is live"
-    else case $(npmcode "$1/prew.err") in E401) ;; *) c_=who w_=$(errcut "$1/prew.err" 120); wa_="; its whoami: ${w_:-failed, with no words}" ;; esac; fi
-  fi
-  if [ $r_ = 0 ] || [ "$c_" = E401 ] || [ "$c_" = ENEEDAUTH ]; then npm_preend; return 0; fi
+  c_=$(npmcode "$1/pre.err") wa_="" wk_=""
+  if [ $r_ = 0 ] || [ "$c_" = ENEEDAUTH ]; then npm_preend; return 0; fi
   e_=$(cat "${out%/}/.$tag.npm/end" 2>/dev/null) n_=$(date +%s 2>/dev/null) pa_=no
   case "$e_:$n_" in *[!0-9:]*|:*|*:) ;; *) [ "$n_" -lt "$e_" ] || pa_=yes ;; esac
-  [ $pa_ = no ] || [ "$c_" = live ] || { npm_preend; return 0; }
+  # (P's whoami, after an E401, and past the end time after any failure: npm's E401 is any 401 to the
+  # logout's DELETE, a WWW-Authenticate other than exactly otp or ipaddress among them (r20a F3), and npm
+  # can keep a session past the end time ship recorded (a clock set right later: r22a F1). npm still knows
+  # the token when whoami answers, or answers EOTP, EAUTHIP or E403 (npm 9.6.7, 10.9.2, 11.6.0 for a live
+  # token: notes/r21a/np/p21-*): the session is live, and its end time does not make it ended (REV 12f rule
+  # 45, REV 12g rule 49). E401: refused. Anything else (ENEEDAUTH: a 200 naming no user, r21a F3; E429, E5xx,
+  # a network failure) cannot tell: the end time decides)
+  if [ "$c_" = E401 ] || [ $pa_ = yes ]; then
+    if tool "$NPMC" "$NPM" whoami --registry="$NPMREG" --scope= > /dev/null 2> "$1/prew.err"; then wk_=live wa_="; its whoami still answers: the session is live"
+    else
+      w_=$(errcut "$1/prew.err" 120)
+      case $(npmcode "$1/prew.err") in
+        E401) wk_=refused ;;
+        EOTP|EAUTHIP|E403) wk_=live wa_="; its whoami: $w_ (npm still knows that session)" ;;
+        *) wk_=who wa_="; its whoami: ${w_:-failed, with no words}" ;;
+      esac
+    fi
+  fi
+  if { [ "$c_" = E401 ] && [ "$wk_" = refused ]; } || { [ $pa_ = yes ] && [ "$wk_" != live ]; }; then npm_preend; return 0; fi
   t_=$(ship_clock "$e_")
-  if [ "$c_" = live ] && [ $pa_ = yes ]; then wn_="npm still answers for that session after its end time${t_:+ ($t_)}; run $2 again later"
-  elif [ "$c_" = live ]; then wn_="That session ends by itself${t_:+ at $t_}; run $2 again then"
+  if [ "$wk_" = live ] && [ $pa_ = yes ]; then wn_="npm still answers for that session after its end time${t_:+ ($t_)}; run $2 again later"
+  elif [ "$wk_" = live ]; then wn_="That session ends by itself${t_:+ at $t_}; run $2 again then"
   else wn_="That session ends by itself${t_:+ at $t_}; run $2 again then, or once npm answers"; fi
-  stopclass fix; die "an earlier session of ship's own npm file ($pp_) could not be ended (the logout's answer: $(errcut "$1/pre.err" 200)$wa_); $3. $wn_"
+  lw_=$(errcut "$1/pre.err" 200)   # (a logout that failed with no words says so: r22a F6)
+  stopclass fix; die "an earlier session of ship's own npm file ($pp_) could not be ended (the logout's answer: ${lw_:-it failed, with no words}$wa_); $3. $wn_"
 }
 # npm_preend: npm_pre found an earlier session of P ended (PLAN-ship.md REV 12d rule 36; r19a F1): D goes
 # whole (P and its end time), and stdout says so at once. An earlier run's next file (the lock is held: one
