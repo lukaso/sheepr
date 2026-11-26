@@ -6,7 +6,7 @@ schemas (`"v": 1`, additive changes only) and the `sheepr:` at the start of the 
 each message sheepr itself writes to stderr (for a usage error, that line says what was wrong;
 `sheepr` alone prints the overview and exits 2).
 
-## Unreleased
+## 0.1.5 (2026-11-26)
 
 - `strays` (macOS): it now lists an orphan that ran `exec` after it was orphaned, such as the
   grandchild of a daemon's double fork (`setsid`, `fork`, `exec`). Before, such an orphan looked
