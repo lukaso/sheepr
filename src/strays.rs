@@ -2,8 +2,9 @@
 //! first, with the best-known origin of each; `--kill` kills the listed rows that match a filter,
 //! each as `sheepr kill PID:ID` with the identity read at the listing.
 //!
-//! What counts as an orphan: macOS: parent launchd, `puniq` not 1 (it was reparented), and not a
-//! helper of a live app (its responsible process is alive, is not itself, and the stray's
+//! What counts as an orphan: macOS: parent launchd, reparented (`puniq` not 1; or, as an exec
+//! after the reparenting resets `puniq` to 1, not the leader of its own process group, which
+//! every process launchd starts is: issue #30), and not a helper of a live app (its responsible process is alive, is not itself, and the stray's
 //! executable is inside that app's `.app` bundle). Linux: parent PID 1 or a known reaper; when PID
 //! 1 is not an init, a child of PID 1 is marked (`pid1-child`) and `--kill` skips it unless
 //! named. A row of a running supervised job is marked with the job and skipped unless named.
@@ -216,7 +217,7 @@ fn scan() -> Vec<Row> {
             continue;
         }
         #[cfg(target_os = "macos")]
-        let (orphan, pid1_child, app_scope) = (p.ppid == 1 && p.puniq != Some(1) && !app_helper(p.pid), false, false);
+        let (orphan, pid1_child, app_scope) = (p.ppid == 1 && (p.puniq != Some(1) || p.pgid != p.pid) && !app_helper(p.pid), false, false);
         #[cfg(target_os = "linux")]
         let (orphan, pid1_child, app_scope) = {
             let parent = os::comm(p.ppid).unwrap_or_default();

@@ -196,19 +196,29 @@ fn strays_lists_the_orphan_with_its_origin() {
     assert!(!r.contains_key(&c.rec("kid").unwrap().0), "a child of a live parent is listed:\n{}", o.out);
 }
 
-/// Cell 30, macOS: an orphan that exec'd only after it was reparented has `puniq` 1 (as an
-/// `open -g` or launchd job has) and is not listed.
+/// Cell 30, macOS (issue #30): an orphan that exec'd only after it was reparented has `puniq` 1,
+/// as a launchd job has; it is listed when it does not lead its own process group (launchd
+/// starts every job as a group leader), so the daemon's double fork (setsid, fork, exec) and a
+/// plain double fork are listed. The control is not: an orphan that calls setsid itself before
+/// that exec has every fact a launchd job has (stated limit).
 #[cfg(target_os = "macos")]
 #[test]
-fn strays_does_not_list_a_launchd_started_shape() {
+fn strays_lists_an_orphan_that_execs_after_it_was_reparented() {
     let _s = serial();
     let mut c = Cell::new();
     c.make(&["late-exec", "{}", "late"], &["late"]);
+    c.make(&["late-exec", "{}", "daemon", "daemon"], &["daemon"]);
+    c.make(&["late-exec", "{}", "leader", "leader"], &["leader"]);
     c.make(&["stray", "{}", "orphan"], &["orphan"]);
-    let o = strays(&["--json", "--cmd", &c.word], &[]);
-    let r = rows(&o.out);
-    assert!(r.contains_key(&c.rec("orphan").unwrap().0), "control: the orphan is not listed:\n{}", o.out);
-    assert!(!r.contains_key(&c.rec("late").unwrap().0), "the puniq-1 shape is listed:\n{}", o.out);
+    for args in [&["--json", "--cmd", &c.word][..], &["--json", "--older-than", "0s", "--cmd", &c.word][..]] {
+        let o = strays(args, &[]);
+        let r = rows(&o.out);
+        assert_eq!(o.code, Some(0), "{args:?}: {}", o.err);
+        assert!(r.contains_key(&c.rec("orphan").unwrap().0), "{args:?}: control: the orphan that did not exec is not listed:\n{}", o.out);
+        assert!(r.contains_key(&c.rec("late").unwrap().0), "{args:?}: an orphan that exec'd after it was reparented is not listed:\n{}", o.out);
+        assert!(r.contains_key(&c.rec("daemon").unwrap().0), "{args:?}: the daemon's double fork (setsid, fork, exec) is not listed:\n{}", o.out);
+        assert!(!r.contains_key(&c.rec("leader").unwrap().0), "{args:?}: control: an orphan with a launchd job's facts (group leader, puniq 1) is listed:\n{}", o.out);
+    }
 }
 
 /// Cell 31: `--kill` without a filter refuses (2); without `--yes` in a non-tty refuses (1) and

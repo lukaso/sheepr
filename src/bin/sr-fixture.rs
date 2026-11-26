@@ -1014,17 +1014,27 @@ fn main() {
         unsafe { orphan(&a[2], &a[3], false, || sigcount_as(&a[2], &a[3], bare)) };
         std::process::exit(0);
     }
-    // `late-exec DIR NAME`: an orphan that execs only after it was reparented, so its `puniq`
-    // resets to 1 (a launchd-started look, PLAN §3.0): `sigcount DIR/NAME`.
-    if mode == "late-exec" && a.len() == 4 {
+    // `late-exec DIR NAME [daemon|leader]`: an orphan that execs only after it was reparented, so
+    // its `puniq` resets to 1 (as a launchd job's is, PLAN §3.0): `sigcount DIR/NAME`. `daemon`:
+    // its parent calls setsid first (the daemon's double fork of issue #30: the orphan is in
+    // its dead parent's group); `leader`: the orphan itself calls setsid before its exec, so it
+    // leads its own group as a launchd job does.
+    if mode == "late-exec" && (a.len() == 4 || a.len() == 5 && (a[4] == "daemon" || a[4] == "leader")) {
+        let how = a.get(4).map_or("", String::as_str);
         unsafe {
             match libc::fork() {
                 0 => {
+                    if how == "daemon" {
+                        libc::setsid();
+                    }
                     if libc::fork() == 0 {
                         let mut n = 0;
                         while libc::getppid() != 1 && n < 5000 {
                             libc::usleep(1000);
                             n += 1;
+                        }
+                        if how == "leader" {
+                            libc::setsid();
                         }
                         sigcount_as(&a[2], &a[3], false);
                     }

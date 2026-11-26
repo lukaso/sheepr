@@ -97,7 +97,9 @@ A caller that sends INT to sheepr's pid alone and then SIGKILLs it (for example 
 started dies with it), not the rest of the tree. Such a caller should send TERM instead. Your next
 `sheepr run` or `sheepr sweep` with the same `--owner` and the same state directory, before a
 reboot (in a container: in the same container), ends most of what was left; a process sheepr
-never saw can stay, and `sheepr strays` lists it. On macOS, any later `run` or `sweep` with the
+never saw can stay, and `sheepr strays` lists it (on macOS, not one that made itself the leader of
+its own process group and then ran `exec` after it was orphaned: it has the facts of a process
+launchd started). On macOS, any later `run` or `sweep` with the
 same temp folder (`TMPDIR`) also removes the registration folder (`sr-…`) the killed sheepr left.
 A `run` with `--no-sweep` skips both, and a `run` stops sweeping jobs after 200 ms (and folders
 after 50 ms more), so when many were left, it can take more than one run. When a journal it

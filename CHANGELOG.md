@@ -6,6 +6,14 @@ schemas (`"v": 1`, additive changes only) and the `sheepr:` at the start of the 
 each message sheepr itself writes to stderr (for a usage error, that line says what was wrong;
 `sheepr` alone prints the overview and exits 2).
 
+## Unreleased
+
+- `strays` (macOS): it now lists an orphan that ran `exec` after it was orphaned, such as the
+  grandchild of a daemon's double fork (`setsid`, `fork`, `exec`), or a helper's service whose
+  starter exited at once. Before, such an orphan looked like a process launchd started and was
+  not listed ([#30](https://github.com/lukaso/sheepr/issues/30)). Still not listed: an orphan
+  that makes itself the leader of its own process group before that `exec`.
+
 ## 0.1.4 (2026-10-20)
 
 - `run --status-fd`: two new fields, `root_code` (the command's exit code when it exited) and

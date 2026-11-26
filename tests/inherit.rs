@@ -295,6 +295,13 @@ fn cell17_an_open_g_app_survives_the_job() {
     let survived = wait_until(2, || common::alive(app)) && { std::thread::sleep(Duration::from_millis(500)); common::alive(app) };
     assert_eq!(st.code(), Some(0));
     assert!(survived, "the open -g app did not survive (the leak this cell documents is gone: update PLAN cell 17)");
+    // and `strays` does not list it (issue #30): launchd started it, as its own group's leader,
+    // so it is no orphan, though its `puniq` is 1 as an orphan's is after an exec
+    let word = d.file_name().unwrap().to_str().unwrap().to_string();
+    let o = Command::new(sheepr()).args(["strays", "--json", "--cmd", &word]).stdin(Stdio::null()).output().unwrap();
+    let listed = String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| json::parse(l).ok()).any(|j| j.get("pid").and_then(Json::num) == Some(f64::from(app.0)));
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!listed, "strays lists the open -g app, which launchd started:\n{}", String::from_utf8_lossy(&o.stdout));
     drop(g);
     let _ = std::fs::remove_dir_all(&d);
 }
