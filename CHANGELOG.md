@@ -9,10 +9,12 @@ each message sheepr itself writes to stderr (for a usage error, that line says w
 ## Unreleased
 
 - `strays` (macOS): it now lists an orphan that ran `exec` after it was orphaned, such as the
-  grandchild of a daemon's double fork (`setsid`, `fork`, `exec`), or a helper's service whose
-  starter exited at once. Before, such an orphan looked like a process launchd started and was
-  not listed ([#30](https://github.com/lukaso/sheepr/issues/30)). Still not listed: an orphan
-  that makes itself the leader of its own process group before that `exec`.
+  grandchild of a daemon's double fork (`setsid`, `fork`, `exec`). Before, such an orphan looked
+  like a process launchd started and was not listed
+  ([#30](https://github.com/lukaso/sheepr/issues/30)). Still not listed: such an orphan that
+  leads its own process group, for example one started detached (Node `detached: true`, Python
+  `start_new_session=True`) or as a background job of a shell, that runs `exec` after its starter
+  exited.
 
 ## 0.1.4 (2026-10-20)
 
